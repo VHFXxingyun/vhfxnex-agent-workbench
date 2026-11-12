@@ -15,6 +15,8 @@
 
 # next.js
 /.next/
+/.next-dev/
+/.next-dev-webpack/
 /out/
 
 # production
@@ -32,6 +34,15 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+!.env.example
+/data/
+
+# Python artifacts produced by downloadable code-project examples
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
 
 # vercel
 .vercel

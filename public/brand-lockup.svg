@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 376 76" role="img" aria-labelledby="title desc">
+  <title id="title">VHFXNEX</title>
+  <desc id="desc">VHFXNEX — Goal to Action</desc>
+  <rect x="4" y="6" width="64" height="64" rx="19" fill="#171621" stroke="#ffffff16" />
+  <path d="M21 52V24l30 28V24" fill="none" stroke="#cbb2f3" stroke-width="6" stroke-linecap="round" stroke-linejoin="round" />
+  <path d="M22 52 50 24" fill="none" stroke="#d8eeab" stroke-width="4.5" stroke-linecap="round" />
+  <circle cx="21" cy="24" r="3.2" fill="#e9dcff" />
+  <circle cx="51" cy="52" r="3.2" fill="#d8eeab" />
+  <text x="84" y="39" fill="#f6f2fa" font-family="Arial, sans-serif" font-size="29" font-weight="800" letter-spacing="2.1">VHFX<tspan fill="#d0b5f5">NEX</tspan></text>
+  <text x="86" y="58" fill="#ada6b7" font-family="Arial, sans-serif" font-size="8" font-weight="700" letter-spacing="3">GOAL TO ACTION</text>
+</svg>
