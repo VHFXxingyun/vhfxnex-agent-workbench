@@ -44,7 +44,7 @@ class TimerApp:
         self.root = root
         self.root.title("VHFXNEX Timer")
         self.root.configure(bg=COLORS["background"])
-        self.root.minsize(760, 600)
+        self.root.minsize(760, 700)
         self.root.geometry("980x720")
         self.settings = self._load_settings()
         initial = max(1, int(self.settings.get("duration", 25 * 60)))
@@ -100,11 +100,11 @@ class TimerApp:
         )
 
     def _build_layout(self) -> None:
-        shell = tk.Frame(self.root, bg=COLORS["background"], padx=30, pady=24)
+        shell = tk.Frame(self.root, bg=COLORS["background"], padx=30, pady=14)
         shell.pack(fill="both", expand=True)
 
         header = tk.Frame(shell, bg=COLORS["background"])
-        header.pack(fill="x", pady=(0, 22))
+        header.pack(fill="x", pady=(0, 8))
         brand = tk.Frame(header, bg=COLORS["background"])
         brand.pack(side="left")
         mark = tk.Canvas(brand, width=38, height=38, bg=COLORS["background"], highlightthickness=0)
@@ -118,7 +118,7 @@ class TimerApp:
         self._label(header, "本地运行 · 无需联网", 9, "normal", COLORS["muted"]).pack(side="right", pady=10)
 
         intro = tk.Frame(shell, bg=COLORS["background"])
-        intro.pack(fill="x", pady=(0, 18))
+        intro.pack(fill="x", pady=(0, 8))
         self._label(intro, "把注意力，留给眼前这一件事。", 21, "bold", COLORS["text"]).pack(anchor="w")
         self._label(intro, "设置一段专注时间。剩下的交给计时器。", 10, "normal", COLORS["muted"]).pack(anchor="w", pady=(7, 0))
 
@@ -155,21 +155,21 @@ class TimerApp:
         self._label(status_row, self.status, 10, "normal", COLORS["muted"]).pack(side="left")
 
     def _build_controls_panel(self, parent: tk.Widget) -> None:
-        panel = tk.Frame(parent, bg=COLORS["panel"], highlightbackground=COLORS["border"], highlightthickness=1, padx=19, pady=20)
+        panel = tk.Frame(parent, bg=COLORS["panel"], highlightbackground=COLORS["border"], highlightthickness=1, padx=19, pady=12)
         panel.grid(row=0, column=1, sticky="nsew", padx=(12, 0))
         self._label(panel, "SESSION SETUP", 8, "bold", COLORS["violet"]).pack(anchor="w")
         self._label(panel, "设置时长", 14, "bold", COLORS["text"]).pack(anchor="w", pady=(8, 3))
         self._label(panel, "可自定义，也可选择常用时长", 9, "normal", COLORS["muted"]).pack(anchor="w")
 
         fields = tk.Frame(panel, bg=COLORS["panel"])
-        fields.pack(fill="x", pady=(18, 8))
+        fields.pack(fill="x", pady=(8, 2))
         minute_box = ttk.Spinbox(fields, from_=0, to=999, width=4, textvariable=self.minutes, format="%02.0f", style="Timer.TSpinbox", justify="center", command=self._apply_custom_duration)
         minute_box.pack(side="left", fill="x", expand=True)
         self._label(fields, ":", 20, "bold", COLORS["muted"]).pack(side="left", padx=6)
         second_box = ttk.Spinbox(fields, from_=0, to=59, width=3, textvariable=self.seconds, format="%02.0f", style="Timer.TSpinbox", justify="center", command=self._apply_custom_duration)
         second_box.pack(side="left", fill="x", expand=True)
         self._label(panel, "分钟                         秒", 8, "normal", COLORS["muted"]).pack(anchor="w")
-        self._button(panel, "应用自定义时长", self._apply_custom_duration, primary=False).pack(fill="x", pady=(10, 20))
+        self._button(panel, "应用自定义时长", self._apply_custom_duration, primary=False).pack(fill="x", pady=(5, 8))
 
         self._label(panel, "快速选择", 10, "bold", COLORS["text"]).pack(anchor="w", pady=(0, 9))
         presets = tk.Frame(panel, bg=COLORS["panel"])
@@ -181,13 +181,13 @@ class TimerApp:
         presets.grid_columnconfigure(1, weight=1)
 
         separator = tk.Frame(panel, bg=COLORS["border"], height=1)
-        separator.pack(fill="x", pady=17)
+        separator.pack(fill="x", pady=7)
         self._label(panel, "运行选项", 10, "bold", COLORS["text"]).pack(anchor="w", pady=(0, 8))
         self._checkbutton(panel, "完成时播放提示音", self.sound_enabled).pack(anchor="w", pady=4)
         self._checkbutton(panel, "窗口始终置顶", self.always_on_top, self._apply_topmost).pack(anchor="w", pady=4)
 
         actions = tk.Frame(panel, bg=COLORS["panel"])
-        actions.pack(fill="x", side="bottom", pady=(18, 0))
+        actions.pack(fill="x", side="bottom", pady=(8, 0))
         self.start_button = self._button(actions, "开始专注  ·  SPACE", self.start_or_pause, primary=True)
         self.start_button.pack(fill="x")
         self._button(actions, "重置计时  ·  R", self.reset, primary=False).pack(fill="x", pady=(8, 0))
