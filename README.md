@@ -31,7 +31,7 @@ flowchart LR
 
 ## 本地运行
 
-需要 Node.js 24+。运行 `npm install`，复制 `.env.example` 为 `.env.local`，填写 `DEEPSEEK_API_KEY` 和 `SESSION_SECRET`，再运行 `npm run dev`。打开 <http://localhost:3000>。所有 DeepSeek 请求都直接读取项目根目录的 `.env.local`；系统环境或 Codex 预览器继承的同名变量会被忽略。修改文件后，下一次请求立即读取新值，无需重启服务。
+需要 Node.js 24+。运行 `npm ci` 按锁文件安装依赖，复制 `.env.example` 为 `.env.local`，填写 `DEEPSEEK_API_KEY` 和 `SESSION_SECRET`，再运行 `npm run dev`。打开 <http://localhost:3000>。所有 DeepSeek 请求都直接读取项目根目录的 `.env.local`；系统环境或 Codex 预览器继承的同名变量会被忽略。修改文件后，下一次请求立即读取新值，无需重启服务。
 
 可选设置 `GOALFLOW_DATABASE_PATH` 更改 SQLite 文件位置；Web 服务、后台 worker 和备份/恢复命令共用同一解析规则。自定义路径应位于持久化目录中；默认位置为 `data/goalflow.sqlite`。备份命令默认写入 `backups/`，可用 `GOALFLOW_BACKUP_DIR` 自定义备份和恢复安全快照目录。
 

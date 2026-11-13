@@ -463,6 +463,12 @@ Google Calendar 与 GitHub 集成继续按用户要求暂缓；本次未创建�
 - 更新 UI smoke 对新标签的既有断言；生产构建上的 `npm run smoke:ui` 使用临时 SQLite 通过 144 项检查，没有调用模型。
 - 标签调整后的 `npm run lint`、`npx tsc --noEmit`、`npm run build`、Prettier 与 `git diff --check` — 通过。
 
+### 技术说明书证据同步
+
+- 将技术说明书中的旧验收数字更新为当前记录的 72 项 API smoke、144 项 Playwright UI smoke 和 5 个 OpenTelemetry span，并补充隔离生产依赖安装的实际验证。
+- 明确 Docker 镜像尚未实建验收；安装步骤改用 `npm ci` 按锁文件复现，README 与报告工作稿保持一致。
+- 对照 `docs/COMPETITION_READINESS.md` 与 `docs/ACCEPTANCE_MATRIX.md` 核对上述数字和边界；Prettier 与 `git diff --check` 通过。
+
 ## 后续记录规则
 
 - 每次真实完成一个功能、修复或验收后，再新增对应记录并提交。
