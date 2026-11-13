@@ -20,6 +20,7 @@
     "db:restore": "node scripts/sqlite-maintenance.mjs restore",
     "smoke:ui:live-execute": "node scripts/live-ui-execute-smoke.mjs",
     "smoke:search": "node scripts/search-smoke.mjs",
+    "smoke:search:adapter": "node scripts/search-adapter-smoke.mjs",
     "smoke:vision": "node scripts/vision-smoke.mjs",
     "smoke:ui": "node scripts/ui-smoke.mjs",
     "smoke:telemetry": "node scripts/telemetry-smoke.mjs",
