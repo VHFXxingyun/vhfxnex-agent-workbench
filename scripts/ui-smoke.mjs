@@ -629,11 +629,12 @@ try {
     /规划\s+1,100\s+·\s+对话\s+600\s+·\s+工作台\s+800/,
   );
   assert.match(await workspaceUsage.innerText(), /Flash 当前价估值：\s*\$[\d,.]+\s*–\s*\$[\d,.]+/);
-  assert.match(await workspaceUsage.innerText(), /已确认缓存节省：\s*\$[\d,.]+\s*–\s*\$[\d,.]+/);
-  check(
-    true,
-    "Admin workspace view breaks down agent tokens, Flash cost range, and confirmed cache savings",
+  assert.match(
+    await workspaceUsage.innerText(),
+    /输入 Token 缓存命中率：\s*35\.0%\s+·\s+缓存统计覆盖 45\.5%（1,000\/2,200）/,
   );
+  assert.match(await workspaceUsage.innerText(), /已确认缓存节省：\s*\$[\d,.]+\s*–\s*\$[\d,.]+/);
+  check(true, "Admin workspace view breaks down tokens, Flash cost, cache hit rate and coverage");
   const usageBreakdown = page.locator(".usage-breakdown");
   await usageBreakdown.waitFor({ state: "visible" });
   assert.match(

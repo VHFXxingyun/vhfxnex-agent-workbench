@@ -4791,11 +4791,31 @@ export default function Home() {
                                       item.flashInputTokens + item.flashOutputTokens === 0
                                     )
                                       return null;
+                                    const cacheCoverage = getInputCacheCoverage(
+                                      item.flashInputTokens,
+                                      item.flashCacheMeasuredInputTokens,
+                                    );
+                                    const cacheHitRate =
+                                      estimate.measuredInputTokens > 0
+                                        ? (estimate.measuredHitTokens /
+                                            estimate.measuredInputTokens) *
+                                          100
+                                        : null;
                                     return (
                                       <>
                                         <small className="admin-workspace-cost">
                                           Flash 当前价估值：{formatEstimatedUsd(estimate.lowerUsd)}{" "}
                                           – {formatEstimatedUsd(estimate.upperUsd)}
+                                        </small>
+                                        <small
+                                          className="admin-workspace-cache"
+                                          title={`${cacheCoverage.title} 命中率按供应商已统计输入 Token 加权计算，不是命中请求占比。`}
+                                        >
+                                          输入 Token 缓存命中率：
+                                          {cacheHitRate === null
+                                            ? "暂无样本"
+                                            : `${cacheHitRate.toFixed(1)}%`}
+                                          {` · ${cacheCoverage.label}（${cacheCoverage.measured.toLocaleString("zh-CN")}/${cacheCoverage.total.toLocaleString("zh-CN")}）`}
                                         </small>
                                         {estimate.measuredHitTokens > 0 && (
                                           <small className="admin-workspace-savings">

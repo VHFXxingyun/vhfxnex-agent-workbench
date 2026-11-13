@@ -2337,6 +2337,7 @@ textarea:focus-visible {
   white-space: normal;
 }
 .admin-workspace-cost,
+.admin-workspace-cache,
 .admin-workspace-savings {
   font-size: 10px;
   font-weight: 600;
@@ -2345,6 +2346,9 @@ textarea:focus-visible {
 }
 .admin-workspace-cost {
   color: #cbb5ff;
+}
+.admin-workspace-cache {
+  color: #aaa1b9;
 }
 .admin-workspace-savings {
   color: #b8dc9a;
