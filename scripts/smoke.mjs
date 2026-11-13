@@ -50,6 +50,7 @@ import {
 } from "../src/lib/schedule-validation.mjs";
 import { availableCapacity, keepWithinLimit } from "../src/lib/workspace-capacity.mjs";
 import { createWorkspaceExecutionLeaseStore } from "../src/lib/workspace-execution-lease.mjs";
+import { resolveDatabasePath } from "../src/lib/database-path.mjs";
 import { BUDGET_AMOUNT_LIMIT, normalizeBudgetItems } from "../src/lib/budget-validation.mjs";
 import {
   AI_RATE_LIMITS,
@@ -654,9 +655,16 @@ try {
   assert.match(executionPromptVariants[1], /必须调用 generate_pdf/);
   assert.match(executionPromptVariants[1], /必须先调用 search_web/);
   assert.match(executionPromptVariants[2], /search_web 工具已禁用/);
+  assert.match(EXECUTION_PROMPT_STABLE_PREFIX, /路线与产物一致性/);
+  assert.match(EXECUTION_PROMPT_STABLE_PREFIX, /不能安排同一人同时负责两个岗位/);
+  assert.match(
+    EXECUTION_PROMPT_STABLE_PREFIX,
+    /创建任务或方案不代表已对外联系、预订、招募或线下执行/,
+  );
+  assert.match(EXECUTION_PROMPT_STABLE_PREFIX, /不新增没收手机、禁止设备等强制限制/);
   check(
     true,
-    "Keep a shared cacheable Agent policy prefix across dynamic execution modes and tools",
+    "Keep a shared cacheable Agent policy prefix and check route, artifact, capacity, and completion consistency",
   );
   const semanticHits = [
     { id: "doc-a", title: "路线指南", excerpt: "语义相关片段", score: 0.88, matchType: "semantic" },
@@ -1501,7 +1509,7 @@ try {
   assert.equal(longPasswordRegistration.response.status, 200);
   const longPasswordUserId = longPasswordRegistration.payload.user.id;
   testUserIds.push(longPasswordUserId);
-  database ||= new Database(path.join(process.cwd(), "data", "goalflow.sqlite"), {
+  database ||= new Database(resolveDatabasePath(), {
     timeout: 10_000,
   });
   const legacyHash = await bcrypt.hash(longPassword, 12);
@@ -3052,7 +3060,7 @@ try {
     "Assign imported backup data to the signed-in account without affecting the backup owner",
   );
 
-  database ||= new Database(path.join(process.cwd(), "data", "goalflow.sqlite"), {
+  database ||= new Database(resolveDatabasePath(), {
     timeout: 10_000,
   });
   database.prepare("UPDATE users SET role = 'admin' WHERE id = ?").run(testUserId);
@@ -3472,7 +3480,7 @@ try {
 } finally {
   rateLimitDatabase?.close();
   if (testUserIds.length) {
-    database ||= new Database(path.join(process.cwd(), "data", "goalflow.sqlite"), {
+    database ||= new Database(resolveDatabasePath(), {
       timeout: 10_000,
     });
     database.transaction(() => {

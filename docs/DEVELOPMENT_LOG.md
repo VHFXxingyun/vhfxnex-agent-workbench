@@ -295,6 +295,21 @@ Google Calendar 与 GitHub 集成继续按用户要求暂缓；本次未创建�
 - `npm run lint`、`npx tsc --noEmit`、`npm run build`、`npm run check:client-secrets` — 通过。
 - Docker Engine 未安装，未执行容器卷实机挂载；Google Calendar、GitHub 集成按用户要求暂缓；未调用 DeepSeek API，未提交或推送。
 
+## 2026-11-13｜执行产物一致性与隔离端到端烟测
+
+### 本次完成
+
+- 加强工作台 Agent 的固定执行约束：路线、任务、日程、预算和最终文件必须相互一致；并行活动要核算岗位、人手、场地、材料与换场时间；不得把尚未实际完成的联系、预订、招募或线下工作标记为完成；不得凭空增加强制限制。
+- 修复端到端 smoke 的数据库路径分叉：认证和清理逻辑现在与应用共用 `GOALFLOW_DATABASE_PATH`，可在临时数据库上完成全流程，不会误操作项目用户数据库。
+- 将以上执行约束加入 smoke 回归断言，避免后续提示词调整时意外丢失。
+
+### 验证与边界
+
+- `npm run smoke` — 通过，70 项；使用临时 SQLite 和本地生产服务，未启用实时模型模式、未调用 DeepSeek。
+- `npm run build`、`npm run lint`、`npx tsc --noEmit`、`npm run smoke:project`、Prettier 与 `git diff --check` — 通过。
+- 烟测能确认约束文本和服务流程正常，不能证明实时模型在所有输入下都严格遵守；正式演示前仍要对活动等真实案例检查路线、排班和最终产物是否互相吻合。
+- 未接入 Google Calendar 或 GitHub，按用户要求暂缓；未更改 UI。
+
 ## 后续记录规则
 
 - 每次真实完成一个功能、修复或验收后，再新增对应记录并提交。
