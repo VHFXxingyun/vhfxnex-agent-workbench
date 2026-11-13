@@ -496,6 +496,12 @@ Google Calendar 与 GitHub 集成继续按用户要求暂缓；本次未创建�
 - 生产构建服务上的 UI smoke 使用隔离 SQLite 通过 145 项检查；人工查看手机管理台截图，统计文字和布局正常。
 - 未发起 DeepSeek 请求；真实服务端缓存字段是否完整仍以供应商返回内容为准。
 
+## 2026-11-13｜复核依赖安全与容器验收条件
+
+- `npm audit --omit=dev --audit-level=moderate` 与完整 `npm audit --audit-level=moderate` 均通过，报告 0 个漏洞。
+- 再次检查部署工具：当前环境没有 Docker CLI，也没有 Podman、nerdctl 或 Buildah；容器镜像构建仍需在具备容器引擎的环境中验收。
+- 未运行模型请求；依赖审计未修改依赖清单或锁文件。
+
 ## 后续记录规则
 
 - 每次真实完成一个功能、修复或验收后，再新增对应记录并提交。
