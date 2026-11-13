@@ -8,6 +8,10 @@ import { readJsonObject } from "@/lib/request";
 import { DEEPSEEK_AUTH_ERROR, DEEPSEEK_MODEL } from "@/lib/deepseek";
 import { getDeepSeekCacheHitTokens } from "@/lib/deepseek-usage.mjs";
 import { getDeepSeekApiKey } from "@/lib/deepseek-key.mjs";
+import {
+  buildWorkspaceProgressAnswer,
+  isWorkspaceProgressQuestion,
+} from "@/lib/workspace-progress-answer.mjs";
 import { isAbortError } from "@/lib/errors";
 import {
   addWorkspaceUsageForUser,
@@ -146,12 +150,11 @@ function parseAttachments(value: unknown): ChatAttachment[] | string {
 function demoRouteMessage(message: string) {
   const text = message.trim();
   const explicitlyActionable =
+    !isWorkspaceProgressQuestion(text) &&
     /(?:帮我|替我|请.{0,8}|开始|继续|直接|马上|现在|把.{0,16})?.{0,40}(?:做|生成|创建|写|改|修改|开发|实现|制作|整理|规划|安排|修复|搜索|查找|导出|下载|推进|执行|补充|完善|优化|改进)/u.test(
       text,
     ) &&
-    !/(?:怎么做|如何做|为什么|是什么|有什么区别|能不能|可不可以|你觉得|什么意思|到哪|进度|完成了多少)/u.test(
-      text,
-    );
+    !/(?:怎么做|如何做|为什么|是什么|有什么区别|能不能|可不可以|你觉得|什么意思)/u.test(text);
   return explicitlyActionable;
 }
 
@@ -415,8 +418,24 @@ export async function POST(request: NextRequest) {
             activity: otherExecution.activity,
           }
         : null;
-    const apiKey = workspace.mode === "live" ? getDeepSeekApiKey() : "";
-    if (workspace.mode === "live" && !apiKey)
+    const progressAnswer =
+      attachments.length === 0 && isWorkspaceProgressQuestion(question)
+        ? buildWorkspaceProgressAnswer({
+            executionIsRunning,
+            executionWasInterrupted,
+            currentActivity: currentExecution?.activity,
+            completedToolCalls,
+            globalExecution,
+            latestExecutionMessage: latestWorkspaceExecution?.message,
+            latestExecutionActivity: latestWorkspaceExecution?.activity,
+            latestExecutionState: latestWorkspaceExecution?.state,
+            resultSummary: workspace.result?.summary,
+            tasks: workspace.result?.tasks || workspace.plan.tasks,
+            artifacts: workspace.result?.artifacts || [],
+          })
+        : undefined;
+    const apiKey = workspace.mode === "live" && !progressAnswer ? getDeepSeekApiKey() : "";
+    if (workspace.mode === "live" && !apiKey && !progressAnswer)
       return NextResponse.json(
         { error: "尚未配置 DeepSeek API Key；请检查服务端配置。" },
         { status: 503 },
@@ -476,24 +495,11 @@ export async function POST(request: NextRequest) {
     let staticHandoff: Handoff | undefined;
 
     if (workspace.mode === "demo") {
-      const isProgressQuestion = /到哪|进度|正在做|完成了多少|当前状态|做了什么/u.test(question);
+      const isProgressQuestion = Boolean(progressAnswer);
       if (demoRouteMessage(question)) {
         staticHandoff = { instruction: question };
       } else if (isProgressQuestion) {
-        const tasks = (workspace.result?.tasks || workspace.plan.tasks).slice(0, 8);
-        const taskList = tasks
-          .map(
-            (task, index) =>
-              `${index + 1}. ${task.title}（${task.status === "done" ? "已完成" : "待推进"}）`,
-          )
-          .join("\n");
-        staticAnswer = executionIsRunning
-          ? `当前工作台 Agent 正在执行：${currentExecution?.activity || "正在处理当前步骤"}。目前记录到 ${completedToolCalls} 次工具操作；这不是项目完成百分比。\n\n${taskList}`
-          : globalExecution
-            ? `当前这个工作区没有运行任务；工作台 Agent 正在「${globalExecution.workspaceTitle}」中执行：${globalExecution.activity}。\n\n当前工作区最近一次执行结果：${workspace.result?.summary || "尚未开始执行"}\n\n${taskList}`
-            : executionWasInterrupted
-              ? `上次执行已中断：${latestWorkspaceExecution?.message || latestWorkspaceExecution?.activity || "工作台 Agent 已停止运行"}。最近一次已保存结果：${workspace.result?.summary || "没有已保存的阶段成果"}\n\n${taskList}`
-              : `当前没有任务在后台运行。最近一次执行结果：${workspace.result?.summary || "尚未开始执行"}\n\n${taskList}`;
+        staticAnswer = progressAnswer;
       } else {
         staticAnswer = `我理解你想聊的是：「${question || "附件内容"}」。当前是本地演示模式，对话 Agent 只能依据当前工作区给出简单回复；切换到实时 AI 后，我可以理解开放式问题并决定是否交给工作台执行。`;
       }
@@ -505,6 +511,22 @@ export async function POST(request: NextRequest) {
         workspace,
         staticAnswer,
         staticHandoff,
+        runActivity: globalExecution?.activity || "",
+        completedToolCalls,
+        providerStatus: () => providerStatus,
+        startedAt,
+        signal: streamSignal,
+        abortUpstream: () => streamAbortController.abort(),
+      });
+    }
+    if (progressAnswer) {
+      return createDialogStreamResponse({
+        userId: user.id,
+        workspaceId,
+        userMessage,
+        attachments,
+        workspace,
+        staticAnswer: progressAnswer,
         runActivity: globalExecution?.activity || "",
         completedToolCalls,
         providerStatus: () => providerStatus,

@@ -327,6 +327,22 @@ Google Calendar 与 GitHub 集成继续按用户要求暂缓；本次未创建�
 - `npm run build`、`npm run lint`、`npx tsc --noEmit`、`npm run smoke:project`、`npm run check:client-secrets`、Prettier 和 `git diff --check` — 通过。
 - 校验器只验证传入的安排和资源数据，不推断未知人手/库存；未运行实时模型，Agent 对何时调用工具的遵循仍需真实场景复核。为避免额外 API 消耗，实时联网搜索、视觉理解和 UI 实时执行烟测未运行。未接入第三方服务。
 
+## 2026-11-13｜进度问答本地化与额度优化
+
+### 本次完成
+
+- 将纯进度查询改为服务端直接读取当前工作区的执行状态、任务清单、最近保存摘要与成果，不调用 DeepSeek；即使实时 API Key 暂不可用，仍可查看进度。
+- 进度答复区分当前工作区运行、其他工作区运行、上轮中断、上轮完成和尚未执行；工具操作次数明确不代表项目完成百分比。
+- “进度 + 继续修改/生成/补充”等组合要求不会被状态回答截断，仍交由对话 Agent 判断并转交工作台；带附件的消息继续走完整理解流程。
+- 将纯状态识别与答复逻辑提为可测试模块，并补充 README 和验收矩阵说明。
+
+### 验证与边界
+
+- npm run smoke — 通过，71 项；使用隔离 SQLite 和本地生产服务，未调用 DeepSeek。
+- npm run smoke:ui — 通过，140 项；覆盖进度问答、后台执行状态、交接及工作区切换，未调用实时模型。
+- npm run build、npm run lint、npx tsc --noEmit、npm run check:client-secrets、npm run smoke:project、npm run smoke:telemetry — 通过；遥测 5 个 span。
+- 另以纯本地断言验证 6 种状态问法和运行/跨工作区/中断答复。未对 DeepSeek 实时请求做压力或真实费用测量；Google Calendar、GitHub 等外部接入继续暂缓。
+
 ## 后续记录规则
 
 - 每次真实完成一个功能、修复或验收后，再新增对应记录并提交。

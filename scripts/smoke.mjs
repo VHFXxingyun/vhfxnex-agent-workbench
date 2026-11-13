@@ -49,6 +49,10 @@ import {
   timeRangesOverlap,
 } from "../src/lib/schedule-validation.mjs";
 import { validateExecutionFeasibility } from "../src/lib/feasibility-validation.mjs";
+import {
+  buildWorkspaceProgressAnswer,
+  isWorkspaceProgressQuestion,
+} from "../src/lib/workspace-progress-answer.mjs";
 import { availableCapacity, keepWithinLimit } from "../src/lib/workspace-capacity.mjs";
 import { createWorkspaceExecutionLeaseStore } from "../src/lib/workspace-execution-lease.mjs";
 import { resolveDatabasePath } from "../src/lib/database-path.mjs";
@@ -905,6 +909,57 @@ try {
       isSoftwareWorkspace: true,
     }),
     null,
+  );
+  assert.equal(isWorkspaceProgressQuestion("这个项目现在到哪里了？"), true);
+  assert.equal(isWorkspaceProgressQuestion("这个项目做到哪里了？"), true);
+  assert.equal(isWorkspaceProgressQuestion("Agent 还在后台运行吗？"), true);
+  assert.equal(isWorkspaceProgressQuestion("继续把剩下的代码补完"), false);
+  assert.equal(isWorkspaceProgressQuestion("这个项目到哪里了，继续把代码补完"), false);
+  assert.equal(isWorkspaceProgressQuestion("这个项目到哪里了，下一步怎么安排？"), false);
+  const activeProgressAnswer = buildWorkspaceProgressAnswer({
+    executionIsRunning: true,
+    executionWasInterrupted: false,
+    currentActivity: "正在生成可下载的代码项目",
+    completedToolCalls: 2,
+    tasks: [
+      { title: "需求确认", status: "done" },
+      { title: "生成项目源码", status: "pending" },
+    ],
+    artifacts: [{ title: "项目源码包" }],
+  });
+  assert.match(activeProgressAnswer, /正在后台运行/);
+  assert.match(activeProgressAnswer, /正在生成可下载的代码项目/);
+  assert.match(activeProgressAnswer, /已记录 2 次工具操作；这是活动记录，不代表项目完成百分比/);
+  assert.match(activeProgressAnswer, /1\/2 项完成，1 项待推进/);
+  assert.match(activeProgressAnswer, /项目源码包/);
+  const otherWorkspaceProgressAnswer = buildWorkspaceProgressAnswer({
+    executionIsRunning: false,
+    executionWasInterrupted: false,
+    globalExecution: { workspaceTitle: "旅行规划", activity: "正在整理交通方案" },
+    resultSummary: "已完成初步需求梳理。",
+    tasks: [],
+  });
+  assert.match(otherWorkspaceProgressAnswer, /Agent 正在「旅行规划」中运行：正在整理交通方案/);
+  const interruptedProgressAnswer = buildWorkspaceProgressAnswer({
+    executionIsRunning: false,
+    executionWasInterrupted: true,
+    latestExecutionMessage: "本轮连接已中断",
+    resultSummary: "已保存 3 个源码文件。",
+    tasks: [{ title: "补充运行说明", status: "pending" }],
+  });
+  assert.match(interruptedProgressAnswer, /当前没有任务在后台运行/);
+  assert.match(interruptedProgressAnswer, /本轮连接已中断/);
+  assert.match(interruptedProgressAnswer, /已保存 3 个源码文件/);
+  const idleProgressAnswer = buildWorkspaceProgressAnswer({
+    executionIsRunning: false,
+    executionWasInterrupted: false,
+    latestExecutionState: "completed",
+    tasks: [],
+  });
+  assert.match(idleProgressAnswer, /最近一次执行已完成/);
+  check(
+    true,
+    "Answer pure progress questions from workspace state without model calls and distinguish running, other-workspace, interrupted, and idle states",
   );
   assert.equal(
     classifyProjectIntent("把刚刚生成的网站主按钮改成紫色", {

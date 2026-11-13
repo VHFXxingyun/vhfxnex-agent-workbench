@@ -2288,7 +2288,7 @@ try {
     await page.getByRole("button", { name: "发送给 Agent", exact: true }).click();
     await page
       .locator(".workspace-chat-thread")
-      .getByText(/当前没有任务在后台运行。最近一次执行结果/)
+      .getByText(/当前没有任务在后台运行/)
       .waitFor({ state: "visible" });
     const resultAfterProgressQuestion = await page.evaluate(async (id) => {
       const response = await fetch(`/api/workspaces/${id}`);
@@ -4183,7 +4183,7 @@ try {
   try {
     await page
       .locator(".workspace-chat-thread")
-      .getByText(/目前记录到 3 次工具操作；这不是项目完成百分比/)
+      .getByText(/已记录 3 次工具操作；这是活动记录，不代表项目完成百分比/)
       .waitFor({ state: "visible" });
   } catch (error) {
     console.error(
