@@ -27,6 +27,7 @@ import {
 } from "../src/lib/project-path.mjs";
 import { classifyProjectIntent } from "../src/lib/project-intent.mjs";
 import { createCalendarExport, inspectCalendarSchedule } from "../src/lib/calendar-export.mjs";
+import { estimateDeepSeekFlashCost } from "../src/lib/deepseek-cost-estimate.mjs";
 import { getDeepSeekApiKey, parseEnvValue } from "../src/lib/deepseek-key.mjs";
 import { getDeepSeekCacheHitTokens, parseDeepSeekUsage } from "../src/lib/deepseek-usage.mjs";
 import { hashPassword, needsPasswordUpgrade, verifyPassword } from "../src/lib/password.mjs";
@@ -267,6 +268,32 @@ try {
     fs.rmSync(envTestDirectory, { recursive: true, force: true });
   }
   check(true, "Read the DeepSeek credential from .env.local and ignore inherited environment keys");
+
+  const flashEstimate = estimateDeepSeekFlashCost({
+    inputTokens: 1_000_000,
+    outputTokens: 100_000,
+    cacheMeasuredInputTokens: 600_000,
+    cacheMeasuredHitTokens: 300_000,
+  });
+  assert.equal(flashEstimate.lowerUsd, 0.1071);
+  assert.equal(flashEstimate.upperUsd, 0.3318);
+  assert.equal(flashEstimate.unmeasuredInputTokens, 400_000);
+  assert.deepEqual(flashEstimate.confirmedCacheSavingsUsd, {
+    lower: 0.0441,
+    upper: 0.0882,
+  });
+  assert.deepEqual(estimateDeepSeekFlashCost({}), {
+    lowerUsd: 0,
+    upperUsd: 0,
+    measuredInputTokens: 0,
+    measuredHitTokens: 0,
+    unmeasuredInputTokens: 0,
+    confirmedCacheSavingsUsd: { lower: 0, upper: 0 },
+  });
+  check(
+    true,
+    "Estimate current DeepSeek Flash token cost as a bounded USD range and count only confirmed cache savings",
+  );
 
   const parsedUsage = parseDeepSeekUsage(
     {
@@ -3286,6 +3313,10 @@ try {
   assert.ok(adminOverview.payload?.aiUsage?.cachedInputTokens >= 110);
   assert.ok(adminOverview.payload?.aiUsage?.cacheMeasuredInputTokens >= 302);
   assert.ok(adminOverview.payload?.aiUsage?.cacheMeasuredHitTokens >= 110);
+  assert.ok(adminOverview.payload?.aiUsage?.flashInputTokens >= 20);
+  assert.ok(adminOverview.payload?.aiUsage?.flashOutputTokens >= 2);
+  assert.ok(adminOverview.payload?.aiUsage?.flashCacheMeasuredInputTokens >= 20);
+  assert.ok(adminOverview.payload?.aiUsage?.flashCacheMeasuredHitTokens >= 0);
   assert.ok(adminOverview.payload?.aiUsage?.planningRequests >= 1);
   assert.ok(adminOverview.payload?.aiUsage?.workbenchRequests >= 1);
   assert.ok(adminOverview.payload?.aiUsage?.healthcheckRequests >= 1);

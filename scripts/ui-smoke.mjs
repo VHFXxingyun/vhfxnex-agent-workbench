@@ -559,7 +559,7 @@ try {
       usageWorkspaceTime,
     );
   const insertAdminUsage = database.prepare(
-    "INSERT INTO ai_usage (id, user_id, workspace_id, source, operation, model, input_tokens, cached_input_tokens, cache_measured_input_tokens, cache_measured_hit_tokens, output_tokens, total_tokens, latency_ms, created_at) VALUES (?, ?, ?, ?, ?, 'smoke-model', ?, ?, ?, ?, ?, ?, 100, ?)",
+    "INSERT INTO ai_usage (id, user_id, workspace_id, source, operation, model, input_tokens, cached_input_tokens, cache_measured_input_tokens, cache_measured_hit_tokens, output_tokens, total_tokens, latency_ms, created_at) VALUES (?, ?, ?, ?, ?, 'deepseek-flash', ?, ?, ?, ?, ?, ?, 100, ?)",
   );
   insertAdminUsage.run(
     crypto.randomUUID(),
@@ -647,9 +647,16 @@ try {
   const tokenBreakdown = page.locator(".admin-usage-stat small").nth(1);
   await tokenBreakdown.waitFor();
   assert.match(await tokenBreakdown.innerText(), /输入.*缓存命中.*输出/);
+  const costEstimate = page.locator(".admin-cost-estimate");
+  await costEstimate.waitFor({ state: "visible" });
+  assert.match(await costEstimate.innerText(), /当前价回算估值：\s*\$[\d,.]+\s*–\s*\$[\d,.]+/);
+  const cacheSavings = page.locator(".admin-usage-stat small").filter({
+    hasText: "已确认缓存命中可少付输入费约",
+  });
+  assert.equal(await cacheSavings.count(), 1);
   check(
     true,
-    "Show aggregate AI usage, latency, and a seven-day activity chart in the admin console",
+    "Show aggregate AI usage, a bounded current-price estimate, confirmed cache savings, latency, and a seven-day activity chart in the admin console",
   );
   await assertNamedButtons(page, "admin console");
   await assertNamedFields(page, "admin console");

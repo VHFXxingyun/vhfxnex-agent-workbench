@@ -343,6 +343,21 @@ Google Calendar 与 GitHub 集成继续按用户要求暂缓；本次未创建�
 - npm run build、npm run lint、npx tsc --noEmit、npm run check:client-secrets、npm run smoke:project、npm run smoke:telemetry — 通过；遥测 5 个 span。
 - 另以纯本地断言验证 6 种状态问法和运行/跨工作区/中断答复。未对 DeepSeek 实时请求做压力或真实费用测量；Google Calendar、GitHub 等外部接入继续暂缓。
 
+## 2026-11-13｜DeepSeek Flash 用量费用估值
+
+### 本次完成
+
+- 管理员用量页按模型名筛选 DeepSeek Flash 与当前仍按 Flash 计费的旧别名，再按当前公开单价估算美元费用范围；不把其他或未知模型的 Token 混进估值。
+- 下限假设缓存统计缺失的输入均命中缓存、请求均按非高峰计费；上限假设未测输入均未命中缓存、请求均按高峰计费。另单列供应商明确报告的缓存命中相对未命中的输入费节省，不臆测无缓存数据请求。
+- 显示文案说明该值使用当前价回算历史 Token，不等于人民币账单；不计历史价格差异、汇率、赠送额度及独立搜索/抓取收费，真实账单仍以 DeepSeek 平台为准。
+- 参考 [DeepSeek V4.1 Flash 官方价格](https://api-docs.deepseek.com/quick_start/pricing/) 和 [缓存命中规则](https://api-docs.deepseek.com/guides/kv_cache/)；截至本记录，Flash 每百万 Token 价格为缓存命中 $0.003/$0.006、未命中 $0.15/$0.30、输出 $0.60/$1.20（非高峰/高峰）。价格可能调整，估值常量需随官方价格更新。
+
+### 验证与边界
+
+- 纯本地 smoke 覆盖缓存数据已测/未测、命中节省与零用量边界；管理页 UI smoke 覆盖费率区间和命中节省说明。
+- 未调用 DeepSeek API；此功能只估算已记录模型 Token，不会读取 DeepSeek 账单或推断截图中的历史账单成因。
+- Google Calendar、GitHub 等外部授权能力按用户要求暂缓。
+
 ## 后续记录规则
 
 - 每次真实完成一个功能、修复或验收后，再新增对应记录并提交。

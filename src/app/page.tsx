@@ -61,6 +61,7 @@ import ConfirmDialog, { type ConfirmRequest } from "@/components/ConfirmDialog";
 import { clientSession } from "@/lib/client-session";
 import { isSupportedImageDataUrl, MAX_IMAGE_BYTES } from "@/lib/image";
 import { createCalendarExport, inspectCalendarSchedule } from "@/lib/calendar-export.mjs";
+import { estimateDeepSeekFlashCost } from "@/lib/deepseek-cost-estimate.mjs";
 import { DEFAULT_THINKING_MODE } from "@/lib/thinking-mode.mjs";
 import { createProjectZip } from "@/lib/project-zip";
 import { isSupportedChatTextFile, readChatDocument } from "@/lib/attachment-reader";
@@ -140,6 +141,10 @@ type AdminData = {
     cacheMeasuredHitTokens: number;
     outputTokens: number;
     totalTokens: number;
+    flashInputTokens: number;
+    flashOutputTokens: number;
+    flashCacheMeasuredInputTokens: number;
+    flashCacheMeasuredHitTokens: number;
     averageLatencyMs: number;
     planningRequests: number;
     dialogueRequests: number;
@@ -181,6 +186,15 @@ type AiHealth =
   | { state: "idle" | "checking"; message: string }
   | { state: "connected"; message: string; model: string; latencyMs: number }
   | { state: "error"; message: string };
+function formatEstimatedUsd(value: number) {
+  const digits = value < 0.01 ? 5 : value < 1 ? 4 : 2;
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  }).format(value);
+}
 const examples = [
   {
     tag: "活动策划",
@@ -3124,6 +3138,14 @@ export default function Home() {
   const calendarScheduleInfo = workspace?.result
     ? inspectCalendarSchedule(workspace.result.milestones)
     : null;
+  const adminAiCostEstimate = admin
+    ? estimateDeepSeekFlashCost({
+        inputTokens: admin.aiUsage.flashInputTokens,
+        outputTokens: admin.aiUsage.flashOutputTokens,
+        cacheMeasuredInputTokens: admin.aiUsage.flashCacheMeasuredInputTokens,
+        cacheMeasuredHitTokens: admin.aiUsage.flashCacheMeasuredHitTokens,
+      })
+    : null;
   const workspaceExecution =
     workspace && visibleExecution?.workspaceId === workspace.id ? visibleExecution : null;
   return (
@@ -4302,6 +4324,23 @@ export default function Home() {
                             admin.aiUsage.cacheMeasuredInputTokens.toLocaleString("zh-CN")
                           : "缓存命中率暂无接口统计样本"}
                       </small>
+                      {adminAiCostEstimate && (
+                        <small
+                          className="admin-cost-estimate"
+                          title="按 2026-11-13 的 DeepSeek V4.1 Flash 公开美元单价回算 DeepSeek Flash 及其当前计费别名的历史 Token；低值假设未测输入命中缓存且全部为非高峰计费，高值假设未测输入未命中且全部为高峰计费。其它或未知模型、历史单价、人民币换算、赠送额度及独立搜索/抓取费用不包含在内，实际账单请以 DeepSeek 平台为准。"
+                        >
+                          当前价回算估值：
+                          {formatEstimatedUsd(adminAiCostEstimate.lowerUsd)} –
+                          {formatEstimatedUsd(adminAiCostEstimate.upperUsd)}
+                        </small>
+                      )}
+                      {adminAiCostEstimate?.measuredHitTokens ? (
+                        <small title="只按供应商明确报告的缓存命中 Token 计算相对缓存未命中的输入节省；仅限 DeepSeek Flash 及其当前计费别名，并使用 2026-11-13 公开价，不推测没有缓存统计的请求。">
+                          已确认缓存命中可少付输入费约{" "}
+                          {formatEstimatedUsd(adminAiCostEstimate.confirmedCacheSavingsUsd.lower)} –
+                          {formatEstimatedUsd(adminAiCostEstimate.confirmedCacheSavingsUsd.upper)}
+                        </small>
+                      ) : null}
                       <WandSparkles size={22} />
                     </div>
                   </div>
