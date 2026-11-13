@@ -441,6 +441,22 @@ Google Calendar 与 GitHub 集成继续按用户要求暂缓；本次未创建�
 - `npm run lint -- --no-warn-ignored`、`npx tsc --noEmit`、`npm run build`、`npm run check:client-secrets` — 通过。
 - 全程未运行真实模型搜索、语音/视觉模型或代码复核；第三方 Calendar/GitHub 授权按用户要求暂缓。
 
+## 2026-11-13｜修复 SQLite 原生模块干净安装与 Docker 运行层
+
+### 本次完成
+
+- 将 `@next/env` 从开发依赖移到生产依赖；启动脚本、后台 worker 与服务端环境配置均在运行时导入它。
+- Docker 构建单独安装生产依赖，运行镜像不再复制 ESLint、Playwright、类型声明等开发包。
+- 将 `better-sqlite3` 固定到 `12.11.1`。此前 `13.0.3` 在干净 Windows `npm ci` 中触发隐式 `node-gyp rebuild`，因缺少 Visual Studio C++ 工具链而失败；12.11.1 的明确预编译安装路径在当前 Node 24 Windows 环境正常完成。相关上游问题：[WiseLibs/better-sqlite3 #1516](https://github.com/WiseLibs/better-sqlite3/issues/1516)。
+- 在隔离目录实际执行 `npm ci --omit=dev`：运行时模块可加载，SQLite 内存数据库可创建，开发工具未安装。
+
+### 验证与边界
+
+- `npm install --save-exact better-sqlite3@12.11.1` — 通过，安装了 Windows Node 24 预编译模块；内存 SQLite 写入烟测通过。
+- 隔离目录 `npm ci --omit=dev` — 通过，安装 188 个包并审计 189 个包；`@next/env`、Next、AI SDK 与 SQLite 均可加载，Playwright/ESLint 不存在。
+- `npm audit --audit-level=moderate` — 通过，0 个漏洞；`npm run lint`、`npx tsc --noEmit`、`npm run build`、`npm run check:client-secrets`、`npm run smoke:db-maintenance`、`npm run smoke:worker`、`npm run smoke:supervisor` — 通过。
+- 本机没有 Docker，因此 Dockerfile 的实际镜像构建仍待有 Docker 的环境验收；本地干净生产依赖安装已按运行层命令单独验证。
+
 ## 后续记录规则
 
 - 每次真实完成一个功能、修复或验收后，再新增对应记录并提交。

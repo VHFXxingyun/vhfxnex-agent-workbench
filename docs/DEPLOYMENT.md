@@ -44,6 +44,8 @@ docker compose logs -f app
 
 容器以 Node 镜像自带的非 root `node` 用户（UID 1000）运行。在 Linux 主机上请确认这个用户可以读取 `.env.local`；不要为了挂载而把密钥文件设为所有用户可读。
 
+Docker 构建将开发依赖留在构建阶段，运行镜像只安装生产依赖。`@next/env` 属于运行时依赖，因为应用启动脚本、后台 worker 与服务端环境配置都会使用它。
+
 健康检查访问 `/api/health`：它会验证 SQLite 可读，并确认后台 worker 在最近 20 秒内写入了心跳。`npm run dev` / `npm start` 由启动脚本同时监督网页和 worker；worker 意外退出时会关闭网页进程，使容器的重启策略可以恢复整组服务。Compose 的 healthcheck 负责报告异常状态，进程退出由启动脚本和容器重启策略处理。
 
 ## 更新、停止和数据保留
