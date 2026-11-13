@@ -77,7 +77,7 @@ const uiSmokeDownloadArtifacts = [
       {
         path: "index.html",
         content:
-          '<!doctype html><html><head><title>Local preview</title><link rel="stylesheet" href="./styles.css"><meta http-equiv="refresh" content="0;url=https://example.com"><script>document.body.dataset.scriptRan="yes";</script></head><body><main><h1>Local preview ready</h1><a href="https://example.com">External link</a></main></body></html>',
+          '<!doctype html><html><head><title>Local preview</title><link rel="stylesheet" href="./styles.css"><meta http-equiv="refresh" content="0;url=https://example.com"><script>document.body.dataset.scriptRan="yes";</script></head><body><main><h1>Local preview ready</h1><button id="inline-handler" onclick="document.body.dataset.inlineClick=\'ran\'">Local action</button><img id="external-probe" src="https://preview-probe.invalid/pixel.png" onerror="document.body.dataset.inlineError=\'ran\'"><a href="https://example.com">External link</a></main></body></html>',
       },
       {
         path: "styles.css",
@@ -148,6 +148,24 @@ const checkpoints = [];
 function check(condition, label) {
   assert.ok(condition, label);
   checkpoints.push(label);
+}
+
+function contrastRatio(foreground, background) {
+  const toLuminance = (color) => {
+    const channels = color
+      .match(/[\d.]+/g)
+      ?.slice(0, 3)
+      .map(Number);
+    assert.ok(channels?.length === 3, `Expected a computed RGB color, received ${color}`);
+    const linear = channels.map((channel) => {
+      const normalized = channel / 255;
+      return normalized <= 0.04045 ? normalized / 12.92 : ((normalized + 0.055) / 1.055) ** 2.4;
+    });
+    return linear[0] * 0.2126 + linear[1] * 0.7152 + linear[2] * 0.0722;
+  };
+  const first = toLuminance(foreground);
+  const second = toLuminance(background);
+  return (Math.max(first, second) + 0.05) / (Math.min(first, second) + 0.05);
 }
 
 async function closeConfirmation(page, label, confirmLabel, screenshotName) {
@@ -299,6 +317,13 @@ async function assertSmallPhoneAuth(page, screenName, screenshotName) {
 try {
   const health = await fetch(baseUrl);
   assert.equal(health.status, 200, "VHFXNEX preview must be available");
+  const serviceHealth = await fetch(new URL("/api/health", baseUrl));
+  assert.equal(
+    serviceHealth.status,
+    200,
+    "The application database and workbench worker must both report healthy",
+  );
+  check(true, "the application health endpoint verifies both SQLite and the background worker");
 
   browser = await chromium.launch({ headless: true, executablePath });
   const context = await browser.newContext({
@@ -515,11 +540,92 @@ try {
   });
   const promoteTestAdmin = database.prepare("UPDATE users SET role = 'admin' WHERE email = ?");
   assert.equal(promoteTestAdmin.run(adminEmail).changes, 1);
+  const adminUsageUser = database.prepare("SELECT id FROM users WHERE email = ?").get(adminEmail);
+  const usageWorkspaceId = crypto.randomUUID();
+  const usageWorkspaceTime = new Date().toISOString();
+  database
+    .prepare(
+      "INSERT INTO workspaces (id, user_id, title, category, body, created_at, updated_at) VALUES (?, ?, ?, ?, '{}', ?, ?)",
+    )
+    .run(
+      usageWorkspaceId,
+      adminUsageUser.id,
+      "用量拆分验证目标",
+      "测试",
+      usageWorkspaceTime,
+      usageWorkspaceTime,
+    );
+  const insertAdminUsage = database.prepare(
+    "INSERT INTO ai_usage (id, user_id, workspace_id, source, operation, model, input_tokens, cached_input_tokens, cache_measured_input_tokens, cache_measured_hit_tokens, output_tokens, total_tokens, latency_ms, created_at) VALUES (?, ?, ?, ?, ?, 'smoke-model', ?, ?, ?, ?, ?, ?, 100, ?)",
+  );
+  insertAdminUsage.run(
+    crypto.randomUUID(),
+    adminUsageUser.id,
+    usageWorkspaceId,
+    "planner",
+    "plan",
+    1000,
+    350,
+    1000,
+    350,
+    100,
+    1100,
+    new Date().toISOString(),
+  );
+  insertAdminUsage.run(
+    crypto.randomUUID(),
+    adminUsageUser.id,
+    usageWorkspaceId,
+    "dialogue",
+    "execute",
+    500,
+    0,
+    0,
+    0,
+    100,
+    600,
+    new Date().toISOString(),
+  );
+  insertAdminUsage.run(
+    crypto.randomUUID(),
+    adminUsageUser.id,
+    usageWorkspaceId,
+    "workbench",
+    "execute",
+    700,
+    0,
+    0,
+    0,
+    100,
+    800,
+    new Date().toISOString(),
+  );
+  insertAdminUsage.run(
+    crypto.randomUUID(),
+    adminUsageUser.id,
+    null,
+    "healthcheck",
+    "execute",
+    20,
+    0,
+    0,
+    0,
+    2,
+    22,
+    new Date().toISOString(),
+  );
   await page.reload({ waitUntil: "networkidle" });
   await page.getByRole("button", { name: "管理控制台" }).click();
   await page.getByRole("heading", { name: "管理控制台" }).waitFor();
   await page.getByText("累计 AI Token").waitFor();
   await page.getByRole("heading", { name: "AI 调用趋势" }).waitFor();
+  const workspaceUsage = page.locator(".admin-workspace-usage").filter({ hasText: "2,500 tokens" });
+  await workspaceUsage.waitFor({ state: "visible" });
+  assert.match(
+    await workspaceUsage.innerText(),
+    /规划\s+1,100\s+·\s+对话\s+600\s+·\s+工作台\s+800/,
+  );
+  check(true, "Admin workspace view breaks down planner, dialogue, and workbench token usage");
   const usageBreakdown = page.locator(".usage-breakdown");
   await usageBreakdown.waitFor({ state: "visible" });
   assert.match(
@@ -527,6 +633,13 @@ try {
     /输入缓存命中\s+[\d,]+\s+tokens/,
     "the seven-day usage panel should show its cached-input total",
   );
+  assert.match(
+    await usageBreakdown.innerText(),
+    /输入缓存命中率\s+[\d.]+%/,
+    "the seven-day usage panel should show the measured cache-hit rate",
+  );
+  assert.match(await usageBreakdown.innerText(), /1 次连接诊断/);
+  check(true, "Include minimal provider connectivity probes in aggregate model usage");
   await page.locator(".usage-chart").waitFor();
   const tokenBreakdown = page.locator(".admin-usage-stat small").nth(1);
   await tokenBreakdown.waitFor();
@@ -713,6 +826,42 @@ try {
       .waitFor();
     assert.equal(await page.locator(".image-chip").count(), 0);
     check(true, "Reject a mislabeled image in the upload control before it enters the request");
+    for (const video of [
+      { extension: "webm", mimeType: "video/webm" },
+      { extension: "mp4", mimeType: "video/mp4" },
+      { extension: "mov", mimeType: "video/quicktime" },
+    ]) {
+      const name = `local-video-smoke.${video.extension}`;
+      const fixture = fs.readFileSync(path.join(process.cwd(), "scripts/fixtures", name));
+      const videoChip = page.locator(".image-chip").filter({ hasText: name });
+      await page.locator(".plan-image-input").setInputFiles({
+        name,
+        mimeType: video.mimeType,
+        buffer: fixture,
+      });
+      try {
+        await videoChip.getByText(/关键帧/).waitFor({ timeout: 15_000 });
+      } catch (error) {
+        console.error(
+          "Local video extraction diagnostics:",
+          JSON.stringify({
+            name,
+            fixtureBytes: fixture.byteLength,
+            chips: await page.locator(".image-chip").allTextContents(),
+            alert: await page
+              .locator(".error-banner:visible")
+              .innerText()
+              .catch(() => ""),
+          }),
+        );
+        throw error;
+      }
+      await videoChip.getByRole("button", { name: "移除图片" }).click();
+    }
+    check(
+      true,
+      "Extract WebM, MP4, and MOV contact sheets locally before the Agent receives any image frames",
+    );
     if (liveUiMode) {
       await page.locator(".plan-image-input").setInputFiles({
         name: "red-swatch.png",
@@ -827,12 +976,14 @@ try {
 
   let liveImagePayloadMatches = false;
   let livePlanningAttachmentMatches = false;
+  let planningThinkingMode;
   let planningRequestCount = 0;
   let plannedWorkspaceId;
   await page.route("**/api/plan", async (route) => {
     planningRequestCount += 1;
     const payload = route.request().postDataJSON();
     plannedWorkspaceId = payload.workspaceId;
+    planningThinkingMode = payload.thinkingMode;
     if (liveUiMode) {
       liveImagePayloadMatches =
         payload.image === `data:image/png;base64,${redSwatchPng.toString("base64")}`;
@@ -861,6 +1012,12 @@ try {
   await page.getByRole("button", { name: "开始探索" }).click();
   await page.locator(".workspace-chat").waitFor({ timeout: liveUiMode ? 210_000 : 8_000 });
   await page.locator(".workspace-chat .chat-route-picker").waitFor({ state: "visible" });
+  assert.equal(
+    planningThinkingMode,
+    "deep",
+    "new goals must preserve the default deep thinking mode",
+  );
+  check(true, "Send the default deep thinking mode with the initial planning request");
   if (liveUiMode) {
     assert.match(plannedWorkspaceId || "", /^[0-9a-f-]{36}$/i);
     const persistedLivePlan = await page.evaluate(async (id) => {
@@ -1678,7 +1835,32 @@ try {
   check(true, "Auto-collapse the navigation in workspaces and remember the home-page preference");
 
   const actionScrollport = page.locator(".workspace-side-panel .execution");
-  await actionScrollport.waitFor({ state: "visible" });
+  try {
+    await actionScrollport.waitFor({ state: "visible", timeout: 10_000 });
+  } catch {
+    const diagnostics = await page.evaluate(async (id) => {
+      const response = await fetch("/api/workspaces/" + id);
+      const payload = await response.json();
+      const panel = document.querySelector(".workspace-side-panel");
+      const execution = document.querySelector(".workspace-side-panel .execution");
+      return {
+        url: location.href,
+        viewport: [innerWidth, innerHeight],
+        workspaceVisible: Boolean(document.querySelector(".workspace")),
+        flowVisible: Boolean(
+          document.querySelector(".workspace-flow-panel")?.getClientRects().length,
+        ),
+        panelText: panel?.innerText.slice(0, 500) || "",
+        executionVisible: Boolean(execution?.getClientRects().length),
+        savedResult: Boolean(payload.workspace?.result),
+        savedTasks: payload.workspace?.result?.tasks?.length || 0,
+      };
+    }, plannedWorkspaceId);
+    throw new Error(
+      "The action plan disappeared after navigation preference checks: " +
+        JSON.stringify(diagnostics),
+    );
+  }
   await actionScrollport.evaluate((element) => {
     element.scrollTop = 0;
   });
@@ -2346,6 +2528,65 @@ try {
       ? "Execute the live Agent workflow and persist a completed task"
       : "Execute the demo workflow and persist a completed task",
   );
+  await page.getByRole("button", { name: "共享工作区", exact: true }).click();
+  const shareDialog = page.getByRole("dialog", { name: "邀请成员协作" });
+  await shareDialog.waitFor({ state: "visible" });
+  await page.waitForFunction(
+    (dialog) => getComputedStyle(dialog).opacity === "1",
+    await shareDialog.elementHandle(),
+  );
+  await assertAccessible(page, "workspace sharing dialog");
+  await shareDialog.getByLabel("成员权限").selectOption("viewer");
+  await shareDialog.getByRole("button", { name: "生成邀请链接" }).click();
+  const generatedShareInput = shareDialog.locator("#generated-share-url");
+  await generatedShareInput.waitFor({ state: "visible" });
+  const generatedShareUrl = await generatedShareInput.inputValue();
+  assert.match(generatedShareUrl, /\/invite\/[A-Za-z0-9_-]+$/);
+  await page.screenshot({ path: path.join(screenshots, "workspace-sharing-dialog.png") });
+  const inviteContext = await browser.newContext({
+    viewport: { width: 960, height: 760 },
+    reducedMotion: "reduce",
+    extraHTTPHeaders: { "X-Forwarded-For": smokeClientAddress },
+  });
+  const invitePage = await inviteContext.newPage();
+  const inviteErrors = [];
+  invitePage.on("pageerror", (error) => inviteErrors.push(error));
+  await invitePage.goto(generatedShareUrl, { waitUntil: "networkidle" });
+  await invitePage.getByRole("heading", { name: "加入一个协作工作区" }).waitFor();
+  await assertAccessible(invitePage, "workspace invite page");
+  await invitePage.getByRole("button", { name: "接受邀请" }).click();
+  await invitePage.getByRole("alert").getByText("请登录后再接受工作区邀请。").waitFor();
+  await invitePage.getByRole("link", { name: "在新标签页登录或注册" }).waitFor();
+  assert.deepEqual(inviteErrors, []);
+  await invitePage.screenshot({ path: path.join(screenshots, "workspace-invite-page.png") });
+  await inviteContext.close();
+  const revokeShareButton = page.locator('button[aria-label="撤销邀请链接"]');
+  try {
+    await revokeShareButton.waitFor({ state: "visible", timeout: 8_000 });
+  } catch {
+    const shareDiagnostics = await page.locator('[role="dialog"]').evaluateAll((dialogs) =>
+      dialogs.map((dialog) => ({
+        visible: Boolean(dialog.getClientRects().length),
+        buttons: [...dialog.querySelectorAll("button")].map((button) => ({
+          label: button.getAttribute("aria-label") || "",
+          text: button.innerText,
+        })),
+        linkRows: dialog.querySelectorAll(".share-list-row").length,
+      })),
+    );
+    throw new Error(
+      "Invite was created but its revoke control was not available: " +
+        JSON.stringify(shareDiagnostics),
+    );
+  }
+  await revokeShareButton.click();
+  await shareDialog.getByText("暂时没有有效邀请链接。").waitFor();
+  await shareDialog.getByRole("button", { name: "关闭共享设置" }).click();
+  await shareDialog.waitFor({ state: "hidden" });
+  check(
+    true,
+    "Create and revoke a read-only invite and keep the invite page accessible and private",
+  );
   const persistedExecutionProgress = await page.evaluate(async (id) => {
     const response = await fetch(`/api/workspaces/${id}`);
     const payload = await response.json();
@@ -2509,6 +2750,43 @@ try {
   assert.ok(await documentPreview.locator("blockquote").count());
   assert.ok(await documentPreview.locator("pre code").count());
   assert.ok(await documentPreview.locator("a[href^='https://']").count());
+  const markdownColors = await documentPreview.evaluate((element) => {
+    const colorOf = (selector) => {
+      const node = element.querySelector(selector);
+      return node ? getComputedStyle(node).color : "";
+    };
+    const backgroundOf = (selector, fallback) => {
+      const node = element.querySelector(selector);
+      return node ? getComputedStyle(node).backgroundColor : fallback;
+    };
+    const articleBackground = getComputedStyle(element).backgroundColor;
+    const codeBlock = element.querySelector("pre code");
+    return {
+      articleBackground,
+      heading: colorOf("h1, h2, h3"),
+      paragraph: colorOf("p"),
+      link: colorOf("a"),
+      inlineCode: colorOf("p code"),
+      inlineCodeBackground: backgroundOf("p code", articleBackground),
+      codeBlock: codeBlock ? getComputedStyle(codeBlock).color : "",
+      codeBlockBackground: codeBlock
+        ? getComputedStyle(codeBlock.parentElement).backgroundColor
+        : articleBackground,
+    };
+  });
+  for (const [label, foreground, background] of [
+    ["heading", markdownColors.heading, markdownColors.articleBackground],
+    ["paragraph", markdownColors.paragraph, markdownColors.articleBackground],
+    ["link", markdownColors.link, markdownColors.articleBackground],
+    ["inline code", markdownColors.inlineCode, markdownColors.inlineCodeBackground],
+    ["code block", markdownColors.codeBlock, markdownColors.codeBlockBackground],
+  ]) {
+    assert.ok(
+      contrastRatio(foreground, background) >= 4.5,
+      `Markdown ${label} contrast is below WCAG AA: ${foreground} on ${background}`,
+    );
+  }
+  check(true, "Keep Markdown headings, text, links, and code readable on their preview surfaces");
   const previewScroll = await documentPreview.evaluate((element) => {
     const canScroll = element.scrollHeight > element.clientHeight;
     element.scrollTop = element.scrollHeight;
@@ -2621,6 +2899,7 @@ try {
       scriptCount: document.scripts.length,
       refreshMeta: document.querySelector('meta[http-equiv="refresh"]') !== null,
       externalLinkHasHref: document.querySelector("a")?.hasAttribute("href") ?? false,
+      probeHasNoLoadedImage: document.querySelector("#external-probe")?.naturalWidth === 0,
       headingColor: getComputedStyle(document.querySelector("h1")).color,
       policy: document
         .querySelector('meta[http-equiv="Content-Security-Policy"]')
@@ -2629,9 +2908,30 @@ try {
     assert.equal(safePreviewState.scriptCount, 0);
     assert.equal(safePreviewState.refreshMeta, false);
     assert.equal(safePreviewState.externalLinkHasHref, false);
+    assert.equal(safePreviewState.probeHasNoLoadedImage, true);
     assert.equal(safePreviewState.headingColor, "rgb(89, 57, 135)");
     assert.match(safePreviewState.policy || "", /connect-src 'none'/);
     assert.match(safePreviewState.policy || "", /default-src 'none'/);
+    assert.match(safePreviewState.policy || "", /script-src 'none'/);
+    assert.match(safePreviewState.policy || "", /script-src-attr 'none'/);
+    await preview.getByRole("button", { name: "Local action" }).click();
+    await preview.locator("#external-probe").evaluate(
+      (image) =>
+        new Promise((resolve) => {
+          if (image.complete) {
+            resolve();
+            return;
+          }
+          image.addEventListener("load", resolve, { once: true });
+          image.addEventListener("error", resolve, { once: true });
+        }),
+    );
+    const previewHandlerState = await preview.locator("body").evaluate((body) => ({
+      inlineClickRan: body.dataset.inlineClick === "ran",
+      inlineErrorRan: body.dataset.inlineError === "ran",
+    }));
+    assert.deepEqual(previewHandlerState, { inlineClickRan: false, inlineErrorRan: false });
+    check(true, "Block inline preview handlers and remote image loads inside the static sandbox");
     await page.waitForFunction(() => {
       const modal = document.querySelector(".artifact-modal");
       return modal !== null && Number(getComputedStyle(modal).opacity) >= 0.99;
@@ -3801,6 +4101,11 @@ try {
     const payload = await response.json();
     return payload.handoffs?.length === 1;
   });
+  // This browser smoke intentionally runs without the server-side worker. Simulate its
+  // retry deadline expiring so a page reload can recover the durable handoff immediately.
+  database
+    .prepare("UPDATE workbench_handoffs SET next_attempt_at = NULL WHERE workspace_id = ?")
+    .run(attachmentFlowWorkspaceId);
   assert.equal(
     capturedAttachmentChatRequest?.question,
     "请根据附件正文继续完成当前验证，并确认正文已进入执行任务。",
@@ -4020,6 +4325,86 @@ try {
     true,
     "Transmit extracted Markdown, .env.example, PDF, XLSX, and PPTX bodies to the Agent request without real model calls",
   );
+
+  await page.getByRole("button", { name: /我的目标/ }).click();
+  await page.locator(".history-grid").waitFor({ state: "visible" });
+  const speechTestWorkspace = page.locator(".history-grid article .history-card-open").first();
+  assert.ok(
+    (await speechTestWorkspace.count()) > 0,
+    "a saved workspace should be available for voice input checks",
+  );
+  await speechTestWorkspace.click();
+  const speechButton = page.getByRole("button", { name: "语音输入", exact: true });
+  await speechButton.waitFor({ state: "visible" });
+  await page.evaluate(() => {
+    Object.defineProperty(window, "SpeechRecognition", {
+      configurable: true,
+      value: undefined,
+    });
+    Object.defineProperty(window, "webkitSpeechRecognition", {
+      configurable: true,
+      value: undefined,
+    });
+  });
+  await speechButton.click();
+  await page.getByText("当前浏览器不支持语音识别，请使用文字输入。", { exact: true }).waitFor();
+  assert.equal(await speechButton.getAttribute("aria-pressed"), "false");
+  await page.evaluate(() => {
+    class DeniedSpeechRecognition {
+      onerror = null;
+      onend = null;
+      start() {
+        window.setTimeout(() => this.onerror?.({ error: "not-allowed" }), 0);
+      }
+      stop() {
+        this.onend?.();
+      }
+    }
+    Object.defineProperty(window, "SpeechRecognition", {
+      configurable: true,
+      value: DeniedSpeechRecognition,
+    });
+  });
+  await speechButton.click();
+  await page
+    .getByText("麦克风权限未开启；请在浏览器地址栏允许麦克风后重试。", { exact: true })
+    .waitFor();
+  assert.equal(await speechButton.getAttribute("aria-pressed"), "false");
+  await page.evaluate(() => {
+    class WorkingSpeechRecognition {
+      onresult = null;
+      onend = null;
+      start() {
+        window.setTimeout(
+          () =>
+            this.onresult?.({
+              resultIndex: 0,
+              results: [{ isFinal: true, 0: { transcript: "语音输入回归通过" } }],
+            }),
+          0,
+        );
+      }
+      stop() {
+        this.onend?.();
+      }
+    }
+    Object.defineProperty(window, "SpeechRecognition", {
+      configurable: true,
+      value: WorkingSpeechRecognition,
+    });
+  });
+  await speechButton.click();
+  const speechInput = page.locator("#workspace-chat-input");
+  await page.waitForFunction(() =>
+    document.querySelector("#workspace-chat-input")?.value.includes("语音输入回归通过"),
+  );
+  assert.equal(await page.locator(".chat-voice-button").getAttribute("aria-pressed"), "true");
+  await page.getByRole("button", { name: "停止语音", exact: true }).click();
+  await page.waitForFunction(
+    () => document.querySelector('.chat-voice-button[aria-pressed="false"]') !== null,
+  );
+  assert.match(await speechInput.inputValue(), /语音输入回归通过/);
+  check(true, "Handle speech recognition success, permission denial, and unsupported browsers");
 
   mobileAuthContext = await browser.newContext({
     viewport: { width: 390, height: 844 },

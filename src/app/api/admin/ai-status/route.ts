@@ -1,9 +1,15 @@
 import { NextResponse } from "next/server";
 import { getUser } from "@/lib/auth";
 import { sameOriginError } from "@/lib/request";
-import { DEEPSEEK_AUTH_ERROR, DEEPSEEK_MODEL, requestDeepSeek } from "@/lib/deepseek";
+import {
+  DEEPSEEK_AUTH_ERROR,
+  DEEPSEEK_MODEL,
+  readDeepSeekUsage,
+  requestDeepSeek,
+} from "@/lib/deepseek";
 import { getDeepSeekApiKey } from "@/lib/deepseek-key.mjs";
 import { isAbortError } from "@/lib/errors";
+import { recordAiUsage } from "@/lib/ai-usage";
 
 export const runtime = "nodejs";
 
@@ -44,6 +50,8 @@ export async function POST(request: Request) {
       );
 
     const payload = await response.json();
+    const usage = readDeepSeekUsage(payload, performance.now() - started);
+    recordAiUsage(user.id, "execute", usage, { source: "healthcheck" });
     const content = payload?.choices?.[0]?.message?.content;
     if (typeof content !== "string" || !content.trim())
       return NextResponse.json({ error: "DeepSeek 已响应，但没有返回可读内容。" }, { status: 502 });

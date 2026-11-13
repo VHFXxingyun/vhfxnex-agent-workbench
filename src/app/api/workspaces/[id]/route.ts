@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import database from "@/lib/db";
 import { getUser } from "@/lib/auth";
 import { sameOriginError } from "@/lib/request";
-import { getWorkspaceForUser } from "@/lib/workspace-store";
+import { getWorkspaceAccessRoleForUser, getWorkspaceForUser } from "@/lib/workspace-store";
 
 export const runtime = "nodejs";
 
@@ -12,7 +12,10 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
   const { id } = await context.params;
   const workspace = getWorkspaceForUser(user.id, id);
   if (!workspace) return NextResponse.json({ error: "工作空间不存在" }, { status: 404 });
-  return NextResponse.json({ workspace }, { headers: { "Cache-Control": "no-store, private" } });
+  return NextResponse.json(
+    { workspace, accessRole: getWorkspaceAccessRoleForUser(user.id, id) },
+    { headers: { "Cache-Control": "no-store, private" } },
+  );
 }
 
 export async function DELETE(request: Request, context: { params: Promise<{ id: string }> }) {

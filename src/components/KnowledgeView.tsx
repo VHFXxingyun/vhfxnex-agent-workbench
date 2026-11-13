@@ -296,6 +296,9 @@ export default function KnowledgeView({ userId }: { userId: string }) {
           保存项目规则、活动资料或个人偏好。规划目标时会检索相关片段，并展示引用来源。实时 AI
           模式会把检索片段发送给 DeepSeek。
         </p>
+        <p className="knowledge-model-note">
+          中文语义索引在本机计算和保存；首次语义检索会下载约 24 MB 模型。模型无法加载时会自动回退关键词检索。
+        </p>
       </div>
       <div className="knowledge-layout">
         <form className="knowledge-compose" onSubmit={add}>

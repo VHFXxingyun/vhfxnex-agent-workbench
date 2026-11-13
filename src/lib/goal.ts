@@ -86,6 +86,10 @@ export type AiRunUsage = {
   model: string;
   inputTokens: number;
   cachedInputTokens?: number;
+  /** Input tokens from requests where the provider returned cache statistics. */
+  cacheMeasuredInputTokens?: number;
+  /** Cache-hit tokens from the same measured requests. */
+  cacheMeasuredHitTokens?: number;
   outputTokens: number;
   totalTokens: number;
   latencyMs: number;
@@ -103,13 +107,28 @@ export function combineAiUsage(
     ...(current.cachedInputTokens !== undefined || incoming.cachedInputTokens !== undefined
       ? { cachedInputTokens: (current.cachedInputTokens || 0) + (incoming.cachedInputTokens || 0) }
       : {}),
+    ...(current.cacheMeasuredInputTokens !== undefined ||
+    incoming.cacheMeasuredInputTokens !== undefined
+      ? {
+          cacheMeasuredInputTokens:
+            (current.cacheMeasuredInputTokens || 0) + (incoming.cacheMeasuredInputTokens || 0),
+          cacheMeasuredHitTokens:
+            (current.cacheMeasuredHitTokens || 0) + (incoming.cacheMeasuredHitTokens || 0),
+        }
+      : {}),
     outputTokens: current.outputTokens + incoming.outputTokens,
     totalTokens: current.totalTokens + incoming.totalTokens,
     latencyMs: current.latencyMs + incoming.latencyMs,
     requests: current.requests + incoming.requests,
   };
 }
-export type KnowledgeSource = { id: string; title: string; excerpt: string; score: number };
+export type KnowledgeSource = {
+  id: string;
+  title: string;
+  excerpt: string;
+  score: number;
+  matchType?: "semantic" | "keyword" | "hybrid";
+};
 export type AgentRole = "planner" | "dialogue" | "workbench";
 export type ConversationMessage = {
   id: string;

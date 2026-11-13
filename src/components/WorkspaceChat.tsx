@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { motion, useReducedMotion } from "motion/react";
 import {
   ArrowDownToLine,
@@ -12,6 +12,8 @@ import {
   FileText,
   FileImage,
   LoaderCircle,
+  Mic,
+  MicOff,
   Plus,
   X,
   Sparkles,
@@ -25,6 +27,26 @@ import type {
   Workspace,
 } from "@/lib/goal";
 import { agentToolCatalog } from "@/lib/agent-tool-catalog.mjs";
+
+type SpeechRecognitionResult = ArrayLike<{ isFinal: boolean; 0: { transcript: string } }>;
+type SpeechRecognitionEventLike = { resultIndex: number; results: SpeechRecognitionResult };
+type SpeechRecognitionLike = {
+  lang: string;
+  continuous: boolean;
+  interimResults: boolean;
+  onresult: ((event: SpeechRecognitionEventLike) => void) | null;
+  onerror: ((event: { error: string }) => void) | null;
+  onend: (() => void) | null;
+  start: () => void;
+  stop: () => void;
+};
+type SpeechRecognitionConstructor = new () => SpeechRecognitionLike;
+declare global {
+  interface Window {
+    SpeechRecognition?: SpeechRecognitionConstructor;
+    webkitSpeechRecognition?: SpeechRecognitionConstructor;
+  }
+}
 
 export default function WorkspaceChat({
   workspace,
@@ -51,6 +73,7 @@ export default function WorkspaceChat({
   thinkingMode,
   onThinkingModeChange,
   blockedByOtherExecution,
+  readOnly,
 }: {
   workspace: Workspace;
   route: RouteOption;
@@ -76,8 +99,16 @@ export default function WorkspaceChat({
   thinkingMode: "fast" | "deep";
   onThinkingModeChange: (mode: "fast" | "deep") => void;
   blockedByOtherExecution: { title: string; activity: string } | null;
+  readOnly: boolean;
 }) {
   const threadRef = useRef<HTMLDivElement>(null);
+  const speechRecognitionRef = useRef<SpeechRecognitionLike | null>(null);
+  const draftRef = useRef(draft);
+  const [speechListening, setSpeechListening] = useState(false);
+  const [speechNotice, setSpeechNotice] = useState("");
+  useEffect(() => {
+    draftRef.current = draft;
+  }, [draft]);
   const followLatestRef = useRef(true);
   const wasBusyRef = useRef(busy);
   const prefersReducedMotion = useReducedMotion();
@@ -134,7 +165,7 @@ export default function WorkspaceChat({
   const selectedRoute =
     workspace.plan.routes.find((item) => item.id === workspace.selectedRouteId) || route;
   const anAgentIsWorking = busy || questionBusy || Boolean(blockedByOtherExecution);
-  const interactionLocked = questionBusy;
+  const interactionLocked = questionBusy || readOnly;
   const shouldShowPendingExecution =
     busy &&
     pendingExecutionContent &&
@@ -142,10 +173,70 @@ export default function WorkspaceChat({
       (message) => message.role === "user" && message.content === pendingExecutionContent,
     );
   const submitMessage = () => {
-    if (questionBusy) return;
+    if (questionBusy || readOnly) return;
     followLatestRef.current = true;
     if (!draft.trim() && attachments.length === 0 && !workspace.result) onSend();
     else onAsk();
+  };
+
+  useEffect(
+    () => () => {
+      speechRecognitionRef.current?.stop();
+      speechRecognitionRef.current = null;
+    },
+    [],
+  );
+
+  const toggleSpeechInput = () => {
+    if (speechListening) {
+      speechRecognitionRef.current?.stop();
+      return;
+    }
+    const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!Recognition) {
+      setSpeechNotice("当前浏览器不支持语音识别，请使用文字输入。" );
+      return;
+    }
+    setSpeechNotice("语音识别由浏览器提供；部分浏览器可能会将音频发送给其语音服务商。" );
+    const recognition = new Recognition();
+    recognition.lang = "zh-CN";
+    recognition.continuous = true;
+    recognition.interimResults = false;
+    recognition.onresult = (event) => {
+      const transcript = Array.from(event.results)
+        .slice(event.resultIndex)
+        .filter((result) => result.isFinal)
+        .map((result) => result[0].transcript.trim())
+        .filter(Boolean)
+        .join("。 ");
+      if (transcript) {
+        const current = draftRef.current.trimEnd();
+        const next = `${current}${current ? " " : ""}${transcript}`;
+        draftRef.current = next;
+        onDraftChange(next);
+      }
+    };
+    recognition.onerror = (event) => {
+      setSpeechListening(false);
+      setSpeechNotice(
+        event.error === "not-allowed"
+          ? "麦克风权限未开启；请在浏览器地址栏允许麦克风后重试。"
+          : "语音识别中断，可以重试或改用文字输入。",
+      );
+    };
+    recognition.onend = () => {
+      setSpeechListening(false);
+      speechRecognitionRef.current = null;
+    };
+    speechRecognitionRef.current = recognition;
+    try {
+      recognition.start();
+      setSpeechListening(true);
+    } catch {
+      speechRecognitionRef.current = null;
+      setSpeechListening(false);
+      setSpeechNotice("无法启动语音识别，请检查麦克风权限后重试。" );
+    }
   };
 
   useEffect(() => {
@@ -548,11 +639,14 @@ export default function WorkspaceChat({
         <textarea
           id="workspace-chat-input"
           value={draft}
+          disabled={readOnly}
           onChange={(event) => onDraftChange(event.target.value)}
           maxLength={busy ? 1600 : 4000}
           rows={3}
           placeholder={
-            busy
+            readOnly
+              ? "这是只读共享工作区。你可以查看项目内容与成果，但不能发送消息或修改任务。"
+              : busy
               ? "随时问进度或继续安排工作；新的执行要求会自动排队…"
               : workspace.result
                 ? "和对话 Agent 继续交流；明确的修改或制作要求会自动交给工作台执行…"
@@ -566,14 +660,28 @@ export default function WorkspaceChat({
           }}
         />
         <div className="chat-composer-tools">
-          <label className="chat-attach-button" title="添加文件或图片">
+          <button
+            className={`chat-attach-button chat-voice-button${speechListening ? " is-listening" : ""}`}
+            type="button"
+            onClick={toggleSpeechInput}
+            disabled={interactionLocked}
+            title="语音输入由浏览器识别；音频是否发送至浏览器厂商由浏览器决定"
+            aria-pressed={speechListening}
+          >
+            {speechListening ? <MicOff size={17} /> : <Mic size={17} />}
+            <span>{speechListening ? "停止语音" : "语音输入"}</span>
+          </button>
+          <label
+            className="chat-attach-button"
+            title="视频会在本机抽取最多 6 帧画面；不会发送视频音轨。"
+          >
             <Plus size={17} />
             <span>添加文件</span>
             <input
               type="file"
               multiple
               disabled={interactionLocked}
-              accept="image/jpeg,image/png,image/gif,image/webp,.txt,.md,.markdown,.csv,.tsv,.json,.xml,.html,.htm,.css,.js,.jsx,.ts,.tsx,.mjs,.py,.java,.go,.rs,.sql,.yaml,.yml,.toml,.sh,.log,.docx,.xlsx,.pptx,.pdf"
+              accept="image/jpeg,image/png,image/gif,image/webp,video/mp4,video/webm,video/quicktime,.mp4,.webm,.mov,.txt,.md,.markdown,.csv,.tsv,.json,.xml,.html,.htm,.css,.js,.jsx,.ts,.tsx,.mjs,.py,.java,.go,.rs,.sql,.yaml,.yml,.toml,.sh,.log,.docx,.xlsx,.pptx,.pdf"
               onChange={(event) => {
                 const files = Array.from(event.currentTarget.files || []);
                 if (files.length) onAttachFiles(files);
@@ -611,7 +719,7 @@ export default function WorkspaceChat({
               </p>
             </div>
           </details>
-          <span>支持图片、DOCX、XLSX、PPTX、PDF、Markdown 与代码文件</span>
+          <span>视频仅发送最多 6 帧画面；语音识别由浏览器提供。</span>
           <label className="chat-thinking-control">
             <Sparkles size={14} />
             <span>思考强度</span>
@@ -629,6 +737,7 @@ export default function WorkspaceChat({
           </label>
           {attachments.length > 0 && <small>{attachments.length}/6 个附件</small>}
         </div>
+        {speechNotice && <small className="chat-speech-notice">{speechNotice}</small>}
         {attachments.length > 0 && (
           <div className="chat-attachment-list" aria-label="待发送附件">
             {attachments.map((attachment) => (
@@ -649,13 +758,15 @@ export default function WorkspaceChat({
         )}
         <div className="workspace-chat-composer-footer">
           <span>
-            {queuedHandoffCount > 0
+            {readOnly
+              ? "共享权限：只读"
+              : queuedHandoffCount > 0
               ? `${queuedHandoffCount} 项工作已排队，当前轮完成后自动接手。`
               : busy
                 ? "对话 Agent 会回答问题；新的工作要求会在当前轮结束后自动执行。"
                 : "对话 Agent 负责交流与判断；需要实际产出时会交给工作台 Agent 连续完成。"}
           </span>
-          {busy ? (
+          {busy && !readOnly ? (
             <div className="chat-execution-actions">
               <button
                 className="chat-send-button chat-ask-button"
@@ -676,6 +787,10 @@ export default function WorkspaceChat({
                 <CircleStop size={15} /> 停止任务
               </button>
             </div>
+          ) : readOnly ? (
+            <button className="chat-send-button" type="button" disabled>
+              只读共享
+            </button>
           ) : questionBusy ? (
             <button className="chat-send-button" type="button" disabled>
               <LoaderCircle size={15} className="chat-spinner" /> 交流中…

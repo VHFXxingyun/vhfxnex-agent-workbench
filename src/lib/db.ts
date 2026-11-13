@@ -2,10 +2,12 @@ import "server-only";
 import Database from "better-sqlite3";
 import path from "node:path";
 import fs from "node:fs";
+import { resolveDatabasePath } from "./database-path.mjs";
 
-const folder = path.join(process.cwd(), "data");
+const databasePath = resolveDatabasePath();
+const folder = path.dirname(databasePath);
 if (!fs.existsSync(folder)) fs.mkdirSync(folder, { recursive: true });
-const database = new Database(path.join(folder, "goalflow.sqlite"), { timeout: 10_000 });
+const database = new Database(databasePath, { timeout: 10_000 });
 database.pragma("foreign_keys = ON");
 if (process.env.NEXT_PHASE !== "phase-production-build") {
   database.pragma("busy_timeout = 10000");
@@ -32,6 +34,34 @@ if (process.env.NEXT_PHASE !== "phase-production-build") {
     FOREIGN KEY (user_id) REFERENCES users(id)
   );
   CREATE INDEX IF NOT EXISTS idx_workspaces_user ON workspaces(user_id, updated_at DESC);
+  CREATE TABLE IF NOT EXISTS workspace_members (
+    workspace_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    role TEXT NOT NULL CHECK (role IN ('editor', 'viewer')),
+    added_by TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (workspace_id, user_id),
+    FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (added_by) REFERENCES users(id) ON DELETE CASCADE
+  );
+  CREATE INDEX IF NOT EXISTS idx_workspace_members_user ON workspace_members(user_id, created_at DESC);
+  CREATE TABLE IF NOT EXISTS workspace_share_links (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL,
+    token_hash TEXT NOT NULL UNIQUE,
+    role TEXT NOT NULL CHECK (role IN ('editor', 'viewer')),
+    created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    revoked_at TEXT,
+    max_uses INTEGER NOT NULL DEFAULT 10,
+    use_count INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+    FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE
+  );
+  CREATE INDEX IF NOT EXISTS idx_workspace_share_links_workspace
+    ON workspace_share_links(workspace_id, created_at DESC);
   CREATE TABLE IF NOT EXISTS workspace_execution_locks (
     workspace_id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL,
@@ -72,6 +102,9 @@ if (process.env.NEXT_PHASE !== "phase-production-build") {
     status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'completed', 'cancelled')),
     claim_token TEXT,
     claim_expires_at INTEGER,
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at TEXT,
+    last_error TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
@@ -81,6 +114,13 @@ if (process.env.NEXT_PHASE !== "phase-production-build") {
     ON workbench_handoffs(user_id, user_message_id);
   CREATE INDEX IF NOT EXISTS idx_workbench_handoffs_queue
     ON workbench_handoffs(user_id, status, created_at);
+  CREATE TABLE IF NOT EXISTS service_heartbeats (
+    service TEXT PRIMARY KEY,
+    instance_id TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state IN ('starting', 'running', 'stopping', 'stopped')),
+    busy INTEGER NOT NULL DEFAULT 0 CHECK (busy IN (0, 1)),
+    updated_at INTEGER NOT NULL
+  );
   CREATE TABLE IF NOT EXISTS knowledge_documents (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL,
@@ -90,6 +130,19 @@ if (process.env.NEXT_PHASE !== "phase-production-build") {
     FOREIGN KEY (user_id) REFERENCES users(id)
   );
   CREATE INDEX IF NOT EXISTS idx_knowledge_user ON knowledge_documents(user_id, created_at DESC);
+  CREATE TABLE IF NOT EXISTS knowledge_embeddings (
+    knowledge_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    chunk_index INTEGER NOT NULL,
+    content_hash TEXT NOT NULL,
+    excerpt TEXT NOT NULL,
+    vector_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (knowledge_id, chunk_index),
+    FOREIGN KEY (knowledge_id) REFERENCES knowledge_documents(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  );
+  CREATE INDEX IF NOT EXISTS idx_knowledge_embeddings_user ON knowledge_embeddings(user_id);
   CREATE TABLE IF NOT EXISTS auth_rate_limits (
     key_hash TEXT PRIMARY KEY,
     window_started_at INTEGER NOT NULL,
@@ -99,10 +152,14 @@ if (process.env.NEXT_PHASE !== "phase-production-build") {
   CREATE TABLE IF NOT EXISTS ai_usage (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL,
+    workspace_id TEXT,
+    source TEXT NOT NULL DEFAULT 'unknown',
     operation TEXT NOT NULL CHECK (operation IN ('plan', 'execute')),
     model TEXT NOT NULL,
     input_tokens INTEGER NOT NULL,
     cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_measured_input_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_measured_hit_tokens INTEGER NOT NULL DEFAULT 0,
     output_tokens INTEGER NOT NULL,
     total_tokens INTEGER NOT NULL,
     latency_ms INTEGER NOT NULL,
@@ -123,11 +180,43 @@ if (process.env.NEXT_PHASE !== "phase-production-build") {
   if (!usageColumns.some((column) => column.name === "cached_input_tokens")) {
     database.exec("ALTER TABLE ai_usage ADD COLUMN cached_input_tokens INTEGER NOT NULL DEFAULT 0");
   }
+  if (!usageColumns.some((column) => column.name === "cache_measured_input_tokens")) {
+    database.exec(
+      "ALTER TABLE ai_usage ADD COLUMN cache_measured_input_tokens INTEGER NOT NULL DEFAULT 0",
+    );
+  }
+  if (!usageColumns.some((column) => column.name === "cache_measured_hit_tokens")) {
+    database.exec(
+      "ALTER TABLE ai_usage ADD COLUMN cache_measured_hit_tokens INTEGER NOT NULL DEFAULT 0",
+    );
+  }
+  if (!usageColumns.some((column) => column.name === "workspace_id")) {
+    database.exec("ALTER TABLE ai_usage ADD COLUMN workspace_id TEXT");
+  }
+  if (!usageColumns.some((column) => column.name === "source")) {
+    database.exec("ALTER TABLE ai_usage ADD COLUMN source TEXT NOT NULL DEFAULT 'unknown'");
+    database.exec("UPDATE ai_usage SET source = 'planner' WHERE operation = 'plan'");
+  }
+  database.exec(
+    "CREATE INDEX IF NOT EXISTS idx_ai_usage_workspace ON ai_usage(workspace_id, created_at DESC)",
+  );
   const executionStatusColumns = database.pragma("table_info(workspace_execution_status)") as {
     name: string;
   }[];
   if (!executionStatusColumns.some((column) => column.name === "cancel_requested_at")) {
     database.exec("ALTER TABLE workspace_execution_status ADD COLUMN cancel_requested_at TEXT");
+  }
+  const handoffColumns = database.pragma("table_info(workbench_handoffs)") as { name: string }[];
+  if (!handoffColumns.some((column) => column.name === "attempt_count")) {
+    database.exec(
+      "ALTER TABLE workbench_handoffs ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0",
+    );
+  }
+  if (!handoffColumns.some((column) => column.name === "next_attempt_at")) {
+    database.exec("ALTER TABLE workbench_handoffs ADD COLUMN next_attempt_at TEXT");
+  }
+  if (!handoffColumns.some((column) => column.name === "last_error")) {
+    database.exec("ALTER TABLE workbench_handoffs ADD COLUMN last_error TEXT");
   }
 }
 

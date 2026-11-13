@@ -19,6 +19,7 @@ import { agentOutputTokenBudget } from "../src/lib/agent-output-budget.mjs";
 import { mergeExecutionCheckpoint } from "../src/lib/execution-checkpoint.mjs";
 import { isSupportedChatTextFile, readChatDocument } from "../src/lib/attachment-reader.mjs";
 import { buildStaticPreviewDocument } from "../src/lib/static-preview.mjs";
+import { validateGeneratedProject } from "../src/lib/project-static-validation.mjs";
 import {
   mergeProjectFilePatch,
   normalizeProjectPath,
@@ -27,12 +28,20 @@ import {
 import { classifyProjectIntent } from "../src/lib/project-intent.mjs";
 import { createCalendarExport, inspectCalendarSchedule } from "../src/lib/calendar-export.mjs";
 import { getDeepSeekApiKey, parseEnvValue } from "../src/lib/deepseek-key.mjs";
-import { parseDeepSeekUsage } from "../src/lib/deepseek-usage.mjs";
+import { getDeepSeekCacheHitTokens, parseDeepSeekUsage } from "../src/lib/deepseek-usage.mjs";
 import { hashPassword, needsPasswordUpgrade, verifyPassword } from "../src/lib/password.mjs";
 import { isSessionSecretValid, MIN_SESSION_SECRET_BYTES } from "../src/lib/session-secret.mjs";
 import { parseDuckDuckGoResults, searchDuckDuckGo } from "../src/lib/web-search.mjs";
 import { compactToolFailure } from "../src/lib/tool-failure.mjs";
+import { deepSeekThinkingOptions, normalizeThinkingMode } from "../src/lib/thinking-mode.mjs";
 import { classifySearchIntent } from "../src/lib/search-intent.mjs";
+import { fuseKnowledgeSources } from "../src/lib/knowledge-ranking.mjs";
+import { selectKnowledgeChunkIndexes } from "../src/lib/knowledge-chunks.mjs";
+import { KNOWLEDGE_EMBEDDING_VERSION } from "../src/lib/knowledge-embeddings-core.mjs";
+import {
+  buildExecutionSystemPrompt,
+  EXECUTION_PROMPT_STABLE_PREFIX,
+} from "../src/lib/execution-prompt.mjs";
 import {
   findScheduleConflict,
   normalizeScheduleDay,
@@ -151,6 +160,12 @@ function checkExecutionLeaseStore() {
   const leaseDatabase = new Database(":memory:");
   leaseDatabase.exec(`
     CREATE TABLE workspaces (id TEXT PRIMARY KEY, user_id TEXT NOT NULL);
+    CREATE TABLE workspace_members (
+      workspace_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      role TEXT NOT NULL CHECK (role IN ('editor', 'viewer')),
+      PRIMARY KEY (workspace_id, user_id)
+    );
     CREATE TABLE workspace_execution_locks (
       workspace_id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL,
@@ -161,6 +176,12 @@ function checkExecutionLeaseStore() {
   leaseDatabase
     .prepare("INSERT INTO workspaces (id, user_id) VALUES (?, ?)")
     .run("lease-workspace", "lease-user");
+  leaseDatabase
+    .prepare("INSERT INTO workspaces (id, user_id) VALUES (?, ?)")
+    .run("shared-workspace", "workspace-owner");
+  leaseDatabase
+    .prepare("INSERT INTO workspace_members (workspace_id, user_id, role) VALUES (?, ?, ?)")
+    .run("shared-workspace", "workspace-editor", "editor");
   const leases = createWorkspaceExecutionLeaseStore(leaseDatabase, 60_000);
 
   assert.deepEqual(leases.acquire("lease-user", "missing-workspace", "missing-token"), {
@@ -169,6 +190,14 @@ function checkExecutionLeaseStore() {
   assert.deepEqual(leases.acquire("lease-user", "lease-workspace", "first-token"), {
     status: "acquired",
     token: "first-token",
+  });
+  assert.deepEqual(leases.acquire("workspace-editor", "shared-workspace", "editor-token"), {
+    status: "acquired",
+    token: "editor-token",
+  });
+  leases.release("workspace-editor", "shared-workspace", "editor-token");
+  assert.deepEqual(leases.acquire("workspace-viewer", "shared-workspace", "viewer-token"), {
+    status: "missing",
   });
   assert.deepEqual(leases.acquire("lease-user", "lease-workspace", "second-token"), {
     status: "busy",
@@ -248,6 +277,8 @@ try {
     model: "deepseek-flash",
     inputTokens: 120,
     cachedInputTokens: 80,
+    cacheMeasuredInputTokens: 120,
+    cacheMeasuredHitTokens: 80,
     outputTokens: 25,
     totalTokens: 145,
     latencyMs: 13,
@@ -265,12 +296,24 @@ try {
     1,
   );
   assert.equal(nestedCacheUsage?.cachedInputTokens, 40);
+  assert.equal(nestedCacheUsage?.cacheMeasuredInputTokens, 40);
+  assert.equal(nestedCacheUsage?.cacheMeasuredHitTokens, 40);
   assert.equal(
     parseDeepSeekUsage({ usage: { prompt_tokens: 40, completion_tokens: 4 } }, 1)
       ?.cachedInputTokens,
     undefined,
   );
+  assert.equal(
+    parseDeepSeekUsage({ usage: { prompt_tokens: 40, completion_tokens: 4 } }, 1)
+      ?.cacheMeasuredInputTokens,
+    undefined,
+  );
+  assert.equal(getDeepSeekCacheHitTokens({ prompt_cache_hit_tokens: 0 }, 120), 0);
+  assert.equal(getDeepSeekCacheHitTokens({ prompt_tokens_details: { cached_tokens: 60 } }, 40), 40);
+  assert.equal(getDeepSeekCacheHitTokens({}, 120), undefined);
+  assert.equal(getDeepSeekCacheHitTokens({ prompt_cache_hit_tokens: "0" }, 120), undefined);
   check(true, "Preserve DeepSeek cache-hit input tokens and clamp invalid provider counts");
+  check(true, "Distinguish raw provider cache telemetry from SDK-normalized zero defaults");
 
   assert.equal(isSessionSecretValid("s".repeat(MIN_SESSION_SECRET_BYTES - 1)), false);
   assert.equal(isSessionSecretValid("s".repeat(MIN_SESSION_SECRET_BYTES)), true);
@@ -588,6 +631,90 @@ try {
     true,
     "Respect explicit no-web instructions while retaining scoped source exclusions and later search overrides",
   );
+  const executionPromptVariants = [
+    buildExecutionSystemPrompt({ isContinuation: false, searchPolicy: "optional" }),
+    buildExecutionSystemPrompt({
+      isContinuation: true,
+      projectInstructions: "必须生成完整代码项目。",
+      needsSpreadsheet: true,
+      needsPresentation: true,
+      needsPdf: true,
+      searchPolicy: "required",
+    }),
+    buildExecutionSystemPrompt({ isContinuation: true, searchPolicy: "disabled" }),
+  ];
+  assert.ok(
+    executionPromptVariants.every((prompt) => prompt.startsWith(EXECUTION_PROMPT_STABLE_PREFIX)),
+  );
+  assert.match(executionPromptVariants[0], /这是新目标/);
+  assert.match(executionPromptVariants[1], /补充指示是本轮唯一的变更依据/);
+  assert.match(executionPromptVariants[1], /必须生成完整代码项目/);
+  assert.match(executionPromptVariants[1], /必须调用 generate_spreadsheet/);
+  assert.match(executionPromptVariants[1], /必须调用 generate_presentation/);
+  assert.match(executionPromptVariants[1], /必须调用 generate_pdf/);
+  assert.match(executionPromptVariants[1], /必须先调用 search_web/);
+  assert.match(executionPromptVariants[2], /search_web 工具已禁用/);
+  check(
+    true,
+    "Keep a shared cacheable Agent policy prefix across dynamic execution modes and tools",
+  );
+  const semanticHits = [
+    { id: "doc-a", title: "路线指南", excerpt: "语义相关片段", score: 0.88, matchType: "semantic" },
+    { id: "doc-b", title: "报名规则", excerpt: "规则语义片段", score: 0.84, matchType: "semantic" },
+  ];
+  const keywordHits = [
+    {
+      id: "doc-b",
+      title: "报名规则",
+      excerpt: "包含目标精确词汇的原文",
+      score: 0.61,
+      matchType: "keyword",
+    },
+    {
+      id: "doc-a",
+      title: "路线指南",
+      excerpt: "带关键词锚点的原文",
+      score: 0.42,
+      matchType: "keyword",
+    },
+    {
+      id: "doc-c",
+      title: "附加资料",
+      excerpt: "只有关键词命中的资料",
+      score: 0.2,
+      matchType: "keyword",
+    },
+  ];
+  const hybridHits = fuseKnowledgeSources(semanticHits, keywordHits, 3);
+  assert.deepEqual(
+    hybridHits.map(({ id }) => id),
+    ["doc-a", "doc-b", "doc-c"],
+  );
+  assert.deepEqual(
+    hybridHits.map(({ matchType }) => matchType),
+    ["hybrid", "hybrid", "keyword"],
+  );
+  assert.equal(hybridHits[1]?.excerpt, "包含目标精确词汇的原文");
+  assert.equal(fuseKnowledgeSources(semanticHits, keywordHits, 0).length, 0);
+  check(
+    true,
+    "Fuse semantic and exact-keyword knowledge hits while retaining source-grounding excerpts",
+  );
+
+  assert.deepEqual(selectKnowledgeChunkIndexes([3, 1]), [[0, 1, 2], [0]]);
+  assert.deepEqual(selectKnowledgeChunkIndexes([0, 3]), [[], [0, 1, 2]]);
+  assert.deepEqual(selectKnowledgeChunkIndexes([23, 12], 10), [
+    [0, 6, 11, 17, 22],
+    [0, 3, 6, 8, 11],
+  ]);
+  const largeKnowledgeIndexes = selectKnowledgeChunkIndexes(Array(100).fill(23));
+  assert.equal(largeKnowledgeIndexes.flat().length, 600);
+  assert.ok(largeKnowledgeIndexes.every((indexes) => indexes.length === 6));
+  assert.ok(largeKnowledgeIndexes.every((indexes) => indexes[0] === 0 && indexes.at(-1) === 22));
+  check(
+    true,
+    "Index all chunks in smaller knowledge bases and evenly bound semantic inference for larger ones",
+  );
   const parsedWebResults = parseDuckDuckGoResults(
     '<a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fguide&amp;rut=x">Example &amp; Guide</a>' +
       '<a class="result__snippet" href="#">A useful &lt;strong&gt;summary&lt;/strong&gt;.</a>' +
@@ -623,6 +750,19 @@ try {
   }
   assert.equal(oversizedSearchCancelled, true);
   check(true, "Bound search response bodies and tolerate malformed encoded entities");
+  assert.equal(normalizeThinkingMode(undefined), "deep");
+  assert.deepEqual(deepSeekThinkingOptions(normalizeThinkingMode(undefined)), {
+    thinking: { type: "enabled" },
+    reasoning_effort: "high",
+  });
+  assert.deepEqual(deepSeekThinkingOptions(normalizeThinkingMode("fast")), {
+    thinking: { type: "disabled" },
+  });
+  assert.deepEqual(deepSeekThinkingOptions(normalizeThinkingMode("invalid")), {
+    thinking: { type: "enabled" },
+    reasoning_effort: "high",
+  });
+  check(true, "Default planning uses deep reasoning and the fast option disables it");
   assert.equal(
     parseToolArguments(
       "create_project",
@@ -687,6 +827,35 @@ try {
     }),
   );
   assert.equal(normalizedDuplicateProject.ok, false);
+  const validGeneratedProject = validateGeneratedProject([
+    { path: "README.md", content: "运行 npm run dev" },
+    {
+      path: "package.json",
+      content: JSON.stringify({
+        scripts: { dev: "vite" },
+        devDependencies: { vite: "^7.0.0" },
+      }),
+    },
+    { path: "src/main.ts", content: 'import { start } from "./start"; start();' },
+    { path: "src/start.ts", content: "export function start() { return true; }" },
+  ]);
+  assert.deepEqual(validGeneratedProject, []);
+  const missingGeneratedImport = validateGeneratedProject([
+    { path: "src/main.ts", content: 'import "./missing.css";' },
+  ]);
+  assert.match(missingGeneratedImport.join(" "), /找不到本地引用.*missing\.css/);
+  const invalidGeneratedSource = validateGeneratedProject([
+    { path: "src/main.js", content: "export const = ;" },
+  ]);
+  assert.match(invalidGeneratedSource.join(" "), /src\/main\.js:\d+:\d+/);
+  const invalidGeneratedManifest = validateGeneratedProject([
+    { path: "package.json", content: JSON.stringify({ scripts: { dev: " " } }) },
+  ]);
+  assert.match(invalidGeneratedManifest.join(" "), /scripts 命令/);
+  check(
+    true,
+    "Statically check generated project syntax, local references, and package manifests without running code",
+  );
   check(
     true,
     "Accept safe Unicode project paths while rejecting traversal, Windows reserved names, and normalized duplicates",
@@ -1427,7 +1596,7 @@ try {
     cookie: sessionCookie,
     body: {
       title: "Smoke test context",
-      content: "校内 AI 分享会面向本科生，场地优先选择图书馆报告厅。",
+      content: "学院阶梯教室配有固定投影和扩音设备，适合组织本科生参加的学术报告与技术工作坊。",
     },
   });
   assert.equal(knowledge.response.status, 201, "knowledge document save must succeed");
@@ -1441,12 +1610,32 @@ try {
     cookie: sessionCookie,
     body: {
       title: "Updated smoke context",
-      content: "校内 AI 分享会面向本科生，场地优先选择图书馆报告厅，并预留无障碍座位。",
+      content:
+        "学院阶梯教室配有固定投影和扩音设备，适合组织本科生参加的学术报告与技术工作坊；场地预留无障碍座位。",
     },
   });
   assert.equal(knowledgeUpdate.response.status, 200);
   assert.equal(knowledgeUpdate.payload?.document?.title, "Updated smoke context");
   assert.match(knowledgeUpdate.payload?.document?.content || "", /无障碍座位/);
+  const updatedKnowledgeDocument = knowledgeUpdate.payload.document;
+  const oldEmbeddingHash = crypto
+    .createHash("sha256")
+    .update(`${updatedKnowledgeDocument.title}\n${updatedKnowledgeDocument.content}`)
+    .digest("hex");
+  database
+    .prepare(
+      `INSERT INTO knowledge_embeddings
+        (knowledge_id, user_id, chunk_index, content_hash, excerpt, vector_json, updated_at)
+       VALUES (?, ?, 0, ?, ?, ?, ?)`,
+    )
+    .run(
+      updatedKnowledgeDocument.id,
+      testUserId,
+      oldEmbeddingHash,
+      updatedKnowledgeDocument.content,
+      JSON.stringify(Array(512).fill(0)),
+      new Date().toISOString(),
+    );
   check(true, "Save, retrieve, and update private knowledge context");
 
   const spoofedImage = await request("/api/plan", {
@@ -1501,7 +1690,7 @@ try {
   check(true, "Validate initial planning documents and keep them out of demo-mode requests");
 
   const prompt =
-    "规划一次校内 AI 分享会，预计 40 人，预算控制在 800 元以内，并安排一份 3 小时的现场议程表。";
+    "我想给大学生做一场关于人工智能行业的线下介绍，需要有投影的场地；预计 40 人，预算控制在 800 元以内，并安排一份 3 小时的现场议程。";
   const aiUsageBeforeCrossOriginRequests = database
     .prepare("SELECT COUNT(*) AS requests FROM ai_usage WHERE user_id = ?")
     .get(testUserId).requests;
@@ -1590,10 +1779,42 @@ try {
   } else {
     assert.equal(planned.payload?.usage, undefined);
   }
-  assert.ok(
-    planned.payload?.plan?.sources?.some((source) => source.id === knowledge.payload.document.id),
-    "planning must include the matching private knowledge source",
+  const planningKnowledgeSource = planned.payload?.plan?.sources?.find(
+    (source) => source.id === knowledge.payload.document.id,
   );
+  assert.ok(planningKnowledgeSource, "planning must include the matching private knowledge source");
+  assert.match(
+    planningKnowledgeSource.excerpt,
+    /固定投影和扩音设备/,
+    "a hybrid retrieval hit must keep the exact keyword-grounded source excerpt",
+  );
+  const expectedEmbeddingHash = crypto
+    .createHash("sha256")
+    .update(
+      `${KNOWLEDGE_EMBEDDING_VERSION}\n${updatedKnowledgeDocument.title}\n${updatedKnowledgeDocument.content}`,
+    )
+    .digest("hex");
+  const migratedEmbedding = database
+    .prepare(
+      "SELECT vector_json FROM knowledge_embeddings WHERE knowledge_id = ? AND content_hash = ?",
+    )
+    .get(updatedKnowledgeDocument.id, expectedEmbeddingHash);
+  if (migratedEmbedding) {
+    const vector = JSON.parse(migratedEmbedding.vector_json);
+    assert.ok(Array.isArray(vector) && vector.length >= 32 && vector.every(Number.isFinite));
+    assert.equal(
+      planningKnowledgeSource.matchType,
+      "hybrid",
+      "the paraphrased event request must be grounded by both semantic and keyword retrieval",
+    );
+    check(
+      true,
+      "Rebuild stale prompt-based vectors and retrieve a paraphrased event source through the hybrid index",
+    );
+  } else {
+    assert.equal(planningKnowledgeSource.matchType, "keyword");
+    check(true, "Fall back to keyword knowledge retrieval when local model weights are absent");
+  }
   check(true, `Generate a multi-route ${liveMode ? "live" : "demo"} plan with knowledge context`);
 
   if (!liveMode) {
@@ -2457,6 +2678,180 @@ try {
     outsiderRegistration.response.headers.get("set-cookie")
   )?.split(";")[0];
   assert.ok(outsiderCookie);
+
+  const sharingWorkspace = {
+    ...workspace,
+    id: crypto.randomUUID(),
+    prompt: "Sharing permission smoke fixture",
+    conversation: [],
+  };
+  const savedSharingWorkspace = await request("/api/workspaces", {
+    method: "POST",
+    cookie: sessionCookie,
+    body: { workspace: sharingWorkspace },
+  });
+  assert.equal(savedSharingWorkspace.response.status, 200);
+  const viewerLink = await request(`/api/workspaces/${sharingWorkspace.id}/sharing`, {
+    method: "POST",
+    cookie: sessionCookie,
+    body: { role: "viewer", expiresInDays: 7 },
+  });
+  assert.equal(viewerLink.response.status, 200, viewerLink.payload?.error);
+  const viewerLinkId = (
+    await request(`/api/workspaces/${sharingWorkspace.id}/sharing`, { cookie: sessionCookie })
+  ).payload?.links?.find((item) => item.role === "viewer")?.id;
+  assert.ok(viewerLinkId);
+  const viewerToken = new URL(viewerLink.payload.inviteUrl).pathname.split("/").at(-1);
+  const viewerAccepted = await request("/api/workspace-invites/accept", {
+    method: "POST",
+    cookie: outsiderCookie,
+    body: { token: viewerToken },
+  });
+  assert.equal(viewerAccepted.response.status, 200);
+  assert.equal(viewerAccepted.payload?.role, "viewer");
+  const viewerHistory = await request("/api/workspaces", { cookie: outsiderCookie });
+  assert.equal(viewerHistory.payload?.accessByWorkspaceId?.[sharingWorkspace.id], "viewer");
+  const viewerWorkspaceRead = await request(`/api/workspaces/${sharingWorkspace.id}`, {
+    cookie: outsiderCookie,
+  });
+  assert.equal(viewerWorkspaceRead.response.status, 200);
+  assert.equal(viewerWorkspaceRead.payload?.accessRole, "viewer");
+  const viewerWrite = await request("/api/workspaces", {
+    method: "POST",
+    cookie: outsiderCookie,
+    body: { workspace: { ...sharingWorkspace, prompt: "viewer must not write" } },
+  });
+  assert.equal(viewerWrite.response.status, 403);
+  const viewerChat = await request("/api/chat", {
+    method: "POST",
+    cookie: outsiderCookie,
+    body: { workspaceId: sharingWorkspace.id, question: "请继续推进" },
+  });
+  assert.equal(viewerChat.response.status, 403);
+  const viewerManageShare = await request(`/api/workspaces/${sharingWorkspace.id}/sharing`, {
+    cookie: outsiderCookie,
+  });
+  assert.equal(viewerManageShare.response.status, 403);
+  const removedViewer = await request(`/api/workspaces/${sharingWorkspace.id}/sharing`, {
+    method: "DELETE",
+    cookie: sessionCookie,
+    body: { memberId: outsiderId },
+  });
+  assert.equal(removedViewer.response.status, 200);
+  const revokedViewerLink = await request(`/api/workspaces/${sharingWorkspace.id}/sharing`, {
+    method: "DELETE",
+    cookie: sessionCookie,
+    body: { linkId: viewerLinkId },
+  });
+  assert.equal(revokedViewerLink.response.status, 200);
+  const rejectedRevokedInvite = await request("/api/workspace-invites/accept", {
+    method: "POST",
+    cookie: outsiderCookie,
+    body: { token: viewerToken },
+  });
+  assert.equal(rejectedRevokedInvite.response.status, 410);
+
+  const editorLink = await request(`/api/workspaces/${sharingWorkspace.id}/sharing`, {
+    method: "POST",
+    cookie: sessionCookie,
+    body: { role: "editor", expiresInDays: 7 },
+  });
+  assert.equal(editorLink.response.status, 200, editorLink.payload?.error);
+  const editorLinkId = (
+    await request(`/api/workspaces/${sharingWorkspace.id}/sharing`, { cookie: sessionCookie })
+  ).payload?.links?.find((item) => item.role === "editor")?.id;
+  assert.ok(editorLinkId);
+  const editorToken = new URL(editorLink.payload.inviteUrl).pathname.split("/").at(-1);
+  const editorAccepted = await request("/api/workspace-invites/accept", {
+    method: "POST",
+    cookie: outsiderCookie,
+    body: { token: editorToken },
+  });
+  assert.equal(editorAccepted.response.status, 200);
+  assert.equal(editorAccepted.payload?.role, "editor");
+  const editorWrite = await request("/api/workspaces", {
+    method: "POST",
+    cookie: outsiderCookie,
+    body: { workspace: { ...sharingWorkspace, prompt: "shared editor update" } },
+  });
+  assert.equal(editorWrite.response.status, 200, editorWrite.payload?.error);
+  const editorCreateInvite = await request(`/api/workspaces/${sharingWorkspace.id}/sharing`, {
+    method: "POST",
+    cookie: outsiderCookie,
+    body: { role: "viewer" },
+  });
+  assert.equal(editorCreateInvite.response.status, 403);
+
+  const sharedExecutionToken = crypto.randomUUID();
+  const sharedExecutionTime = new Date().toISOString();
+  database
+    .prepare(
+      "INSERT INTO workspace_execution_locks (workspace_id, user_id, token, expires_at) VALUES (?, ?, ?, ?)",
+    )
+    .run(sharingWorkspace.id, testUserId, sharedExecutionToken, Date.now() + 60_000);
+  database
+    .prepare(
+      `INSERT INTO workspace_execution_status
+        (token, workspace_id, user_id, workspace_title, state, activity, completed_tool_calls,
+         message, started_at, updated_at, finished_at)
+       VALUES (?, ?, ?, ?, 'running', ?, 1, NULL, ?, ?, NULL)`,
+    )
+    .run(
+      sharedExecutionToken,
+      sharingWorkspace.id,
+      testUserId,
+      sharingWorkspace.plan.title,
+      "共享工作区后台执行中",
+      sharedExecutionTime,
+      sharedExecutionTime,
+    );
+  const editorExecutionStatus = await request("/api/executions", { cookie: outsiderCookie });
+  assert.ok(
+    editorExecutionStatus.payload?.executions?.some(
+      (item) => item.token === sharedExecutionToken && item.workspaceId === sharingWorkspace.id,
+    ),
+    "editors should see the shared workspace's current execution state",
+  );
+  const editorCancel = await request("/api/executions", {
+    method: "POST",
+    cookie: outsiderCookie,
+    body: { workspaceId: sharingWorkspace.id },
+  });
+  assert.equal(editorCancel.payload?.cancelled, true);
+  const ownerSeesEditorCancellation = await request("/api/executions", { cookie: sessionCookie });
+  assert.ok(
+    ownerSeesEditorCancellation.payload?.executions?.some(
+      (item) => item.token === sharedExecutionToken && item.cancelRequested,
+    ),
+  );
+  database
+    .prepare("DELETE FROM workspace_execution_locks WHERE workspace_id = ? AND token = ?")
+    .run(sharingWorkspace.id, sharedExecutionToken);
+  database
+    .prepare("DELETE FROM workspace_execution_status WHERE token = ?")
+    .run(sharedExecutionToken);
+  const removedEditor = await request(`/api/workspaces/${sharingWorkspace.id}/sharing`, {
+    method: "DELETE",
+    cookie: sessionCookie,
+    body: { memberId: outsiderId },
+  });
+  assert.equal(removedEditor.response.status, 200);
+  const revokedEditorLink = await request(`/api/workspaces/${sharingWorkspace.id}/sharing`, {
+    method: "DELETE",
+    cookie: sessionCookie,
+    body: { linkId: editorLinkId },
+  });
+  assert.equal(revokedEditorLink.response.status, 200);
+  const deletedSharingWorkspace = await request(`/api/workspaces/${sharingWorkspace.id}`, {
+    method: "DELETE",
+    cookie: sessionCookie,
+  });
+  assert.equal(deletedSharingWorkspace.response.status, 200);
+  check(
+    true,
+    "Exercise viewer/editor invites, read-only boundaries, revocation, shared progress, and editor cancellation",
+  );
+
   const executionStatusToken = crypto.randomUUID();
   const executionStatusTime = new Date().toISOString();
   database
@@ -2518,10 +2913,7 @@ try {
     cookie: sessionCookie,
   });
   assert.equal(executionAfterProgressDialogue.payload?.executions?.[0]?.state, "running");
-  check(
-    true,
-    "Persist dialogue-Agent progress replies while the workbench continues running",
-  );
+  check(true, "Persist dialogue-Agent progress replies while the workbench continues running");
   const outsiderExecutionStatuses = await request("/api/executions", { cookie: outsiderCookie });
   assert.equal(outsiderExecutionStatuses.response.status, 200);
   assert.deepEqual(outsiderExecutionStatuses.payload?.executions, []);
@@ -2547,10 +2939,7 @@ try {
       "UPDATE workspace_execution_status SET cancel_requested_at = NULL, activity = ?, updated_at = ? WHERE token = ?",
     )
     .run("正在生成可下载的代码项目", executionStatusTime, executionStatusToken);
-  check(
-    true,
-    "Allow only the workspace owner to request cancellation and expose the stopping state",
-  );
+  check(true, "Allow workspace owners to request cancellation and expose the stopping state");
   database
     .prepare(
       "UPDATE workspace_execution_locks SET expires_at = ? WHERE workspace_id = ? AND token = ?",
@@ -2668,13 +3057,17 @@ try {
   });
   database.prepare("UPDATE users SET role = 'admin' WHERE id = ?").run(testUserId);
   const addUsageFixture = database.prepare(
-    "INSERT INTO ai_usage (id, user_id, operation, model, input_tokens, cached_input_tokens, output_tokens, total_tokens, latency_ms, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    "INSERT INTO ai_usage (id, user_id, workspace_id, source, operation, model, input_tokens, cached_input_tokens, cache_measured_input_tokens, cache_measured_hit_tokens, output_tokens, total_tokens, latency_ms, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
   );
   addUsageFixture.run(
     crypto.randomUUID(),
     testUserId,
+    workspace.id,
+    "planner",
     "plan",
     "deepseek-flash",
+    101,
+    40,
     101,
     40,
     102,
@@ -2685,13 +3078,33 @@ try {
   addUsageFixture.run(
     crypto.randomUUID(),
     outsiderId,
+    outsiderImportedHistory.payload.workspaces[0].id,
+    "workbench",
     "execute",
     "deepseek-flash",
+    201,
+    70,
     201,
     70,
     202,
     403,
     850,
+    new Date().toISOString(),
+  );
+  addUsageFixture.run(
+    crypto.randomUUID(),
+    testUserId,
+    null,
+    "healthcheck",
+    "execute",
+    "deepseek-flash",
+    20,
+    5,
+    20,
+    5,
+    2,
+    22,
+    80,
     new Date().toISOString(),
   );
   if (liveMode) {
@@ -2721,14 +3134,33 @@ try {
   assert.ok(adminOverview.payload?.users?.some((item) => item.id === outsiderId));
   assert.ok(adminOverview.payload?.aiUsage?.totalTokens >= 606);
   assert.ok(adminOverview.payload?.aiUsage?.cachedInputTokens >= 110);
+  assert.ok(adminOverview.payload?.aiUsage?.cacheMeasuredInputTokens >= 302);
+  assert.ok(adminOverview.payload?.aiUsage?.cacheMeasuredHitTokens >= 110);
   assert.ok(adminOverview.payload?.aiUsage?.planningRequests >= 1);
-  assert.ok(adminOverview.payload?.aiUsage?.executionRequests >= 1);
+  assert.ok(adminOverview.payload?.aiUsage?.workbenchRequests >= 1);
+  assert.ok(adminOverview.payload?.aiUsage?.healthcheckRequests >= 1);
+  assert.ok(
+    adminOverview.payload?.workspaces?.some(
+      (item) => item.id === workspace.id && item.plannerTokens >= 203,
+    ),
+    "admins should see project-level AI usage attributed to its planning agent",
+  );
   assert.equal(adminOverview.payload?.dailyAiUsage?.length, 7);
   assert.ok(
     adminOverview.payload.dailyAiUsage.reduce((sum, day) => sum + day.totalTokens, 0) >= 606,
   );
   assert.ok(
     adminOverview.payload.dailyAiUsage.reduce((sum, day) => sum + day.cachedInputTokens, 0) >= 110,
+  );
+  assert.ok(
+    adminOverview.payload.dailyAiUsage.reduce(
+      (sum, day) => sum + day.cacheMeasuredInputTokens,
+      0,
+    ) >= 302,
+  );
+  assert.ok(
+    adminOverview.payload.dailyAiUsage.reduce((sum, day) => sum + day.cacheMeasuredHitTokens, 0) >=
+      110,
   );
 
   const promote = await request(`/api/admin/users/${outsiderId}`, {

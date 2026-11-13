@@ -6,12 +6,14 @@ import type { AiRunUsage, ChatAttachment, ConversationMessage, Workspace } from 
 import { getUser } from "@/lib/auth";
 import { readJsonObject } from "@/lib/request";
 import { DEEPSEEK_AUTH_ERROR, DEEPSEEK_MODEL } from "@/lib/deepseek";
+import { getDeepSeekCacheHitTokens } from "@/lib/deepseek-usage.mjs";
 import { getDeepSeekApiKey } from "@/lib/deepseek-key.mjs";
 import { isAbortError } from "@/lib/errors";
 import {
   addWorkspaceUsageForUser,
   appendWorkspaceConversationForUser,
   enqueueWorkbenchHandoffForUser,
+  getWorkspaceAccessRoleForUser,
   getWorkspaceForUser,
   listWorkspaceExecutionStatusesForUser,
 } from "@/lib/workspace-store";
@@ -207,21 +209,21 @@ function createDialogStreamResponse(args: {
           const tokenUsage = usageOutcome.value as {
             inputTokens?: number;
             outputTokens?: number;
-            inputTokenDetails?: { cacheReadTokens?: number };
+            raw?: unknown;
           };
           const inputTokens = tokenUsage.inputTokens || 0;
           const outputTokens = tokenUsage.outputTokens || 0;
           const totalTokens = inputTokens + outputTokens;
+          const cachedInputTokens = getDeepSeekCacheHitTokens(tokenUsage.raw, inputTokens);
           if (totalTokens > 0) {
             const chatUsage: AiRunUsage = {
               model: DEEPSEEK_MODEL,
               inputTokens,
-              ...(tokenUsage.inputTokenDetails?.cacheReadTokens !== undefined
+              ...(cachedInputTokens !== undefined
                 ? {
-                    cachedInputTokens: Math.min(
-                      inputTokens,
-                      Math.max(0, tokenUsage.inputTokenDetails.cacheReadTokens),
-                    ),
+                    cachedInputTokens,
+                    cacheMeasuredInputTokens: inputTokens,
+                    cacheMeasuredHitTokens: cachedInputTokens,
                   }
                 : {}),
               outputTokens,
@@ -229,7 +231,10 @@ function createDialogStreamResponse(args: {
               latencyMs: Math.max(0, Date.now() - args.startedAt),
               requests: 1,
             };
-            recordAiUsage(args.userId, "execute", chatUsage);
+            recordAiUsage(args.userId, "execute", chatUsage, {
+              workspaceId: args.workspaceId,
+              source: "dialogue",
+            });
             const usageOutcome = addWorkspaceUsageForUser(args.userId, args.workspaceId, chatUsage);
             if (usageOutcome !== "saved")
               console.error("Unable to persist workspace dialog usage.");
@@ -379,6 +384,11 @@ export async function POST(request: NextRequest) {
 
     const workspace = getWorkspaceForUser(user.id, workspaceId);
     if (!workspace) return NextResponse.json({ error: "工作空间不存在。" }, { status: 404 });
+    if (getWorkspaceAccessRoleForUser(user.id, workspaceId) === "viewer")
+      return NextResponse.json(
+        { error: "你只有查看权限，无法在此工作区发送消息。" },
+        { status: 403 },
+      );
     const executionStatuses = listWorkspaceExecutionStatusesForUser(user.id);
     const activeExecutions = executionStatuses.filter((execution) => execution.state === "running");
     const latestWorkspaceExecution = executionStatuses

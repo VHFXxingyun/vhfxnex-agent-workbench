@@ -11,8 +11,10 @@ import { consumeAiRateLimits, rateLimitedResponse } from "@/lib/auth-rate-limit"
 import { recordAiUsage } from "@/lib/ai-usage";
 import { withAiSpan } from "@/lib/telemetry";
 import { accountDataLimits } from "@/lib/limits";
+import { deepSeekThinkingOptions, normalizeThinkingMode } from "@/lib/thinking-mode.mjs";
 import {
   countWorkspacesForUser,
+  getWorkspaceAccessRoleForUser,
   getWorkspaceForUser,
   saveWorkspaceForUser,
 } from "@/lib/workspace-store";
@@ -92,10 +94,11 @@ export async function POST(request: NextRequest) {
     const body = await readJsonObject(request, 9_000_000);
     if (!body) return NextResponse.json({ error: "请求格式无效。" }, { status: 400 });
     const prompt = typeof body.prompt === "string" ? body.prompt.trim().slice(0, 4000) : "";
+    const thinkingMode = normalizeThinkingMode(body.thinkingMode);
     if (prompt.length < 6)
       return NextResponse.json({ error: "请再详细描述一下你的目标。" }, { status: 400 });
     const fallback = demoPlan(prompt);
-    const sources = retrieve(user.id, prompt);
+    const sources = await retrieve(user.id, prompt);
     fallback.sources = sources;
     const demo = body.demo === true;
     const image = typeof body.image === "string" ? body.image : "";
@@ -153,6 +156,11 @@ export async function POST(request: NextRequest) {
     }
     const existingWorkspace = getWorkspaceForUser(user.id, workspaceId);
     if (existingWorkspace) {
+      if (getWorkspaceAccessRoleForUser(user.id, workspaceId) === "viewer")
+        return NextResponse.json(
+          { error: "你只有查看权限，无法在此工作区重新规划。" },
+          { status: 403 },
+        );
       if (
         existingWorkspace.prompt !== prompt ||
         existingWorkspace.mode !== "live" ||
@@ -217,6 +225,7 @@ export async function POST(request: NextRequest) {
           {
             response_format: { type: "json_object" },
             max_tokens: 1500,
+            ...deepSeekThinkingOptions(thinkingMode),
             messages: [
               {
                 role: "system",
@@ -271,7 +280,7 @@ export async function POST(request: NextRequest) {
     const payload = modelResult.payload as
       { choices?: Array<{ message?: { content?: unknown } }> } | undefined;
     const usage = modelResult.usage;
-    recordAiUsage(user.id, "plan", usage);
+    recordAiUsage(user.id, "plan", usage, { workspaceId, source: "planner" });
     const content = payload?.choices?.[0]?.message?.content;
     if (typeof content !== "string") throw new Error("模型没有返回可解析的计划");
     const plan = normalizePlan(JSON.parse(content), fallback);

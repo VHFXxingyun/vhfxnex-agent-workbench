@@ -84,8 +84,17 @@ function isBoundedText(value: unknown, maxLength: number): value is string {
 
 function isAiRunUsage(value: unknown): value is AiRunUsage {
   if (!isRecord(value)) return false;
-  const { model, inputTokens, cachedInputTokens, outputTokens, totalTokens, latencyMs, requests } =
-    value;
+  const {
+    model,
+    inputTokens,
+    cachedInputTokens,
+    cacheMeasuredInputTokens,
+    cacheMeasuredHitTokens,
+    outputTokens,
+    totalTokens,
+    latencyMs,
+    requests,
+  } = value;
   return (
     isText(model, 80) &&
     [inputTokens, outputTokens, totalTokens, latencyMs, requests].every(
@@ -96,6 +105,15 @@ function isAiRunUsage(value: unknown): value is AiRunUsage {
         Number.isSafeInteger(cachedInputTokens) &&
         cachedInputTokens >= 0 &&
         cachedInputTokens <= (inputTokens as number))) &&
+    ((cacheMeasuredInputTokens === undefined && cacheMeasuredHitTokens === undefined) ||
+      (typeof cacheMeasuredInputTokens === "number" &&
+        Number.isSafeInteger(cacheMeasuredInputTokens) &&
+        cacheMeasuredInputTokens >= 0 &&
+        typeof cacheMeasuredHitTokens === "number" &&
+        Number.isSafeInteger(cacheMeasuredHitTokens) &&
+        cacheMeasuredHitTokens >= 0 &&
+        cacheMeasuredHitTokens <= cacheMeasuredInputTokens &&
+        cacheMeasuredInputTokens <= (inputTokens as number))) &&
     (inputTokens as number) + (outputTokens as number) <= (totalTokens as number) &&
     (requests as number) <= 10_000
   );

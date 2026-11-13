@@ -6,9 +6,18 @@
     "dev": "node scripts/next.mjs dev --webpack",
     "build": "next build",
     "start": "node scripts/next.mjs start",
+    "worker": "node scripts/workbench-worker.mjs",
     "lint": "eslint",
     "smoke": "node scripts/smoke.mjs",
     "smoke:live": "node scripts/smoke.mjs --live",
+    "smoke:worker": "node scripts/worker-startup-smoke.mjs",
+    "smoke:supervisor": "node scripts/process-supervisor-smoke.mjs",
+    "smoke:project": "node scripts/project-static-validation-smoke.mjs",
+    "smoke:knowledge": "node scripts/knowledge-embedding-smoke.mjs",
+    "smoke:db-maintenance": "node scripts/sqlite-maintenance-smoke.mjs",
+    "db:backup": "node scripts/sqlite-maintenance.mjs backup",
+    "db:verify": "node scripts/sqlite-maintenance.mjs verify",
+    "db:restore": "node scripts/sqlite-maintenance.mjs restore",
     "smoke:ui:live-execute": "node scripts/live-ui-execute-smoke.mjs",
     "smoke:search": "node scripts/search-smoke.mjs",
     "smoke:vision": "node scripts/vision-smoke.mjs",
@@ -19,6 +28,7 @@
   },
   "dependencies": {
     "@ai-sdk/deepseek": "^3.0.81",
+    "@huggingface/transformers": "^4.3.2",
     "@opentelemetry/api": "^1.9.1",
     "@tanstack/react-query": "^5.107.1",
     "@vercel/otel": "^2.3.0",
@@ -38,6 +48,7 @@
     "pptxgenjs": "^4.0.0",
     "react": "19.3.0",
     "react-dom": "19.3.0",
+    "typescript": "^6.0.3",
     "zod": "^4.6.7"
   },
   "devDependencies": {
@@ -53,8 +64,7 @@
     "eslint": "^9",
     "eslint-config-next": "16.4.5",
     "playwright-core": "^1.65.0",
-    "prettier": "^3.9.10",
-    "typescript": "^5"
+    "prettier": "^3.9.10"
   },
   "overrides": {
     "image-size": "^2.1.0",

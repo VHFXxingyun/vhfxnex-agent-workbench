@@ -12,8 +12,16 @@ export async function GET() {
   const user = await getUser();
   if (!user) return NextResponse.json({ error: "请先登录" }, { status: 401 });
   const rows = database
-    .prepare("SELECT * FROM workspaces WHERE user_id = ? ORDER BY updated_at DESC LIMIT ?")
-    .all(user.id, accountDataLimits.workspaces) as DbWorkspace[];
+    .prepare(
+      `SELECT w.*, CASE WHEN w.user_id = ? THEN 'owner' ELSE m.role END AS access_role
+         FROM workspaces w LEFT JOIN workspace_members m
+           ON m.workspace_id = w.id AND m.user_id = ?
+        WHERE w.user_id = ? OR m.user_id = ?
+        ORDER BY w.updated_at DESC LIMIT ?`,
+    )
+    .all(user.id, user.id, user.id, user.id, accountDataLimits.workspaces) as (DbWorkspace & {
+    access_role: "owner" | "editor" | "viewer";
+  })[];
   const workspaces = rows.flatMap((row) => {
     try {
       const workspace: unknown = JSON.parse(row.body);
@@ -22,7 +30,10 @@ export async function GET() {
       return [];
     }
   });
-  return NextResponse.json({ workspaces });
+  return NextResponse.json({
+    workspaces,
+    accessByWorkspaceId: Object.fromEntries(rows.map((row) => [row.id, row.access_role])),
+  });
 }
 
 export async function POST(request: NextRequest) {
@@ -31,6 +42,8 @@ export async function POST(request: NextRequest) {
   const body = await readJsonObject(request, 400_000);
   if (!body) return NextResponse.json({ error: "请求格式无效。" }, { status: 400 });
   const outcome = saveWorkspaceForUser(user.id, body.workspace);
+  if (outcome === "forbidden")
+    return NextResponse.json({ error: "你只有查看权限，无法修改这个工作区。" }, { status: 403 });
   if (outcome === "locked")
     return NextResponse.json(
       { error: "这个目标正在由 Agent 执行，执行完成后再编辑或保存。" },

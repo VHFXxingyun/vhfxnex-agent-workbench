@@ -15,7 +15,23 @@ export async function GET() {
     .all();
   const workspaces = database
     .prepare(
-      "SELECT w.id, w.title, w.category, w.created_at, w.updated_at, u.name AS owner FROM workspaces w JOIN users u ON u.id = w.user_id ORDER BY w.updated_at DESC LIMIT 100",
+      `SELECT w.id, w.title, w.category, w.created_at, w.updated_at, u.name AS owner,
+        COALESCE(usage.requests, 0) AS aiRequests,
+        COALESCE(usage.totalTokens, 0) AS aiTokens,
+        COALESCE(usage.plannerTokens, 0) AS plannerTokens,
+        COALESCE(usage.dialogueTokens, 0) AS dialogueTokens,
+        COALESCE(usage.workbenchTokens, 0) AS workbenchTokens,
+        COALESCE(usage.legacyTokens, 0) AS legacyTokens
+       FROM workspaces w JOIN users u ON u.id = w.user_id
+       LEFT JOIN (
+         SELECT workspace_id, user_id, COUNT(*) AS requests, SUM(total_tokens) AS totalTokens,
+           SUM(CASE WHEN source = 'planner' THEN total_tokens ELSE 0 END) AS plannerTokens,
+           SUM(CASE WHEN source = 'dialogue' THEN total_tokens ELSE 0 END) AS dialogueTokens,
+           SUM(CASE WHEN source = 'workbench' THEN total_tokens ELSE 0 END) AS workbenchTokens,
+           SUM(CASE WHEN source = 'unknown' THEN total_tokens ELSE 0 END) AS legacyTokens
+         FROM ai_usage WHERE workspace_id IS NOT NULL GROUP BY workspace_id, user_id
+       ) usage ON usage.workspace_id = w.id AND usage.user_id = w.user_id
+       ORDER BY w.updated_at DESC LIMIT 100`,
     )
     .all();
   const userCount = (
@@ -36,11 +52,16 @@ export async function GET() {
         COUNT(*) AS requests,
         COALESCE(SUM(input_tokens), 0) AS inputTokens,
         COALESCE(SUM(cached_input_tokens), 0) AS cachedInputTokens,
+        COALESCE(SUM(cache_measured_input_tokens), 0) AS cacheMeasuredInputTokens,
+        COALESCE(SUM(cache_measured_hit_tokens), 0) AS cacheMeasuredHitTokens,
         COALESCE(SUM(output_tokens), 0) AS outputTokens,
         COALESCE(SUM(total_tokens), 0) AS totalTokens,
         COALESCE(ROUND(AVG(latency_ms)), 0) AS averageLatencyMs,
         COALESCE(SUM(CASE WHEN operation = 'plan' THEN 1 ELSE 0 END), 0) AS planningRequests,
-        COALESCE(SUM(CASE WHEN operation = 'execute' THEN 1 ELSE 0 END), 0) AS executionRequests
+        COALESCE(SUM(CASE WHEN source = 'dialogue' THEN 1 ELSE 0 END), 0) AS dialogueRequests,
+        COALESCE(SUM(CASE WHEN source = 'workbench' THEN 1 ELSE 0 END), 0) AS workbenchRequests,
+        COALESCE(SUM(CASE WHEN source = 'healthcheck' THEN 1 ELSE 0 END), 0) AS healthcheckRequests,
+        COALESCE(SUM(CASE WHEN source = 'unknown' THEN 1 ELSE 0 END), 0) AS legacyRequests
       FROM ai_usage
     `,
     )
@@ -74,9 +95,14 @@ export async function GET() {
         COUNT(*) AS requests,
         COALESCE(SUM(total_tokens), 0) AS totalTokens,
         COALESCE(SUM(cached_input_tokens), 0) AS cachedInputTokens,
+        COALESCE(SUM(cache_measured_input_tokens), 0) AS cacheMeasuredInputTokens,
+        COALESCE(SUM(cache_measured_hit_tokens), 0) AS cacheMeasuredHitTokens,
         COALESCE(SUM(latency_ms), 0) AS latencyMs,
         COALESCE(SUM(CASE WHEN operation = 'plan' THEN 1 ELSE 0 END), 0) AS planningRequests,
-        COALESCE(SUM(CASE WHEN operation = 'execute' THEN 1 ELSE 0 END), 0) AS executionRequests
+        COALESCE(SUM(CASE WHEN source = 'dialogue' THEN 1 ELSE 0 END), 0) AS dialogueRequests,
+        COALESCE(SUM(CASE WHEN source = 'workbench' THEN 1 ELSE 0 END), 0) AS workbenchRequests,
+        COALESCE(SUM(CASE WHEN source = 'healthcheck' THEN 1 ELSE 0 END), 0) AS healthcheckRequests,
+        COALESCE(SUM(CASE WHEN source = 'unknown' THEN 1 ELSE 0 END), 0) AS legacyRequests
       FROM ai_usage
       WHERE created_at >= ?
       GROUP BY date
@@ -87,9 +113,14 @@ export async function GET() {
     requests: number;
     totalTokens: number;
     cachedInputTokens: number;
+    cacheMeasuredInputTokens: number;
+    cacheMeasuredHitTokens: number;
     latencyMs: number;
     planningRequests: number;
-    executionRequests: number;
+    dialogueRequests: number;
+    workbenchRequests: number;
+    healthcheckRequests: number;
+    legacyRequests: number;
   }[];
   const dailyByDate = new Map(dailyRows.map((row) => [row.date, row]));
   const dailyAiUsage = dates.map(({ date, label }) => {
@@ -100,9 +131,14 @@ export async function GET() {
       requests: row?.requests ?? 0,
       totalTokens: row?.totalTokens ?? 0,
       cachedInputTokens: row?.cachedInputTokens ?? 0,
+      cacheMeasuredInputTokens: row?.cacheMeasuredInputTokens ?? 0,
+      cacheMeasuredHitTokens: row?.cacheMeasuredHitTokens ?? 0,
       latencyMs: row?.latencyMs ?? 0,
       planningRequests: row?.planningRequests ?? 0,
-      executionRequests: row?.executionRequests ?? 0,
+      dialogueRequests: row?.dialogueRequests ?? 0,
+      workbenchRequests: row?.workbenchRequests ?? 0,
+      healthcheckRequests: row?.healthcheckRequests ?? 0,
+      legacyRequests: row?.legacyRequests ?? 0,
     };
   });
   return NextResponse.json({

@@ -5,8 +5,14 @@ export function createWorkspaceExecutionLeaseStore(database, durationMs = 10 * 6
       return database
         .transaction(() => {
           const workspace = database
-            .prepare("SELECT id FROM workspaces WHERE id = ? AND user_id = ?")
-            .get(workspaceId, userId);
+            .prepare(
+              `SELECT id FROM workspaces WHERE id = ?
+                 AND (user_id = ? OR EXISTS (
+                   SELECT 1 FROM workspace_members m WHERE m.workspace_id = workspaces.id
+                     AND m.user_id = ? AND m.role = 'editor'
+                 ))`,
+            )
+            .get(workspaceId, userId, userId);
           if (!workspace) return { status: "missing" };
 
           const result = database

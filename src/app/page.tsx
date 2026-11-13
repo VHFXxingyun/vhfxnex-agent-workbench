@@ -28,6 +28,7 @@ import {
   Pencil,
   Plus,
   Save,
+  Share2,
   Settings,
   ShieldCheck,
   Sparkles,
@@ -60,9 +61,11 @@ import ConfirmDialog, { type ConfirmRequest } from "@/components/ConfirmDialog";
 import { clientSession } from "@/lib/client-session";
 import { isSupportedImageDataUrl, MAX_IMAGE_BYTES } from "@/lib/image";
 import { createCalendarExport, inspectCalendarSchedule } from "@/lib/calendar-export.mjs";
+import { DEFAULT_THINKING_MODE } from "@/lib/thinking-mode.mjs";
 import { createProjectZip } from "@/lib/project-zip";
 import { isSupportedChatTextFile, readChatDocument } from "@/lib/attachment-reader";
 import { createArtifactDownload } from "@/lib/artifact-export";
+import { createVideoContactSheet, isVideoFile } from "@/lib/video-contact-sheet";
 
 const SIDEBAR_COLLAPSED_PREFERENCE_KEY = "nexora:sidebar-collapsed:v1";
 const SIDEBAR_PREFERENCE_EVENT = "nexora:sidebar-preference-change";
@@ -105,6 +108,17 @@ type User = {
   createdAt: string;
   recoveryCodeConfigured: boolean;
 };
+type WorkspaceAccessRole = "owner" | "editor" | "viewer";
+type ShareLinkView = {
+  id: string;
+  role: "editor" | "viewer";
+  createdAt: string;
+  expiresAt: string;
+  revokedAt: string | null;
+  useCount: number;
+  maxUses: number;
+};
+type ShareMemberView = { id: string; name: string; email: string; role: "editor" | "viewer" };
 type PlanDraftRecovery = {
   userId: string;
   prompt: string;
@@ -122,11 +136,16 @@ type AdminData = {
     requests: number;
     inputTokens: number;
     cachedInputTokens: number;
+    cacheMeasuredInputTokens: number;
+    cacheMeasuredHitTokens: number;
     outputTokens: number;
     totalTokens: number;
     averageLatencyMs: number;
     planningRequests: number;
-    executionRequests: number;
+    dialogueRequests: number;
+    workbenchRequests: number;
+    healthcheckRequests: number;
+    legacyRequests: number;
   };
   dailyAiUsage: {
     date: string;
@@ -134,12 +153,29 @@ type AdminData = {
     requests: number;
     totalTokens: number;
     cachedInputTokens: number;
+    cacheMeasuredInputTokens: number;
+    cacheMeasuredHitTokens: number;
     latencyMs: number;
     planningRequests: number;
-    executionRequests: number;
+    dialogueRequests: number;
+    workbenchRequests: number;
+    healthcheckRequests: number;
+    legacyRequests: number;
   }[];
   users: { id: string; name: string; email: string; role: string; created_at: string }[];
-  workspaces: { id: string; title: string; category: string; owner: string; updated_at: string }[];
+  workspaces: {
+    id: string;
+    title: string;
+    category: string;
+    owner: string;
+    updated_at: string;
+    aiRequests: number;
+    aiTokens: number;
+    plannerTokens: number;
+    dialogueTokens: number;
+    workbenchTokens: number;
+    legacyTokens: number;
+  }[];
 };
 type AiHealth =
   | { state: "idle" | "checking"; message: string }
@@ -915,7 +951,7 @@ export default function Home() {
   const [questionError, setQuestionError] = useState("");
   const [queuedHandoffCount, setQueuedHandoffCount] = useState(0);
   const [pendingExecutionContent, setPendingExecutionContent] = useState("");
-  const [thinkingMode, setThinkingMode] = useState<"fast" | "deep">("deep");
+  const [thinkingMode, setThinkingMode] = useState<"fast" | "deep">(DEFAULT_THINKING_MODE);
   const [pendingSave, setPendingSave] = useState<Workspace | null>(null);
   const [retryingSave, setRetryingSave] = useState(false);
   const [savingTaskId, setSavingTaskId] = useState<string | null>(null);
@@ -926,10 +962,23 @@ export default function Home() {
   const [useDemo, setUseDemo] = useState(true);
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const [history, setHistory] = useState<Workspace[]>([]);
+  const [workspaceAccessById, setWorkspaceAccessById] = useState<
+    Record<string, WorkspaceAccessRole>
+  >({});
   const [historyStatus, setHistoryStatus] = useState<"idle" | "loading" | "ready" | "error">(
     "idle",
   );
   const [workspaceExportNotice, setWorkspaceExportNotice] = useState("");
+  const [sharingOpen, setSharingOpen] = useState(false);
+  const [sharingLoading, setSharingLoading] = useState(false);
+  const [sharingSaving, setSharingSaving] = useState(false);
+  const [sharingError, setSharingError] = useState("");
+  const [shareRole, setShareRole] = useState<"editor" | "viewer">("editor");
+  const [shareExpiryDays, setShareExpiryDays] = useState<1 | 7 | 30>(7);
+  const [shareLinks, setShareLinks] = useState<ShareLinkView[]>([]);
+  const [shareMembers, setShareMembers] = useState<ShareMemberView[]>([]);
+  const [newShareUrl, setNewShareUrl] = useState("");
+  const [shareCopyNotice, setShareCopyNotice] = useState("");
   const [calendarAnchorOpen, setCalendarAnchorOpen] = useState(false);
   const [calendarAnchorDate, setCalendarAnchorDate] = useState("");
   const [calendarDialogError, setCalendarDialogError] = useState("");
@@ -979,7 +1028,11 @@ export default function Home() {
     activeWorkspaceIdRef.current = next?.id ?? null;
     setWorkspace(next);
   }
-  function openWorkspace(next: Workspace) {
+  function openWorkspace(next: Workspace, accessRole = workspaceAccessById[next.id] || "owner") {
+    setWorkspaceAccessById((current) => ({
+      ...current,
+      [next.id]: accessRole,
+    }));
     setActiveWorkspace(next);
     setInstruction("");
     setActiveExecution((current) =>
@@ -987,6 +1040,9 @@ export default function Home() {
     );
     navigate("workspace");
   }
+  const activeWorkspaceAccess: WorkspaceAccessRole = workspace
+    ? workspaceAccessById[workspace.id] || "owner"
+    : "owner";
   const chatAttachments = workspace ? chatAttachmentStore[workspace.id] || [] : [];
   function setChatAttachments(
     update: ChatAttachment[] | ((current: ChatAttachment[]) => ChatAttachment[]),
@@ -1054,9 +1110,13 @@ export default function Home() {
     const requestEpoch = clientSession.epoch;
     setHistoryStatus("loading");
     try {
-      const data = await api<{ workspaces: Workspace[] }>("/api/workspaces", undefined, true);
+      const data = await api<{
+        workspaces: Workspace[];
+        accessByWorkspaceId?: Record<string, WorkspaceAccessRole>;
+      }>("/api/workspaces", undefined, true);
       if (requestEpoch === clientSession.epoch) {
         setHistory(data.workspaces);
+        setWorkspaceAccessById(data.accessByWorkspaceId || {});
         setHistoryStatus("ready");
         try {
           const queued = await api<{ handoffs: QueuedWorkbenchHandoff[] }>(
@@ -1101,8 +1161,13 @@ export default function Home() {
     queryClient.clear();
     setActiveWorkspace(null);
     setHistory([]);
+    setWorkspaceAccessById({});
     setHistoryStatus("idle");
     setAdmin(null);
+    setSharingOpen(false);
+    setShareLinks([]);
+    setShareMembers([]);
+    setNewShareUrl("");
     setAiHealth({ state: "idle", message: "尚未进行连接检查" });
     setPrompt("");
     setInstruction("");
@@ -1343,6 +1408,75 @@ export default function Home() {
     setEditingArtifact(false);
     setArtifactError("");
     setArtifactActionStatus(null);
+  }
+  async function refreshSharing(workspaceId: string) {
+    setSharingLoading(true);
+    setSharingError("");
+    try {
+      const data = await api<{ links: ShareLinkView[]; members: ShareMemberView[] }>(
+        `/api/workspaces/${workspaceId}/sharing`,
+        undefined,
+        true,
+      );
+      setShareLinks(data.links);
+      setShareMembers(data.members);
+    } catch (cause) {
+      setSharingError(cause instanceof Error ? cause.message : "共享信息加载失败。");
+    } finally {
+      setSharingLoading(false);
+    }
+  }
+  function openSharing() {
+    if (!workspace || activeWorkspaceAccess !== "owner") return;
+    setSharingOpen(true);
+    setShareRole("editor");
+    setShareExpiryDays(7);
+    setNewShareUrl("");
+    setShareCopyNotice("");
+    void refreshSharing(workspace.id);
+  }
+  async function createShareLink() {
+    if (!workspace || sharingSaving) return;
+    setSharingSaving(true);
+    setSharingError("");
+    setNewShareUrl("");
+    try {
+      const data = await api<{ inviteUrl: string }>(`/api/workspaces/${workspace.id}/sharing`, {
+        method: "POST",
+        body: JSON.stringify({ role: shareRole, expiresInDays: shareExpiryDays }),
+      });
+      setNewShareUrl(data.inviteUrl);
+      await refreshSharing(workspace.id);
+    } catch (cause) {
+      setSharingError(cause instanceof Error ? cause.message : "邀请链接创建失败。");
+    } finally {
+      setSharingSaving(false);
+    }
+  }
+  async function copyShareLink() {
+    if (!newShareUrl) return;
+    try {
+      await navigator.clipboard.writeText(newShareUrl);
+      setShareCopyNotice("邀请链接已复制，可发给团队成员。");
+    } catch {
+      setShareCopyNotice("浏览器未允许剪贴板访问，请手动复制下方链接。");
+    }
+  }
+  async function updateSharing(action: { memberId: string } | { linkId: string }) {
+    if (!workspace) return;
+    setSharingSaving(true);
+    setSharingError("");
+    try {
+      await api(`/api/workspaces/${workspace.id}/sharing`, {
+        method: "DELETE",
+        body: JSON.stringify(action),
+      });
+      await refreshSharing(workspace.id);
+    } catch (cause) {
+      setSharingError(cause instanceof Error ? cause.message : "共享权限更新失败。");
+    } finally {
+      setSharingSaving(false);
+    }
   }
   function exportWorkspace() {
     if (!workspace) return;
@@ -1706,6 +1840,7 @@ export default function Home() {
             attachments: submittedAttachments,
             demo: submittedDemoMode,
             workspaceId: plannedWorkspaceId,
+            thinkingMode,
           }),
           signal: controller.signal,
         },
@@ -1797,8 +1932,23 @@ export default function Home() {
       if (requestEpoch === clientSession.epoch) setBusy(null);
     }
   }
-  function attachImage(file?: File) {
+  async function attachImage(file?: File) {
     if (!file) return;
+    if (isVideoFile(file)) {
+      setError("");
+      try {
+        const contactSheet = await createVideoContactSheet(file);
+        if (!isSupportedImageDataUrl(contactSheet)) {
+          setError("视频关键帧生成失败，请重试。");
+          return;
+        }
+        setImage(contactSheet);
+        setImageName(`${file.name} · 关键帧`);
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : "视频处理失败，请重试。");
+      }
+      return;
+    }
     if (!/^image\/(jpeg|png|gif|webp)$/.test(file.type) || file.size > MAX_IMAGE_BYTES) {
       setError("请选择 6 MB 以下的 JPG、PNG、GIF 或 WebP 图片。");
       return;
@@ -1868,6 +2018,21 @@ export default function Home() {
       );
     try {
       for (const file of files) {
+        if (isVideoFile(file)) {
+          if (hasImage) throw new Error("每轮最多附加一张图片或一个视频。");
+          const contactSheet = await createVideoContactSheet(file);
+          if (!isSupportedImageDataUrl(contactSheet))
+            throw new Error("视频画面提取失败，请换一个文件后重试。");
+          hasImage = true;
+          next.push({
+            id: crypto.randomUUID(),
+            name: `${file.name.slice(0, 120)} · 关键帧`,
+            mimeType: "image/jpeg",
+            kind: "image",
+            content: contactSheet,
+          });
+          continue;
+        }
         if (/^image\/(jpeg|png|gif|webp)$/.test(file.type)) {
           if (hasImage) throw new Error("每轮最多附加 1 张图片。");
           if (file.size > MAX_IMAGE_BYTES) throw new Error("图片不能超过 6 MB。");
@@ -3329,7 +3494,7 @@ export default function Home() {
                         <input
                           className="plan-image-input"
                           type="file"
-                          accept="image/jpeg,image/png,image/gif,image/webp"
+                          accept="image/jpeg,image/png,image/gif,image/webp,video/mp4,video/webm,video/quicktime,.mp4,.webm,.mov"
                           onChange={(event) => {
                             attachImage(event.target.files?.[0]);
                             event.currentTarget.value = "";
@@ -3474,11 +3639,21 @@ export default function Home() {
                   <p className="eyebrow">
                     <span className="pulse" /> ACTIVE MISSION <span className="line" />{" "}
                     {workspace.plan.category}
+                    {activeWorkspaceAccess !== "owner" && (
+                      <span className="workspace-access-pill">
+                        共享 · {activeWorkspaceAccess === "editor" ? "可编辑" : "只读"}
+                      </span>
+                    )}
                   </p>
                   <h1>{workspace.plan.title}</h1>
                   <p>{workspace.plan.summary}</p>
                 </div>
                 <div className="workspace-head-actions">
+                  {activeWorkspaceAccess === "owner" && (
+                    <button className="button-outline" onClick={openSharing}>
+                      <Share2 size={16} /> 共享工作区
+                    </button>
+                  )}
                   <button
                     className="button-outline"
                     onClick={exportWorkspace}
@@ -3554,6 +3729,7 @@ export default function Home() {
                 <div className="workspace-chat-column">
                   <WorkspaceChat
                     workspace={workspace}
+                    readOnly={activeWorkspaceAccess === "viewer"}
                     route={
                       workspace.plan.routes.find((item) => item.id === workspace.selectedRouteId) ||
                       workspace.plan.routes[0]
@@ -3765,6 +3941,23 @@ export default function Home() {
                                 {" · 输出 "}
                                 {workspace.usage.outputTokens.toLocaleString("zh-CN")}
                               </small>
+                              {workspace.usage.cacheMeasuredInputTokens !== undefined &&
+                              workspace.usage.cacheMeasuredInputTokens > 0 ? (
+                                <small title="仅按接口返回缓存统计的请求计算，不代表模型准确率。">
+                                  输入缓存命中率{" "}
+                                  {(
+                                    ((workspace.usage.cacheMeasuredHitTokens || 0) /
+                                      workspace.usage.cacheMeasuredInputTokens) *
+                                    100
+                                  ).toFixed(1)}
+                                  % · 已统计输入{" "}
+                                  {workspace.usage.cacheMeasuredInputTokens.toLocaleString("zh-CN")}
+                                </small>
+                              ) : (
+                                <small title="供应商未提供缓存统计字段，无法计算输入缓存命中率。">
+                                  输入缓存命中率暂无接口统计样本
+                                </small>
+                              )}
                               <small>
                                 {workspace.usage.model} · {workspace.usage.requests} 次请求 ·{" "}
                                 {(workspace.usage.latencyMs / 1000).toFixed(1)} 秒
@@ -3831,14 +4024,24 @@ export default function Home() {
                                 key={task.id}
                                 className={task.status === "done" ? "done" : ""}
                                 aria-pressed={task.status === "done"}
-                                disabled={busy !== null || savingTaskId !== null}
+                                disabled={
+                                  activeWorkspaceAccess === "viewer" ||
+                                  busy !== null ||
+                                  savingTaskId !== null
+                                }
                                 onClick={() => toggleTask(task.id)}
                                 layout
                                 whileHover={
-                                  busy === null && savingTaskId === null ? { x: 2 } : undefined
+                                  activeWorkspaceAccess !== "viewer" &&
+                                  busy === null &&
+                                  savingTaskId === null
+                                    ? { x: 2 }
+                                    : undefined
                                 }
                                 whileTap={
-                                  busy === null && savingTaskId === null
+                                  activeWorkspaceAccess !== "viewer" &&
+                                  busy === null &&
+                                  savingTaskId === null
                                     ? { scale: 0.995 }
                                     : undefined
                                 }
@@ -3992,7 +4195,12 @@ export default function Home() {
                       onClick={() => openWorkspace(item)}
                       aria-label={`打开工作区：${item.plan.title}`}
                     >
-                      <span className="history-card-category">{item.plan.category}</span>
+                      <span className="history-card-category">
+                        {item.plan.category}
+                        {workspaceAccessById[item.id] && workspaceAccessById[item.id] !== "owner"
+                          ? ` · ${workspaceAccessById[item.id] === "editor" ? "共享编辑" : "只读共享"}`
+                          : ""}
+                      </span>
                       <h3>{item.plan.title}</h3>
                       <p>{item.prompt}</p>
                       <footer>
@@ -4001,23 +4209,26 @@ export default function Home() {
                         </span>
                       </footer>
                     </button>
-                    <button
-                      className="history-card-delete"
-                      type="button"
-                      onClick={() =>
-                        setConfirmation({
-                          title: "删除这个目标？",
-                          description: `「${item.plan.title}」及其路线、任务和执行记录都会永久删除，无法恢复。`,
-                          confirmLabel: "删除目标",
-                          tone: "danger",
-                          onConfirm: () => remove(item.id),
-                        })
-                      }
-                      aria-label={`删除目标：${item.plan.title}`}
-                      title="删除目标"
-                    >
-                      <Trash2 size={16} />
-                    </button>
+                    {(!workspaceAccessById[item.id] ||
+                      workspaceAccessById[item.id] === "owner") && (
+                      <button
+                        className="history-card-delete"
+                        type="button"
+                        onClick={() =>
+                          setConfirmation({
+                            title: "删除这个目标？",
+                            description: `「${item.plan.title}」及其路线、任务和执行记录都会永久删除，无法恢复。`,
+                            confirmLabel: "删除目标",
+                            tone: "danger",
+                            onConfirm: () => remove(item.id),
+                          })
+                        }
+                        aria-label={`删除目标：${item.plan.title}`}
+                        title="删除目标"
+                      >
+                        <Trash2 size={16} />
+                      </button>
+                    )}
                   </article>
                 ))}
                 {history.length === 0 && historyStatus === "loading" && (
@@ -4079,6 +4290,18 @@ export default function Home() {
                         {admin.aiUsage.cachedInputTokens.toLocaleString("zh-CN")} · 输出{" "}
                         {admin.aiUsage.outputTokens.toLocaleString("zh-CN")}
                       </small>
+                      <small title="仅统计供应商明确返回缓存统计的请求；旧记录和未提供统计的请求不进入分母。">
+                        {admin.aiUsage.cacheMeasuredInputTokens > 0
+                          ? "输入缓存命中率 " +
+                            (
+                              (admin.aiUsage.cacheMeasuredHitTokens /
+                                admin.aiUsage.cacheMeasuredInputTokens) *
+                              100
+                            ).toFixed(1) +
+                            "% · 统计输入 " +
+                            admin.aiUsage.cacheMeasuredInputTokens.toLocaleString("zh-CN")
+                          : "缓存命中率暂无接口统计样本"}
+                      </small>
                       <WandSparkles size={22} />
                     </div>
                   </div>
@@ -4097,6 +4320,10 @@ export default function Home() {
                         <small>近 7 日 Token</small>
                       </div>
                     </div>
+                    <p className="usage-note">
+                      Token 用量用于定位消耗来源，不等同人民币账单金额；实际费用以 DeepSeek
+                      开放平台为准。
+                    </p>
                     {(() => {
                       const days = admin.dailyAiUsage;
                       const maximum = Math.max(0, ...days.map((item) => item.totalTokens));
@@ -4104,12 +4331,32 @@ export default function Home() {
                         (total, item) => total + item.planningRequests,
                         0,
                       );
-                      const executionRequests = days.reduce(
-                        (total, item) => total + item.executionRequests,
+                      const dialogueRequests = days.reduce(
+                        (total, item) => total + item.dialogueRequests,
+                        0,
+                      );
+                      const workbenchRequests = days.reduce(
+                        (total, item) => total + item.workbenchRequests,
+                        0,
+                      );
+                      const healthcheckRequests = days.reduce(
+                        (total, item) => total + item.healthcheckRequests,
+                        0,
+                      );
+                      const legacyRequests = days.reduce(
+                        (total, item) => total + item.legacyRequests,
                         0,
                       );
                       const cachedInputTokens = days.reduce(
                         (total, item) => total + item.cachedInputTokens,
+                        0,
+                      );
+                      const cacheMeasuredInputTokens = days.reduce(
+                        (total, item) => total + item.cacheMeasuredInputTokens,
+                        0,
+                      );
+                      const cacheMeasuredHitTokens = days.reduce(
+                        (total, item) => total + item.cacheMeasuredHitTokens,
                         0,
                       );
                       const totalRequests = days.reduce((total, item) => total + item.requests, 0);
@@ -4123,7 +4370,7 @@ export default function Home() {
                           <div
                             className="usage-chart"
                             role="img"
-                            aria-label={`近七日 AI 请求量：规划 ${planningRequests} 次，执行 ${executionRequests} 次`}
+                            aria-label={`近七日 AI 请求量：规划 ${planningRequests} 次，对话 ${dialogueRequests} 次，工作台 ${workbenchRequests} 次，连接诊断 ${healthcheckRequests} 次，旧记录 ${legacyRequests} 次`}
                           >
                             {days.map((item) => {
                               const height = maximum
@@ -4150,9 +4397,26 @@ export default function Home() {
                           </div>
                           <p className="usage-breakdown">
                             <span>{planningRequests.toLocaleString("zh-CN")} 次规划</span>
-                            <span>{executionRequests.toLocaleString("zh-CN")} 次执行</span>
+                            <span>{dialogueRequests.toLocaleString("zh-CN")} 次对话</span>
+                            <span>{workbenchRequests.toLocaleString("zh-CN")} 次工作台执行</span>
+                            <span>{healthcheckRequests.toLocaleString("zh-CN")} 次连接诊断</span>
+                            {legacyRequests > 0 && (
+                              <span title="这些历史记录未保存来源分类。">
+                                {legacyRequests.toLocaleString("zh-CN")} 次旧记录
+                              </span>
+                            )}
                             <span>
                               输入缓存命中 {cachedInputTokens.toLocaleString("zh-CN")} tokens
+                            </span>
+                            <span title="仅计算供应商明确返回缓存统计的输入 Token。">
+                              {cacheMeasuredInputTokens > 0
+                                ? "输入缓存命中率 " +
+                                  (
+                                    (cacheMeasuredHitTokens / cacheMeasuredInputTokens) *
+                                    100
+                                  ).toFixed(1) +
+                                  "%"
+                                : "暂无接口缓存统计样本"}
                             </span>
                             <span>平均响应 {averageLatencyMs.toLocaleString("zh-CN")} ms</span>
                           </p>
@@ -4283,7 +4547,7 @@ export default function Home() {
                   </div>
                   <div className="admin-table">
                     <h2>
-                      最近的目标 <small>按最后更新时间排序</small>
+                      最近的目标 <small>按最后更新时间排序 · Token 按规划、对话和工作台拆分</small>
                     </h2>
                     <div className="table-scroll">
                       <table aria-label="最近的目标工作空间">
@@ -4292,6 +4556,7 @@ export default function Home() {
                             <th scope="col">目标</th>
                             <th scope="col">类型</th>
                             <th scope="col">创建者</th>
+                            <th scope="col">AI 用量</th>
                             <th scope="col">更新时间</th>
                             <th scope="col">操作</th>
                           </tr>
@@ -4307,6 +4572,21 @@ export default function Home() {
                               </td>
                               <td data-label="创建者">
                                 <span>{item.owner}</span>
+                              </td>
+                              <td data-label="AI 用量">
+                                <div className="admin-workspace-usage">
+                                  <span>
+                                    {item.aiTokens.toLocaleString("zh-CN")} tokens ·{" "}
+                                    {item.aiRequests} 次模型请求
+                                  </span>
+                                  <small className="admin-workspace-usage-detail">
+                                    规划 {item.plannerTokens.toLocaleString("zh-CN")} · 对话{" "}
+                                    {item.dialogueTokens.toLocaleString("zh-CN")} · 工作台{" "}
+                                    {item.workbenchTokens.toLocaleString("zh-CN")}
+                                    {item.legacyTokens > 0 &&
+                                      ` · 旧记录 ${item.legacyTokens.toLocaleString("zh-CN")}`}
+                                  </small>
+                                </div>
                               </td>
                               <td data-label="更新时间">
                                 <span>{shortDate(item.updated_at)}</span>
@@ -4342,6 +4622,194 @@ export default function Home() {
           )}
         </main>
       </div>
+      <AnimatePresence>
+        {sharingOpen && workspace && activeWorkspaceAccess === "owner" && (
+          <motion.div
+            className="modal-layer"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => setSharingOpen(false)}
+          >
+            <motion.section
+              className="share-modal"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="share-dialog-title"
+              onClick={(event) => event.stopPropagation()}
+              initial={{ opacity: 0, y: 18 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 12 }}
+            >
+              <div className="modal-top">
+                <span className="step-label">WORKSPACE SHARING</span>
+                <button
+                  type="button"
+                  onClick={() => setSharingOpen(false)}
+                  aria-label="关闭共享设置"
+                >
+                  <X size={20} />
+                </button>
+              </div>
+              <div className="modal-icon">
+                <Users size={24} />
+              </div>
+              <h2 id="share-dialog-title">邀请成员协作</h2>
+              <p>
+                成员需要登录后接受邀请。编辑者可以继续和 Agent
+                协作；只读成员只能查看对话、进度和成果。
+              </p>
+
+              <div className="share-create-row">
+                <label>
+                  <span>成员权限</span>
+                  <select
+                    value={shareRole}
+                    onChange={(event) => setShareRole(event.target.value as "editor" | "viewer")}
+                  >
+                    <option value="editor">可编辑与协作</option>
+                    <option value="viewer">只读查看</option>
+                  </select>
+                </label>
+                <label>
+                  <span>有效期</span>
+                  <select
+                    value={shareExpiryDays}
+                    onChange={(event) =>
+                      setShareExpiryDays(Number(event.target.value) as 1 | 7 | 30)
+                    }
+                  >
+                    <option value={1}>1 天</option>
+                    <option value={7}>7 天</option>
+                    <option value={30}>30 天</option>
+                  </select>
+                </label>
+                <button
+                  className="button-primary"
+                  type="button"
+                  onClick={() => void createShareLink()}
+                  disabled={sharingSaving}
+                >
+                  {sharingSaving ? (
+                    <LoaderCircle className="chat-spinner" size={16} />
+                  ) : (
+                    <Share2 size={16} />
+                  )}
+                  生成邀请链接
+                </button>
+              </div>
+
+              {newShareUrl && (
+                <div className="share-generated-link">
+                  <label htmlFor="generated-share-url">新邀请链接（最多 10 人使用）</label>
+                  <div>
+                    <input
+                      id="generated-share-url"
+                      readOnly
+                      value={newShareUrl}
+                      onFocus={(event) => event.currentTarget.select()}
+                    />
+                    <button
+                      className="button-outline"
+                      type="button"
+                      onClick={() => void copyShareLink()}
+                    >
+                      <Copy size={15} />
+                      复制
+                    </button>
+                  </div>
+                  <small role="status">
+                    {shareCopyNotice || "链接仅显示在这里；离开后请重新生成。"}
+                  </small>
+                </div>
+              )}
+
+              {sharingError && (
+                <p className="share-error" role="alert">
+                  {sharingError}
+                </p>
+              )}
+              <div className="share-modal-columns">
+                <section>
+                  <h3>
+                    已加入的成员 <span>{shareMembers.length}</span>
+                  </h3>
+                  {sharingLoading && <p className="share-empty">正在读取共享信息…</p>}
+                  {!sharingLoading && shareMembers.length === 0 && (
+                    <p className="share-empty">成员接受邀请后会显示在这里。</p>
+                  )}
+                  {shareMembers.map((member) => (
+                    <div className="share-list-row" key={member.id}>
+                      <span className="share-member-avatar">
+                        {member.name.slice(0, 1).toUpperCase()}
+                      </span>
+                      <span className="share-list-copy">
+                        <strong>{member.name}</strong>
+                        <small>{member.email}</small>
+                      </span>
+                      <span className="share-role-label">
+                        {member.role === "editor" ? "可编辑" : "只读"}
+                      </span>
+                      <button
+                        type="button"
+                        className="share-remove-button"
+                        disabled={sharingSaving}
+                        onClick={() => void updateSharing({ memberId: member.id })}
+                        aria-label={`移除成员 ${member.name}`}
+                        title="移除成员"
+                      >
+                        <X size={16} />
+                      </button>
+                    </div>
+                  ))}
+                </section>
+                <section>
+                  <h3>
+                    邀请链接{" "}
+                    <span>
+                      {
+                        shareLinks.filter(
+                          (link) => !link.revokedAt && Date.parse(link.expiresAt) > Date.now(),
+                        ).length
+                      }
+                      /10
+                    </span>
+                  </h3>
+                  {shareLinks.filter((link) => !link.revokedAt).length === 0 && (
+                    <p className="share-empty">暂时没有有效邀请链接。</p>
+                  )}
+                  {shareLinks
+                    .filter((link) => !link.revokedAt)
+                    .map((link) => (
+                      <div className="share-list-row" key={link.id}>
+                        <span className="share-link-icon">
+                          <Share2 size={15} />
+                        </span>
+                        <span className="share-list-copy">
+                          <strong>{link.role === "editor" ? "协作编辑" : "只读查看"}</strong>
+                          <small>
+                            已加入 {link.useCount}/{link.maxUses} 人 · 到期{" "}
+                            {new Date(link.expiresAt).toLocaleDateString("zh-CN")}
+                          </small>
+                        </span>
+                        <button
+                          type="button"
+                          className="share-remove-button"
+                          disabled={sharingSaving}
+                          onClick={() => void updateSharing({ linkId: link.id })}
+                          aria-label="撤销邀请链接"
+                          title="撤销邀请链接"
+                        >
+                          <X size={16} />
+                        </button>
+                      </div>
+                    ))}
+                </section>
+              </div>
+            </motion.section>
+          </motion.div>
+        )}
+      </AnimatePresence>
       <AnimatePresence>
         {calendarAnchorOpen && (
           <motion.div

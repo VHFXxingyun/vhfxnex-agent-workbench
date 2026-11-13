@@ -105,6 +105,8 @@ export async function POST(request: NextRequest) {
   });
   if (result.status === "missing")
     return NextResponse.json({ error: "目标工作区已不存在。" }, { status: 404 });
+  if (result.status === "forbidden")
+    return NextResponse.json({ error: "你只有查看权限，无法提交工作要求。" }, { status: 403 });
   if (result.status === "invalid")
     return NextResponse.json({ error: "找不到对应的聊天交接记录，请重新发送。" }, { status: 409 });
   if (result.status === "limit")
