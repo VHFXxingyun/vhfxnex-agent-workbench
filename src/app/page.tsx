@@ -1649,7 +1649,7 @@ export default function Home() {
       ...(workspace.usage
         ? [
             `- 模型：${workspace.usage.model}`,
-            `- Tokens：输入 ${workspace.usage.inputTokens.toLocaleString("zh-CN")}${workspace.usage.cachedInputTokens === undefined ? "" : `（缓存命中 ${workspace.usage.cachedInputTokens.toLocaleString("zh-CN")}）`} · 输出 ${workspace.usage.outputTokens.toLocaleString("zh-CN")} · 合计 ${workspace.usage.totalTokens.toLocaleString("zh-CN")}`,
+            `- Tokens：输入 ${workspace.usage.inputTokens.toLocaleString("zh-CN")}${workspace.usage.cacheMeasuredInputTokens && workspace.usage.cacheMeasuredInputTokens > 0 ? `（缓存命中 ${workspace.usage.cacheMeasuredHitTokens?.toLocaleString("zh-CN") ?? 0} / 已统计输入 ${workspace.usage.cacheMeasuredInputTokens.toLocaleString("zh-CN")}）` : "（缓存命中暂无统计样本）"} · 输出 ${workspace.usage.outputTokens.toLocaleString("zh-CN")} · 合计 ${workspace.usage.totalTokens.toLocaleString("zh-CN")}`,
             `- 请求次数：${workspace.usage.requests} · 累计耗时：${(workspace.usage.latencyMs / 1000).toFixed(1)} 秒`,
           ]
         : ["- 尚无实时模型用量记录；演示模式不会生成虚构用量。"]),
@@ -3988,6 +3988,17 @@ export default function Home() {
                               {workspace.usage.totalTokens.toLocaleString("zh-CN")} tokens ·{" "}
                               {(workspace.usage.latencyMs / 1000).toFixed(1)} 秒
                             </strong>
+                            <small
+                              className="plan-usage-brief-cache"
+                              title={`缓存命中率按供应商报告的缓存命中输入 Token ÷ 已统计输入 Token 计算。${workspaceCacheCoverage?.title ?? ""} 未报告缓存字段的请求不参与命中率。`}
+                            >
+                              输入 {workspace.usage.inputTokens.toLocaleString("zh-CN")} ·{" "}
+                              {workspace.usage.cacheMeasuredInputTokens &&
+                              workspace.usage.cacheMeasuredInputTokens > 0
+                                ? `缓存命中 ${workspace.usage.cacheMeasuredHitTokens?.toLocaleString("zh-CN") ?? 0} / 已统计 ${workspace.usage.cacheMeasuredInputTokens.toLocaleString("zh-CN")}（${(((workspace.usage.cacheMeasuredHitTokens || 0) / workspace.usage.cacheMeasuredInputTokens) * 100).toFixed(1)}%）· 覆盖 ${workspaceCacheCoverage?.percent.toFixed(1) ?? "0.0"}%`
+                                : "缓存命中暂无统计样本"}
+                              {` · 输出 ${workspace.usage.outputTokens.toLocaleString("zh-CN")}`}
+                            </small>
                             {!workspace.result && currentWorkspaceFlashCostEstimate && (
                               <small
                                 className="workspace-flash-cost-estimate"
@@ -4079,10 +4090,10 @@ export default function Home() {
                               </div>
                               <small>
                                 输入 {workspace.usage.inputTokens.toLocaleString("zh-CN")}
-                                {workspace.usage.cachedInputTokens !== undefined &&
-                                  "（缓存命中 " +
-                                    workspace.usage.cachedInputTokens.toLocaleString("zh-CN") +
-                                    "）"}
+                                {workspace.usage.cacheMeasuredInputTokens &&
+                                workspace.usage.cacheMeasuredInputTokens > 0
+                                  ? `（缓存命中 ${workspace.usage.cacheMeasuredHitTokens?.toLocaleString("zh-CN") ?? 0} / 已统计输入 ${workspace.usage.cacheMeasuredInputTokens.toLocaleString("zh-CN")}）`
+                                  : "（缓存命中暂无统计样本）"}
                                 {" · 输出 "}
                                 {workspace.usage.outputTokens.toLocaleString("zh-CN")}
                               </small>
@@ -4448,9 +4459,11 @@ export default function Home() {
                         {admin.aiUsage.averageLatencyMs.toLocaleString("zh-CN")} ms
                       </small>
                       <small>
-                        输入 {admin.aiUsage.inputTokens.toLocaleString("zh-CN")} · 缓存命中{" "}
-                        {admin.aiUsage.cachedInputTokens.toLocaleString("zh-CN")} · 输出{" "}
-                        {admin.aiUsage.outputTokens.toLocaleString("zh-CN")}
+                        输入 {admin.aiUsage.inputTokens.toLocaleString("zh-CN")} ·{" "}
+                        {admin.aiUsage.cacheMeasuredInputTokens > 0
+                          ? `供应商报告缓存命中 ${admin.aiUsage.cacheMeasuredHitTokens.toLocaleString("zh-CN")} / 已统计输入 ${admin.aiUsage.cacheMeasuredInputTokens.toLocaleString("zh-CN")}`
+                          : "缓存命中暂无统计样本"}{" "}
+                        · 输出 {admin.aiUsage.outputTokens.toLocaleString("zh-CN")}
                       </small>
                       <small
                         title={`命中率 = 供应商报告的缓存命中输入 Token ÷ 已统计输入 Token。${adminCacheCoverage?.title ?? ""} 按 Token 加权，不是命中请求占比；未提供统计的请求不参与。缓存只影响输入费，不影响输出费。`}
@@ -4531,10 +4544,6 @@ export default function Home() {
                         (total, item) => total + item.legacyRequests,
                         0,
                       );
-                      const cachedInputTokens = days.reduce(
-                        (total, item) => total + item.cachedInputTokens,
-                        0,
-                      );
                       const cacheMeasuredInputTokens = days.reduce(
                         (total, item) => total + item.cacheMeasuredInputTokens,
                         0,
@@ -4598,7 +4607,9 @@ export default function Home() {
                               </span>
                             )}
                             <span>
-                              输入缓存命中 {cachedInputTokens.toLocaleString("zh-CN")} tokens
+                              {cacheMeasuredInputTokens > 0
+                                ? `供应商报告缓存命中 ${cacheMeasuredHitTokens.toLocaleString("zh-CN")} tokens / 已统计输入 ${cacheMeasuredInputTokens.toLocaleString("zh-CN")}`
+                                : "缓存命中暂无统计样本"}
                             </span>
                             <span
                               title={`命中率 = 供应商报告的缓存命中输入 Token ÷ 已统计输入 Token。${cacheCoverage.title} 按 Token 加权，不是命中请求占比；未提供统计的请求不参与。缓存只影响输入费，不影响输出费。`}

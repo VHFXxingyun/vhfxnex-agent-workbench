@@ -509,6 +509,13 @@ Google Calendar 与 GitHub 集成继续按用户要求暂缓；本次未创建�
 - `npm run lint`、`npx tsc --noEmit`、`npm run build`、Prettier、`git diff --check` 与生产构建服务上的 UI smoke 145 项通过；查看 320px 管理台截图，新增项目行数据可读。
 - 使用隔离 SQLite 与模拟数据，未调用 DeepSeek API；这项统计只解释应用已采集的请求，不能还原启用埋点之前的历史命中率。
 
+## 2026-11-13｜修正无缓存统计时的零命中误读
+
+- 工作区用量、工作区 Markdown 导出、管理员总览与近七日趋势改为显示供应商报告的缓存命中量及其已统计输入分母；完全没有统计样本时显示“缓存命中暂无统计样本”。
+- 增加 UI 回归覆盖：同时验证部分覆盖率、单工作区无缓存字段、管理员全局与趋势零样本状态，防止把缺失遥测显示成真实的 0 命中。
+- `npm run smoke` 72 项、生产构建服务上的 `npm run smoke:ui` 147 项通过；`npm run lint`、`npx tsc --noEmit`、`npm run build`、Prettier 与 `git diff --check` 均通过。
+- 查看手机管理台、路线选择页和 1366×768 工作区截图，新增统计可读、布局正常；采用隔离 SQLite 与模拟用量，没有调用 DeepSeek API。
+
 ## 后续记录规则
 
 - 每次真实完成一个功能、修复或验收后，再新增对应记录并提交。

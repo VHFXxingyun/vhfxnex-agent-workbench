@@ -575,6 +575,33 @@ try {
     1100,
     new Date().toISOString(),
   );
+  const noCacheUsageWorkspaceId = crypto.randomUUID();
+  database
+    .prepare(
+      "INSERT INTO workspaces (id, user_id, title, category, body, created_at, updated_at) VALUES (?, ?, ?, ?, '{}', ?, ?)",
+    )
+    .run(
+      noCacheUsageWorkspaceId,
+      adminUsageUser.id,
+      "缓存统计缺失验证目标",
+      "测试",
+      usageWorkspaceTime,
+      usageWorkspaceTime,
+    );
+  insertAdminUsage.run(
+    crypto.randomUUID(),
+    adminUsageUser.id,
+    noCacheUsageWorkspaceId,
+    "planner",
+    "plan",
+    400,
+    0,
+    0,
+    0,
+    100,
+    500,
+    new Date().toISOString(),
+  );
   insertAdminUsage.run(
     crypto.randomUUID(),
     adminUsageUser.id,
@@ -635,12 +662,22 @@ try {
   );
   assert.match(await workspaceUsage.innerText(), /已确认缓存节省：\s*\$[\d,.]+\s*–\s*\$[\d,.]+/);
   check(true, "Admin workspace view breaks down tokens, Flash cost, cache hit rate and coverage");
+  const noCacheWorkspaceUsage = page
+    .getByRole("row")
+    .filter({ hasText: "缓存统计缺失验证目标" })
+    .locator(".admin-workspace-usage");
+  await noCacheWorkspaceUsage.waitFor({ state: "visible" });
+  assert.match(
+    await noCacheWorkspaceUsage.innerText(),
+    /输入 Token 缓存命中率：暂无样本\s+·\s+缓存统计覆盖 0\.0%（0\/400）/,
+  );
+  check(true, "Show a missing cache-stat sample instead of claiming zero hits for a project");
   const usageBreakdown = page.locator(".usage-breakdown");
   await usageBreakdown.waitFor({ state: "visible" });
   assert.match(
     await usageBreakdown.innerText(),
-    /输入缓存命中\s+[\d,]+\s+tokens/,
-    "the seven-day usage panel should show its cached-input total",
+    /供应商报告缓存命中\s+[\d,]+\s+tokens\s+\/\s+已统计输入\s+[\d,]+/,
+    "the seven-day usage panel should attribute cached tokens only to measured input",
   );
   assert.match(
     await usageBreakdown.innerText(),
@@ -649,14 +686,14 @@ try {
   );
   assert.match(
     await usageBreakdown.innerText(),
-    /覆盖\s+45\.0%/,
+    /覆盖\s+38\.2%/,
     "the seven-day usage panel should show what share of input tokens has cache telemetry",
   );
   const cacheCoverageSummary = page
     .locator(".admin-usage-stat small")
     .filter({ hasText: "输入 Token 缓存命中率" });
   await cacheCoverageSummary.waitFor({ state: "visible" });
-  assert.match(await cacheCoverageSummary.innerText(), /缓存统计覆盖\s+45\.0%/);
+  assert.match(await cacheCoverageSummary.innerText(), /缓存统计覆盖\s+38\.2%/);
   check(
     true,
     "Show correct provider cache-stat coverage next to aggregate and seven-day hit rates",
@@ -666,7 +703,7 @@ try {
   await page.locator(".usage-chart").waitFor();
   const tokenBreakdown = page.locator(".admin-usage-stat small").nth(1);
   await tokenBreakdown.waitFor();
-  assert.match(await tokenBreakdown.innerText(), /输入.*缓存命中.*输出/);
+  assert.match(await tokenBreakdown.innerText(), /输入.*供应商报告缓存命中.*已统计输入.*输出/);
   const costEstimate = page.locator(".admin-cost-estimate");
   await costEstimate.waitFor({ state: "visible" });
   assert.match(await costEstimate.innerText(), /当前价回算估值：\s*\$[\d,.]+\s*–\s*\$[\d,.]+/);
@@ -678,6 +715,28 @@ try {
     true,
     "Show aggregate AI usage, a bounded current-price estimate, confirmed cache savings, latency, and a seven-day activity chart in the admin console",
   );
+  database
+    .prepare(
+      "UPDATE ai_usage SET cached_input_tokens = 0, cache_measured_input_tokens = 0, cache_measured_hit_tokens = 0 WHERE user_id = ?",
+    )
+    .run(adminUsageUser.id);
+  await page.reload({ waitUntil: "networkidle" });
+  await page.getByRole("button", { name: "管理控制台" }).click();
+  await page.getByRole("heading", { name: "管理控制台" }).waitFor();
+  const unmeasuredAdminTokens = page.locator(".admin-usage-stat small").nth(1);
+  await unmeasuredAdminTokens.waitFor();
+  assert.match(await unmeasuredAdminTokens.innerText(), /输入.*缓存命中暂无统计样本.*输出/);
+  assert.doesNotMatch(await unmeasuredAdminTokens.innerText(), /缓存命中\s+0(?:\s|$)/);
+  assert.match(await page.locator(".usage-breakdown").innerText(), /缓存命中暂无统计样本/);
+  check(true, "Report unavailable aggregate cache telemetry without implying zero hits");
+  database
+    .prepare(
+      "UPDATE ai_usage SET cached_input_tokens = 350, cache_measured_input_tokens = 1000, cache_measured_hit_tokens = 350 WHERE workspace_id = ? AND source = 'planner'",
+    )
+    .run(usageWorkspaceId);
+  await page.reload({ waitUntil: "networkidle" });
+  await page.getByRole("button", { name: "管理控制台" }).click();
+  await page.getByRole("heading", { name: "管理控制台" }).waitFor();
   await assertNamedButtons(page, "admin console");
   await assertNamedFields(page, "admin console");
   await assertAccessible(page, "admin console");
@@ -1120,6 +1179,10 @@ try {
         ".plan-usage-brief .workspace-flash-cost-estimate",
       );
       await workspaceCostEstimate.waitFor({ state: "visible" });
+      assert.match(
+        await usageCostPage.locator(".plan-usage-brief").innerText(),
+        /输入 1,000,000 · 缓存命中 300,000 \/ 已统计 400,000（75\.0%）· 覆盖 40\.0% · 输出 100,000/,
+      );
       assert.match(
         await workspaceCostEstimate.innerText(),
         /当前价费用估值\s+\$[\d,.]+\s*–\s*\$[\d,.]+/,
@@ -2768,7 +2831,7 @@ try {
   if (liveUiMode) {
     assert.match(
       workspaceMarkdown,
-      /## 模型调用用量[\s\S]*?- 模型：deepseek-flash[\s\S]*?- Tokens：输入 [\d,]+ · 输出 [\d,]+ · 合计 [\d,]+/,
+      /## 模型调用用量[\s\S]*?- 模型：deepseek-flash[\s\S]*?- Tokens：输入 [\d,]+（(?:缓存命中 [\d,]+ \/ 已统计输入 [\d,]+|缓存命中暂无统计样本)） · 输出 [\d,]+ · 合计 [\d,]+/,
     );
   } else {
     assert.match(workspaceMarkdown, /演示模式不会生成虚构用量/);

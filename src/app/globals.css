@@ -1343,6 +1343,12 @@ textarea:focus-visible {
   font-size: 10px;
   font-variant-numeric: tabular-nums;
 }
+.plan-usage-brief-cache {
+  flex-basis: 100%;
+  color: #9b95aa;
+  font-size: 10px;
+  line-height: 1.5;
+}
 .decision-bar {
   background: #20202d;
   border: 1px solid #393547;
