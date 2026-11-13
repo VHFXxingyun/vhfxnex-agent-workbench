@@ -4063,8 +4063,8 @@ export default function Home() {
                               </small>
                               {workspace.usage.cacheMeasuredInputTokens !== undefined &&
                               workspace.usage.cacheMeasuredInputTokens > 0 ? (
-                                <small title="仅按接口返回缓存统计的请求计算，不代表模型准确率。">
-                                  输入缓存命中率{" "}
+                                <small title="命中率 = 供应商报告的缓存命中输入 Token ÷ 供应商返回缓存统计的输入 Token。按 Token 加权，不是命中请求占比；未提供统计的请求不参与。缓存只影响输入费，不影响输出费。">
+                                  输入 Token 缓存命中率{" "}
                                   {(
                                     ((workspace.usage.cacheMeasuredHitTokens || 0) /
                                       workspace.usage.cacheMeasuredInputTokens) *
@@ -4075,7 +4075,7 @@ export default function Home() {
                                 </small>
                               ) : (
                                 <small title="供应商未提供缓存统计字段，无法计算输入缓存命中率。">
-                                  输入缓存命中率暂无接口统计样本
+                                  输入 Token 缓存命中率暂无接口统计样本
                                 </small>
                               )}
                               {currentWorkspaceFlashCostEstimate && (
@@ -4420,9 +4420,9 @@ export default function Home() {
                         {admin.aiUsage.cachedInputTokens.toLocaleString("zh-CN")} · 输出{" "}
                         {admin.aiUsage.outputTokens.toLocaleString("zh-CN")}
                       </small>
-                      <small title="仅统计供应商明确返回缓存统计的请求；旧记录和未提供统计的请求不进入分母。">
+                      <small title="命中率 = 供应商报告的缓存命中输入 Token ÷ 供应商返回缓存统计的输入 Token。按 Token 加权，不是命中请求占比；未提供统计的请求不参与。缓存只影响输入费，不影响输出费。">
                         {admin.aiUsage.cacheMeasuredInputTokens > 0
-                          ? "输入缓存命中率 " +
+                          ? "输入 Token 缓存命中率 " +
                             (
                               (admin.aiUsage.cacheMeasuredHitTokens /
                                 admin.aiUsage.cacheMeasuredInputTokens) *
@@ -4555,9 +4555,9 @@ export default function Home() {
                             <span>
                               输入缓存命中 {cachedInputTokens.toLocaleString("zh-CN")} tokens
                             </span>
-                            <span title="仅计算供应商明确返回缓存统计的输入 Token。">
+                            <span title="命中率 = 供应商报告的缓存命中输入 Token ÷ 供应商返回缓存统计的输入 Token。按 Token 加权，不是命中请求占比；未提供统计的请求不参与。缓存只影响输入费，不影响输出费。">
                               {cacheMeasuredInputTokens > 0
-                                ? "输入缓存命中率 " +
+                                ? "输入 Token 缓存命中率 " +
                                   (
                                     (cacheMeasuredHitTokens / cacheMeasuredInputTokens) *
                                     100

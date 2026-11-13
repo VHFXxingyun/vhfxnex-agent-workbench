@@ -457,6 +457,12 @@ Google Calendar 与 GitHub 集成继续按用户要求暂缓；本次未创建�
 - `npm audit --audit-level=moderate` — 通过，0 个漏洞；`npm run lint`、`npx tsc --noEmit`、`npm run build`、`npm run check:client-secrets`、`npm run smoke:db-maintenance`、`npm run smoke:worker`、`npm run smoke:supervisor` — 通过。
 - 本机没有 Docker，因此 Dockerfile 的实际镜像构建仍待有 Docker 的环境验收；本地干净生产依赖安装已按运行层命令单独验证。
 
+### 缓存命中率说明
+
+- 将工作区、管理员汇总和近 7 天趋势的标签统一为“输入 Token 缓存命中率”。悬停说明明确其口径为缓存命中输入 Token / 已测量输入 Token，按 Token 加权而非按请求数计算；未提供统计的请求不进入样本，缓存命中只降低输入费用，不影响输出费用。
+- 更新 UI smoke 对新标签的既有断言；生产构建上的 `npm run smoke:ui` 使用临时 SQLite 通过 144 项检查，没有调用模型。
+- 标签调整后的 `npm run lint`、`npx tsc --noEmit`、`npm run build`、Prettier 与 `git diff --check` — 通过。
+
 ## 后续记录规则
 
 - 每次真实完成一个功能、修复或验收后，再新增对应记录并提交。

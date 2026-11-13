@@ -643,7 +643,7 @@ try {
   );
   assert.match(
     await usageBreakdown.innerText(),
-    /输入缓存命中率\s+[\d.]+%/,
+    /输入 Token 缓存命中率\s+[\d.]+%/,
     "the seven-day usage panel should show the measured cache-hit rate",
   );
   assert.match(await usageBreakdown.innerText(), /1 次连接诊断/);
