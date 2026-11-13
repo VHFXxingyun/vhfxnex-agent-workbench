@@ -156,6 +156,7 @@ type AdminData = {
     date: string;
     label: string;
     requests: number;
+    inputTokens: number;
     totalTokens: number;
     cachedInputTokens: number;
     cacheMeasuredInputTokens: number;
@@ -198,6 +199,21 @@ function formatEstimatedUsd(value: number) {
     minimumFractionDigits: digits,
     maximumFractionDigits: digits,
   }).format(value);
+}
+function getInputCacheCoverage(inputTokens: number, measuredInputTokens: number) {
+  const total = Number.isFinite(inputTokens) ? Math.max(0, Math.floor(inputTokens)) : 0;
+  const reported = Number.isFinite(measuredInputTokens)
+    ? Math.max(0, Math.floor(measuredInputTokens))
+    : 0;
+  const measured = Math.min(total, reported);
+  const percent = total > 0 ? (measured / total) * 100 : 0;
+  return {
+    measured,
+    total,
+    percent,
+    label: `缓存统计覆盖 ${percent.toFixed(1)}%`,
+    title: `供应商提供缓存字段的输入 Token：${measured.toLocaleString("zh-CN")} / ${total.toLocaleString("zh-CN")}。命中率只在这部分已统计输入中计算。`,
+  };
 }
 const examples = [
   {
@@ -3223,6 +3239,15 @@ export default function Home() {
     workspace?.mode === "live" && workspace.usage && isDeepSeekFlashModel(workspace.usage.model)
       ? estimateDeepSeekFlashCost(workspace.usage)
       : null;
+  const workspaceCacheCoverage = workspace?.usage
+    ? getInputCacheCoverage(
+        workspace.usage.inputTokens,
+        workspace.usage.cacheMeasuredInputTokens ?? 0,
+      )
+    : null;
+  const adminCacheCoverage = admin
+    ? getInputCacheCoverage(admin.aiUsage.inputTokens, admin.aiUsage.cacheMeasuredInputTokens)
+    : null;
   const adminWorkspaceCostEstimates = new Map(
     admin?.workspaces.map((item) => [
       item.id,
@@ -4063,19 +4088,26 @@ export default function Home() {
                               </small>
                               {workspace.usage.cacheMeasuredInputTokens !== undefined &&
                               workspace.usage.cacheMeasuredInputTokens > 0 ? (
-                                <small title="命中率 = 供应商报告的缓存命中输入 Token ÷ 供应商返回缓存统计的输入 Token。按 Token 加权，不是命中请求占比；未提供统计的请求不参与。缓存只影响输入费，不影响输出费。">
+                                <small
+                                  title={`命中率 = 供应商报告的缓存命中输入 Token ÷ 已统计输入 Token。${workspaceCacheCoverage?.title ?? ""} 按 Token 加权，不是命中请求占比；未提供统计的请求不参与。缓存只影响输入费，不影响输出费。`}
+                                >
                                   输入 Token 缓存命中率{" "}
                                   {(
                                     ((workspace.usage.cacheMeasuredHitTokens || 0) /
                                       workspace.usage.cacheMeasuredInputTokens) *
                                     100
                                   ).toFixed(1)}
-                                  % · 已统计输入{" "}
-                                  {workspace.usage.cacheMeasuredInputTokens.toLocaleString("zh-CN")}
+                                  % · {workspaceCacheCoverage?.label}（
+                                  {workspaceCacheCoverage?.measured.toLocaleString("zh-CN")}/
+                                  {workspaceCacheCoverage?.total.toLocaleString("zh-CN")}）
                                 </small>
                               ) : (
-                                <small title="供应商未提供缓存统计字段，无法计算输入缓存命中率。">
-                                  输入 Token 缓存命中率暂无接口统计样本
+                                <small
+                                  title={`供应商未提供缓存统计字段，无法计算输入缓存命中率。${workspaceCacheCoverage?.title ?? ""}`}
+                                >
+                                  输入 Token 缓存命中率暂无样本 · {workspaceCacheCoverage?.label}（
+                                  {workspaceCacheCoverage?.measured.toLocaleString("zh-CN")}/
+                                  {workspaceCacheCoverage?.total.toLocaleString("zh-CN")}）
                                 </small>
                               )}
                               {currentWorkspaceFlashCostEstimate && (
@@ -4420,7 +4452,9 @@ export default function Home() {
                         {admin.aiUsage.cachedInputTokens.toLocaleString("zh-CN")} · 输出{" "}
                         {admin.aiUsage.outputTokens.toLocaleString("zh-CN")}
                       </small>
-                      <small title="命中率 = 供应商报告的缓存命中输入 Token ÷ 供应商返回缓存统计的输入 Token。按 Token 加权，不是命中请求占比；未提供统计的请求不参与。缓存只影响输入费，不影响输出费。">
+                      <small
+                        title={`命中率 = 供应商报告的缓存命中输入 Token ÷ 已统计输入 Token。${adminCacheCoverage?.title ?? ""} 按 Token 加权，不是命中请求占比；未提供统计的请求不参与。缓存只影响输入费，不影响输出费。`}
+                      >
                         {admin.aiUsage.cacheMeasuredInputTokens > 0
                           ? "输入 Token 缓存命中率 " +
                             (
@@ -4428,9 +4462,12 @@ export default function Home() {
                                 admin.aiUsage.cacheMeasuredInputTokens) *
                               100
                             ).toFixed(1) +
-                            "% · 统计输入 " +
-                            admin.aiUsage.cacheMeasuredInputTokens.toLocaleString("zh-CN")
-                          : "缓存命中率暂无接口统计样本"}
+                            "% · 缓存统计覆盖 " +
+                            (adminCacheCoverage?.percent.toFixed(1) ?? "0.0") +
+                            "%"
+                          : "输入 Token 缓存命中率暂无样本 · 缓存统计覆盖 " +
+                            (adminCacheCoverage?.percent.toFixed(1) ?? "0.0") +
+                            "%"}
                       </small>
                       {adminAiCostEstimate && (
                         <small
@@ -4506,6 +4543,14 @@ export default function Home() {
                         (total, item) => total + item.cacheMeasuredHitTokens,
                         0,
                       );
+                      const totalInputTokens = days.reduce(
+                        (total, item) => total + item.inputTokens,
+                        0,
+                      );
+                      const cacheCoverage = getInputCacheCoverage(
+                        totalInputTokens,
+                        cacheMeasuredInputTokens,
+                      );
                       const totalRequests = days.reduce((total, item) => total + item.requests, 0);
                       const averageLatencyMs = totalRequests
                         ? Math.round(
@@ -4555,15 +4600,21 @@ export default function Home() {
                             <span>
                               输入缓存命中 {cachedInputTokens.toLocaleString("zh-CN")} tokens
                             </span>
-                            <span title="命中率 = 供应商报告的缓存命中输入 Token ÷ 供应商返回缓存统计的输入 Token。按 Token 加权，不是命中请求占比；未提供统计的请求不参与。缓存只影响输入费，不影响输出费。">
+                            <span
+                              title={`命中率 = 供应商报告的缓存命中输入 Token ÷ 已统计输入 Token。${cacheCoverage.title} 按 Token 加权，不是命中请求占比；未提供统计的请求不参与。缓存只影响输入费，不影响输出费。`}
+                            >
                               {cacheMeasuredInputTokens > 0
                                 ? "输入 Token 缓存命中率 " +
                                   (
                                     (cacheMeasuredHitTokens / cacheMeasuredInputTokens) *
                                     100
                                   ).toFixed(1) +
+                                  "% · 覆盖 " +
+                                  cacheCoverage.percent.toFixed(1) +
                                   "%"
-                                : "暂无接口缓存统计样本"}
+                                : "暂无缓存统计样本 · 覆盖 " +
+                                  cacheCoverage.percent.toFixed(1) +
+                                  "%"}
                             </span>
                             <span>平均响应 {averageLatencyMs.toLocaleString("zh-CN")} ms</span>
                           </p>

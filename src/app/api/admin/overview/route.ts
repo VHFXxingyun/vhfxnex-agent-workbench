@@ -105,6 +105,7 @@ export async function GET() {
       SELECT
         date(created_at, '+8 hours') AS date,
         COUNT(*) AS requests,
+        COALESCE(SUM(input_tokens), 0) AS inputTokens,
         COALESCE(SUM(total_tokens), 0) AS totalTokens,
         COALESCE(SUM(cached_input_tokens), 0) AS cachedInputTokens,
         COALESCE(SUM(cache_measured_input_tokens), 0) AS cacheMeasuredInputTokens,
@@ -123,6 +124,7 @@ export async function GET() {
     .all(firstDayUtc) as {
     date: string;
     requests: number;
+    inputTokens: number;
     totalTokens: number;
     cachedInputTokens: number;
     cacheMeasuredInputTokens: number;
@@ -141,6 +143,7 @@ export async function GET() {
       date,
       label,
       requests: row?.requests ?? 0,
+      inputTokens: row?.inputTokens ?? 0,
       totalTokens: row?.totalTokens ?? 0,
       cachedInputTokens: row?.cachedInputTokens ?? 0,
       cacheMeasuredInputTokens: row?.cacheMeasuredInputTokens ?? 0,

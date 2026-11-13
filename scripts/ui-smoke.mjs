@@ -646,6 +646,20 @@ try {
     /输入 Token 缓存命中率\s+[\d.]+%/,
     "the seven-day usage panel should show the measured cache-hit rate",
   );
+  assert.match(
+    await usageBreakdown.innerText(),
+    /覆盖\s+45\.0%/,
+    "the seven-day usage panel should show what share of input tokens has cache telemetry",
+  );
+  const cacheCoverageSummary = page
+    .locator(".admin-usage-stat small")
+    .filter({ hasText: "输入 Token 缓存命中率" });
+  await cacheCoverageSummary.waitFor({ state: "visible" });
+  assert.match(await cacheCoverageSummary.innerText(), /缓存统计覆盖\s+45\.0%/);
+  check(
+    true,
+    "Show correct provider cache-stat coverage next to aggregate and seven-day hit rates",
+  );
   assert.match(await usageBreakdown.innerText(), /1 次连接诊断/);
   check(true, "Include minimal provider connectivity probes in aggregate model usage");
   await page.locator(".usage-chart").waitFor();
