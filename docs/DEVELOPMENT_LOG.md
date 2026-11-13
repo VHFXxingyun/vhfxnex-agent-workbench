@@ -389,6 +389,20 @@ Google Calendar 与 GitHub 集成继续按用户要求暂缓；本次未创建�
 - 未调用 DeepSeek API，没有产生模型费用；估值无法代替平台账单或单独证明低缓存命中是历史支出的唯一原因。
 - Google Calendar、GitHub 等外部授权能力按用户要求暂缓。
 
+## 2026-11-13｜补齐缓存未命中用量解析
+
+### 本次完成
+
+- DeepSeek usage 同时提供缓存命中与未命中字段时，优先使用命中数；如果只返回 `prompt_cache_miss_tokens`，则用输入总数减去未命中数得到命中数。
+- 对负数、非整数和大于总输入的统计值做校验与边界截断；缺少两类原始字段时继续标记为无测量样本，不把 SDK 的默认零误当成真实缓存命中。
+- 参考 [DeepSeek Context Caching 文档](https://api-docs.deepseek.com/guides/kv_cache/) 的 usage 字段说明。
+
+### 验证与边界
+
+- `npm run smoke` — 通过；纯本地断言覆盖命中优先级、仅有 miss 字段、超界和无统计字段。
+- `npm run lint`、`npx tsc --noEmit`、`git diff --check` — 通过。
+- 未调用 DeepSeek API；历史用量数据仍无法凭新增解析代码补回当时没有持久化的测量样本。
+
 ## 后续记录规则
 
 - 每次真实完成一个功能、修复或验收后，再新增对应记录并提交。

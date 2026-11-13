@@ -42,13 +42,16 @@ export function getDeepSeekCacheHitTokens(rawUsage, inputTokens) {
   const reportedCacheHitTokens = [
     rawUsage.prompt_cache_hit_tokens,
     rawUsage.prompt_tokens_details?.cached_tokens,
-  ].find(
-    (value) =>
-      typeof value === "number" && Number.isSafeInteger(value) && value >= 0,
-  );
+  ].find((value) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0);
+  if (reportedCacheHitTokens !== undefined) return Math.min(inputTokens, reportedCacheHitTokens);
+
+  const reportedCacheMissTokens = rawUsage.prompt_cache_miss_tokens;
   if (
-    reportedCacheHitTokens === undefined
+    typeof reportedCacheMissTokens === "number" &&
+    Number.isSafeInteger(reportedCacheMissTokens) &&
+    reportedCacheMissTokens >= 0
   )
-    return undefined;
-  return Math.min(inputTokens, reportedCacheHitTokens);
+    return inputTokens - Math.min(inputTokens, reportedCacheMissTokens);
+
+  return undefined;
 }

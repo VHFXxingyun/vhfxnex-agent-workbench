@@ -339,6 +339,19 @@ try {
   assert.equal(nestedCacheUsage?.cachedInputTokens, 40);
   assert.equal(nestedCacheUsage?.cacheMeasuredInputTokens, 40);
   assert.equal(nestedCacheUsage?.cacheMeasuredHitTokens, 40);
+  const missOnlyCacheUsage = parseDeepSeekUsage(
+    {
+      usage: {
+        prompt_tokens: 120,
+        prompt_cache_miss_tokens: 90,
+        completion_tokens: 4,
+      },
+    },
+    1,
+  );
+  assert.equal(missOnlyCacheUsage?.cachedInputTokens, 30);
+  assert.equal(missOnlyCacheUsage?.cacheMeasuredInputTokens, 120);
+  assert.equal(missOnlyCacheUsage?.cacheMeasuredHitTokens, 30);
   assert.equal(
     parseDeepSeekUsage({ usage: { prompt_tokens: 40, completion_tokens: 4 } }, 1)
       ?.cachedInputTokens,
@@ -351,9 +364,15 @@ try {
   );
   assert.equal(getDeepSeekCacheHitTokens({ prompt_cache_hit_tokens: 0 }, 120), 0);
   assert.equal(getDeepSeekCacheHitTokens({ prompt_tokens_details: { cached_tokens: 60 } }, 40), 40);
+  assert.equal(getDeepSeekCacheHitTokens({ prompt_cache_miss_tokens: 90 }, 120), 30);
+  assert.equal(getDeepSeekCacheHitTokens({ prompt_cache_miss_tokens: 160 }, 120), 0);
+  assert.equal(
+    getDeepSeekCacheHitTokens({ prompt_cache_hit_tokens: 20, prompt_cache_miss_tokens: 100 }, 120),
+    20,
+  );
   assert.equal(getDeepSeekCacheHitTokens({}, 120), undefined);
   assert.equal(getDeepSeekCacheHitTokens({ prompt_cache_hit_tokens: "0" }, 120), undefined);
-  check(true, "Preserve DeepSeek cache-hit input tokens and clamp invalid provider counts");
+  check(true, "Preserve DeepSeek cache hit/miss telemetry and clamp invalid provider counts");
   check(true, "Distinguish raw provider cache telemetry from SDK-normalized zero defaults");
 
   assert.equal(isSessionSecretValid("s".repeat(MIN_SESSION_SECRET_BYTES - 1)), false);
