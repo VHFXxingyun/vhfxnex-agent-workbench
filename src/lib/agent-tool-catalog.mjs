@@ -1,11 +1,12 @@
 export const agentToolCatalog = Object.freeze([
   Object.freeze({
     title: "规划与推进",
-    description: "拆任务、定阶段、排日程、核预算",
+    description: "拆任务、定阶段、排日程、核预算并检查执行容量",
     toolNames: Object.freeze([
       "create_tasks",
       "build_timeline",
       "build_schedule",
+      "validate_feasibility",
       "calculate_budget",
     ]),
   }),

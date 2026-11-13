@@ -8,9 +8,12 @@ import JSZip from "jszip";
 import AxeBuilder from "@axe-core/playwright";
 import { chromium, request } from "playwright-core";
 import { readChatDocument } from "../src/lib/attachment-reader.mjs";
+import { resolveDatabasePath } from "../src/lib/database-path.mjs";
+import { loadSmokeEnvironment } from "./smoke-environment.mjs";
 
+const { liveUiRequested } = loadSmokeEnvironment();
 const baseUrl = new URL(process.env.NEXORA_BASE_URL || "http://localhost:3000");
-const liveUiMode = process.env.NEXORA_TEST_LIVE_UI === "1";
+const liveUiMode = liveUiRequested;
 if (!/^(localhost|127\.0\.0\.1|\[::1\])$/.test(baseUrl.hostname)) {
   throw new Error("The UI smoke check only runs against a local VHFXNEX server.");
 }
@@ -535,7 +538,7 @@ try {
   await page.screenshot({ path: path.join(screenshots, "home-desktop.png"), fullPage: true });
   check(true, "Distinguish a failed history request from an empty account and allow retry");
 
-  database = new Database(path.join(process.cwd(), "data", "goalflow.sqlite"), {
+  database = new Database(resolveDatabasePath(), {
     timeout: 10_000,
   });
   const promoteTestAdmin = database.prepare("UPDATE users SET role = 'admin' WHERE email = ?");
@@ -4490,7 +4493,7 @@ try {
   await mobileAuthContext?.close();
   await requestContext?.dispose();
   await browser?.close();
-  database ||= new Database(path.join(process.cwd(), "data", "goalflow.sqlite"), {
+  database ||= new Database(resolveDatabasePath(), {
     timeout: 10_000,
   });
   database.transaction(() => {

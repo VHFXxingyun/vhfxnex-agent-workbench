@@ -43,6 +43,40 @@ export const toolSchemas = Object.freeze({
       .min(1)
       .max(12),
   }),
+  validate_feasibility: z.object({
+    blocks: z
+      .array(
+        z.object({
+          date: z.string().trim().min(1).max(60),
+          time: z.string().trim().min(1).max(40),
+          activity: z.string().trim().min(1).max(100),
+          venue: z.string().trim().max(100).optional(),
+          attendeeCount: z.number().int().min(0).max(100_000).optional(),
+          venueCapacity: z.number().int().min(0).max(100_000).optional(),
+          staff: z
+            .array(
+              z.object({
+                name: z.string().trim().min(1).max(60),
+                role: z.string().trim().min(1).max(80),
+              }),
+            )
+            .max(40)
+            .optional(),
+          resources: z
+            .array(
+              z.object({
+                name: z.string().trim().min(1).max(60),
+                required: z.number().int().min(0).max(100_000),
+                available: z.number().int().min(0).max(100_000),
+              }),
+            )
+            .max(30)
+            .optional(),
+        }),
+      )
+      .min(1)
+      .max(24),
+  }),
   draft_document: z.object({
     title: z.string().trim().min(1).max(100),
     content: z.string().trim().min(1).max(12_000),
@@ -311,6 +345,8 @@ export const toolDescriptions = Object.freeze({
   build_timeline: "为目标追加必要的新里程碑；继续执行时不要重复现有节点。",
   build_schedule:
     "当目标明确需要日程表、旅行行程、学习时间表或活动现场议程时，创建带具体时间段的安排。只填用户已提供或可合理推算的日期；未给日期时使用第 1 天等相对日期。不要调用外部日历或声称已预订。",
+  validate_feasibility:
+    "当计划包含并行活动、岗位排班、场地容量或共享物料时，在交付前核对可执行性。提供每个时段的人员/岗位、场地与容量、物料需求及已知可用量；根据报告修正冲突后再交付。它只核对明确提供的数据，不会推断未知人数或库存。",
   draft_document: "生成一份简短、可编辑的行动方案。",
   generate_pdf:
     "用户明确要求 PDF 文件时调用。交付中文可读、分页完整、保留标题/列表/表格/代码块层级的真实 PDF 文件；优先使用当前方案内容，不要只给 Markdown 文本。最多 12000 字。",

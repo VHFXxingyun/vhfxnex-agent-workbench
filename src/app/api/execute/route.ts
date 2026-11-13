@@ -69,6 +69,7 @@ import { compactToolFailure } from "@/lib/tool-failure.mjs";
 import { isAbortError } from "@/lib/errors";
 import { mergeExecutionCheckpoint } from "@/lib/execution-checkpoint.mjs";
 import { validateGeneratedProject } from "@/lib/project-static-validation";
+import { validateExecutionFeasibility } from "@/lib/feasibility-validation.mjs";
 
 export const runtime = "nodejs";
 const executionLeaseError =
@@ -259,6 +260,17 @@ function applyTool(
       status: "done",
     });
     return JSON.stringify({ created: added.length });
+  }
+  if (name === "validate_feasibility" && Array.isArray(args.blocks)) {
+    const report = validateExecutionFeasibility({ blocks: args.blocks });
+    state.events.push({
+      id: crypto.randomUUID(),
+      name,
+      title: report.valid ? "执行约束已核对" : "可行性检查发现冲突",
+      detail: report.summary,
+      status: "done",
+    });
+    return JSON.stringify(report);
   }
   if (
     name === "draft_document" &&
@@ -1286,6 +1298,7 @@ export async function POST(request: NextRequest) {
                               create_tasks: "create_tasks · 建立任务",
                               build_timeline: "build_timeline · 生成时间线",
                               build_schedule: "build_schedule · 排定日程",
+                              validate_feasibility: "validate_feasibility · 核对执行可行性",
                               draft_document: "draft_document · 起草方案",
                               calculate_budget: "calculate_budget · 核算预算",
                               create_project: "create_project · 编写代码项目",
@@ -1298,6 +1311,7 @@ export async function POST(request: NextRequest) {
                               create_tasks: "我先把目标拆成可以逐项完成的任务。",
                               build_timeline: "接着安排关键节点和先后关系。",
                               build_schedule: "我正在将事项安排到具体时段。",
+                              validate_feasibility: "我在核对并行岗位、场地和物料安排。",
                               draft_document: "我正在把当前方案整理成可编辑的文档。",
                               calculate_budget: "我正在逐项计算费用，并核对预算边界。",
                               create_project: "我正在把需求落实为可运行的项目文件。",

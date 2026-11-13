@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
-import path from "node:path";
 import Database from "better-sqlite3";
+import { resolveDatabasePath } from "../src/lib/database-path.mjs";
+import { loadSmokeEnvironment } from "./smoke-environment.mjs";
 
+loadSmokeEnvironment();
 const baseUrl = new URL(process.env.NEXORA_BASE_URL || "http://localhost:3000");
 if (!/^(localhost|127\.0\.0\.1|\[::1\])$/.test(baseUrl.hostname)) {
   throw new Error("The search smoke check only runs against a local NEXORA server.");
@@ -185,7 +187,7 @@ try {
     }).catch(() => {});
   }
   if (userId) {
-    database = new Database(path.join(process.cwd(), "data", "goalflow.sqlite"), {
+    database = new Database(resolveDatabasePath(), {
       timeout: 10_000,
     });
     database.transaction(() => {

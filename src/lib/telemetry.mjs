@@ -13,6 +13,7 @@ const allowedTools = new Set([
   "create_tasks",
   "build_timeline",
   "build_schedule",
+  "validate_feasibility",
   "draft_document",
   "calculate_budget",
 ]);

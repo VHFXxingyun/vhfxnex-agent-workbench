@@ -48,9 +48,11 @@ import {
   normalizeTimeRange,
   timeRangesOverlap,
 } from "../src/lib/schedule-validation.mjs";
+import { validateExecutionFeasibility } from "../src/lib/feasibility-validation.mjs";
 import { availableCapacity, keepWithinLimit } from "../src/lib/workspace-capacity.mjs";
 import { createWorkspaceExecutionLeaseStore } from "../src/lib/workspace-execution-lease.mjs";
 import { resolveDatabasePath } from "../src/lib/database-path.mjs";
+import { loadSmokeEnvironment } from "./smoke-environment.mjs";
 import { BUDGET_AMOUNT_LIMIT, normalizeBudgetItems } from "../src/lib/budget-validation.mjs";
 import {
   AI_RATE_LIMITS,
@@ -59,6 +61,7 @@ import {
   hashRateLimitKey,
 } from "../src/lib/rate-limit-policy.mjs";
 
+loadSmokeEnvironment();
 const baseUrl = new URL(process.env.NEXORA_BASE_URL || "http://localhost:3000");
 const liveMode = process.argv.includes("--live");
 const smokeClientAddress = `198.51.100.${crypto.randomInt(1, 255)}`;
@@ -446,9 +449,26 @@ try {
     parseToolArguments("build_schedule", JSON.stringify({ blocks: [{ date: "第 1 天" }] })).ok,
     false,
   );
+  assert.equal(
+    parseToolArguments(
+      "validate_feasibility",
+      JSON.stringify({
+        blocks: [
+          {
+            date: "第 1 天",
+            time: "09:00-10:00",
+            activity: "签到",
+            staff: [{ name: "小林", role: "签到" }],
+          },
+        ],
+      }),
+    ).ok,
+    true,
+  );
   assert.equal(parseToolArguments("unknown_tool", "{}").ok, false);
-  assert.equal(Object.keys(toolSchemas).length, 10);
+  assert.equal(Object.keys(toolSchemas).length, 11);
   assert.equal(agentOutputTokenBudget("create_tasks"), 2000);
+  assert.equal(agentOutputTokenBudget("validate_feasibility"), 1800);
   assert.equal(agentOutputTokenBudget("draft_document"), 3600);
   assert.equal(agentOutputTokenBudget("generate_pdf"), 12_000);
   assert.equal(agentOutputTokenBudget("create_project"), 12_000);
@@ -661,6 +681,7 @@ try {
     EXECUTION_PROMPT_STABLE_PREFIX,
     /创建任务或方案不代表已对外联系、预订、招募或线下执行/,
   );
+  assert.match(EXECUTION_PROMPT_STABLE_PREFIX, /必须调用 validate_feasibility 检查/);
   assert.match(EXECUTION_PROMPT_STABLE_PREFIX, /不新增没收手机、禁止设备等强制限制/);
   check(
     true,
@@ -1126,6 +1147,72 @@ try {
   assert.equal(timeRangesOverlap("09:00-10:00", "09:30–10:30"), true);
   assert.equal(timeRangesOverlap("09:00-10:00", "10:00至11:00"), false);
   assert.equal(normalizeScheduleDay("第 1 天"), normalizeScheduleDay("第1天"));
+  const feasibleBlocks = [
+    {
+      date: "第 1 天",
+      time: "18:00-18:20",
+      activity: "健康知识站",
+      venue: "活动室左区",
+      attendeeCount: 8,
+      venueCapacity: 10,
+      staff: [{ name: "小林", role: "讲解" }],
+      resources: [{ name: "题卡", required: 5, available: 10 }],
+    },
+    {
+      date: "第1天",
+      time: "18:05-18:25",
+      activity: "暖身互动站",
+      venue: "活动室右区",
+      attendeeCount: 9,
+      venueCapacity: 12,
+      staff: [{ name: "小周", role: "主持" }],
+      resources: [{ name: "题卡", required: 5, available: 10 }],
+    },
+  ];
+  assert.equal(validateExecutionFeasibility({ blocks: feasibleBlocks }).valid, true);
+  const infeasible = validateExecutionFeasibility({
+    blocks: feasibleBlocks.map((block, index) => ({
+      ...block,
+      venue: "同一活动室",
+      attendeeCount: index === 0 ? 11 : block.attendeeCount,
+      staff: [{ name: "小林", role: index === 0 ? "讲解" : "签到" }],
+      resources: [{ name: "题卡", required: 6, available: 10 }],
+    })),
+  });
+  assert.equal(infeasible.valid, false);
+  assert.deepEqual(
+    new Set(infeasible.issues.map((issue) => issue.type)),
+    new Set(["venue_capacity", "staff_overlap", "venue_overlap", "resource_capacity"]),
+  );
+  assert.equal(
+    validateExecutionFeasibility({
+      blocks: [{ date: "第 1 天", time: "下午", activity: "晚会" }],
+    }).issues[0]?.type,
+    "invalid_block",
+  );
+  assert.equal(
+    validateExecutionFeasibility({
+      blocks: [
+        {
+          date: "第 1 天",
+          time: "09:00-10:00",
+          activity: "签到",
+          staff: [
+            { name: "小林", role: "签到" },
+            { name: " 小林 ", role: "引导" },
+          ],
+        },
+      ],
+    }).issues[0]?.type,
+    "duplicate_role",
+  );
+  assert.equal(
+    validateExecutionFeasibility({
+      blocks: [{ date: "第 1 天", time: "09:00-10:00", activity: "签到" }],
+    }).valid,
+    true,
+    "unknown people, capacity, and inventory data must not be guessed",
+  );
   assert.deepEqual(
     findScheduleConflict(
       [{ day: "第 1 天", time: "09:00-10:00" }],
@@ -1145,7 +1232,7 @@ try {
   );
   check(
     true,
-    "Normalize 24-hour schedule ranges, reject invalid times, and detect same-day overlaps",
+    "Validate schedule ranges, overlaps, staff assignments, venue capacity, and shared resources",
   );
 
   const calendarMilestones = [

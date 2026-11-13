@@ -40,6 +40,16 @@ await withAiSpan(
         span.setAttribute("goalflow.outcome", "success");
       },
     );
+    await withAiSpan(
+      "goalflow.agent.tool",
+      {
+        "goalflow.operation": "execute",
+        "goalflow.tool": "validate_feasibility",
+      },
+      async (span) => {
+        span.setAttribute("goalflow.outcome", "success");
+      },
+    );
   },
 );
 
@@ -56,16 +66,21 @@ await withAiSpan(sensitivePrompt, {}, async () => {});
 const spans = exporter.getFinishedSpans();
 const parent = spans.find((span) => span.name === "goalflow.agent.execute");
 const child = spans.find((span) => span.name === "goalflow.agent.tool");
+const feasibility = spans.find(
+  (span) => span.attributes["goalflow.tool"] === "validate_feasibility",
+);
 const failed = spans.find((span) => span.name === "goalflow.agent.pass");
 const unknown = spans.find((span) => span.name === "goalflow.unknown");
 
 assert.ok(parent, "record the Agent execution span");
 assert.ok(child, "record a tool span");
+assert.ok(feasibility, "record the feasibility validation tool");
 assert.ok(failed, "record a failed repair span");
 assert.ok(unknown, "replace an unsafe span name with a fixed name");
 assert.equal(child.parentSpanContext?.spanId, parent.spanContext().spanId);
 assert.equal(parent.attributes["goalflow.model"], "deepseek-flash");
 assert.equal(child.attributes["goalflow.tool"], "create_tasks");
+assert.equal(feasibility.attributes["goalflow.tool"], "validate_feasibility");
 assert.equal(failed.attributes["goalflow.outcome"], "error");
 assert.equal(failed.attributes["error.type"], "Error");
 assert.equal(failed.status.code, SpanStatusCode.ERROR);
