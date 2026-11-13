@@ -3728,9 +3728,9 @@ export default function Home() {
                   <span className="workspace-live-progress-copy">
                     <strong>
                       {workspaceExecution.state === "running"
-                        ? `Agent 正在推进 · 已完成 ${completedToolCalls} 项工具操作`
+                        ? `Agent 正在推进 · 已完成 ${workspaceExecution.completedToolCalls ?? completedToolCalls} 项工具操作`
                         : workspaceExecution.state === "completed"
-                          ? `本轮执行完成 · 共完成 ${completedToolCalls} 项工具操作`
+                          ? `本轮执行完成 · 共完成 ${workspaceExecution.completedToolCalls ?? completedToolCalls} 项工具操作`
                           : "本轮执行中断"}
                     </strong>
                     <small>{workspaceExecution.message || workspaceExecution.activity}</small>

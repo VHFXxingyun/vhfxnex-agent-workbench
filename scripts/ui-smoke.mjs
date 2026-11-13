@@ -4233,6 +4233,14 @@ try {
     .locator(".history-grid article")
     .filter({ hasText: statusWorkspace.plan.title });
   await statusWorkspaceCard.locator(".history-card-open").click();
+  const restoredWorkspaceProgress = page.locator(".workspace-live-progress.running");
+  await restoredWorkspaceProgress.waitFor({ timeout: 4_000 });
+  assert.match(
+    await restoredWorkspaceProgress.innerText(),
+    /Agent 正在推进 · 已完成 3 项工具操作/,
+    "workspace progress must use the restored server tool count after a page reload",
+  );
+  check(true, "Show the restored server-side tool count in the reopened workspace progress banner");
   let progressQuestionRequest;
   await page.route("**/api/chat", async (route) => {
     progressQuestionRequest = route.request().postDataJSON();
