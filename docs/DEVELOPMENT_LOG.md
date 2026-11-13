@@ -372,6 +372,23 @@ Google Calendar 与 GitHub 集成继续按用户要求暂缓；本次未创建�
 - `npm run build`、`npm run lint`、`npx tsc --noEmit`、`npm run smoke:project`、`npm run check:client-secrets`、72 项 API smoke、140 项 UI smoke 均通过。
 - Google Calendar 与 GitHub 外部授权集成继续按用户要求暂缓。
 
+## 2026-11-13｜工作区显示 Flash 费用估值
+
+### 本次完成
+
+- 在实时工作区的用量摘要中显示当前目标的 DeepSeek Flash 美元费用区间，方便用户把费用与具体项目对应起来。
+- 只识别 `deepseek-flash`、`deepseek-v4-flash` 和 `deepseek-v4-flash-vision-exp`；演示模式以及其他/未知模型不会显示费用估值。
+- 文案说明估值使用当前价格回算已记录 Token，不代表历史账单，不包含汇率、未知模型或独立搜索/抓取费用；管理员页仍可按工作区查看同一类估值。
+- UI smoke 在隔离 SQLite 中临时构造实时 Flash 用量，并在 `finally` 中恢复原工作区数据；不会发起真实模型请求。
+
+### 验证与边界
+
+- `npm run smoke` — 通过，72 项；包含已知 Flash 别名与未知模型边界。
+- `npm run smoke:ui` — 通过，141 项；验证实时工作区显示费用区间，同时现有管理员估值、演示模式和移动布局检查通过。
+- `npm run build`、`npm run lint`、`npx tsc --noEmit`、`npm run smoke:project`、`npm run check:client-secrets` 与 `git diff --check` — 通过。
+- 未调用 DeepSeek API，没有产生模型费用；估值无法代替平台账单或单独证明低缓存命中是历史支出的唯一原因。
+- Google Calendar、GitHub 等外部授权能力按用户要求暂缓。
+
 ## 后续记录规则
 
 - 每次真实完成一个功能、修复或验收后，再新增对应记录并提交。

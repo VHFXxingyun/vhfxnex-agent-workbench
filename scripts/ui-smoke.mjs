@@ -1070,6 +1070,54 @@ try {
   assert.equal(persistedAfterRetry.workspaces.length, 1);
   assert.match(persistedAfterRetry.cacheControl || "", /private.*no-store|no-store.*private/i);
   if (!liveUiMode) {
+    const usageWorkspaceRow = database
+      .prepare("SELECT body FROM workspaces WHERE id = ?")
+      .get(plannedWorkspaceId);
+    assert.ok(
+      usageWorkspaceRow?.body,
+      "the saved demo plan must be available for an isolated UI fixture",
+    );
+    const originalUsageWorkspaceBody = usageWorkspaceRow.body;
+    const flashUsageFixture = JSON.parse(originalUsageWorkspaceBody);
+    flashUsageFixture.mode = "live";
+    flashUsageFixture.usage = {
+      model: "deepseek-flash",
+      inputTokens: 1_000_000,
+      cachedInputTokens: 300_000,
+      cacheMeasuredInputTokens: 400_000,
+      cacheMeasuredHitTokens: 300_000,
+      outputTokens: 100_000,
+      totalTokens: 1_100_000,
+      latencyMs: 500,
+      requests: 2,
+    };
+    database
+      .prepare("UPDATE workspaces SET body = ? WHERE id = ?")
+      .run(JSON.stringify(flashUsageFixture), plannedWorkspaceId);
+    const usageCostPage = await context.newPage();
+    try {
+      await usageCostPage.goto(baseUrl.href, { waitUntil: "networkidle" });
+      await usageCostPage.getByRole("button", { name: "我的目标" }).click();
+      await usageCostPage
+        .getByRole("button", { name: `打开工作区：${flashUsageFixture.plan.title}` })
+        .click();
+      const workspaceCostEstimate = usageCostPage.locator(
+        ".plan-usage-brief .workspace-flash-cost-estimate",
+      );
+      await workspaceCostEstimate.waitFor({ state: "visible" });
+      assert.match(
+        await workspaceCostEstimate.innerText(),
+        /当前价费用估值\s+\$[\d,.]+\s*–\s*\$[\d,.]+/,
+      );
+      check(true, "Show the current DeepSeek Flash cost range beside the live planning usage");
+    } finally {
+      await usageCostPage.close();
+      database
+        .prepare("UPDATE workspaces SET body = ? WHERE id = ?")
+        .run(originalUsageWorkspaceBody, plannedWorkspaceId);
+    }
+  }
+  if (!liveUiMode) {
     check(
       true,
       "Keep a generated plan visible after a write failure and retry persistence without rerunning AI",

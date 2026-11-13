@@ -7,6 +7,16 @@ export const deepSeekFlashPricing = Object.freeze({
   output: Object.freeze({ offPeak: 0.6, peak: 1.2 }),
 });
 
+const deepSeekFlashModels = new Set([
+  "deepseek-flash",
+  "deepseek-v4-flash",
+  "deepseek-v4-flash-vision-exp",
+]);
+
+export function isDeepSeekFlashModel(model) {
+  return typeof model === "string" && deepSeekFlashModels.has(model.trim().toLowerCase());
+}
+
 function count(value) {
   return Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
 }

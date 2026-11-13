@@ -4,6 +4,8 @@ export const deepSeekFlashPricing: {
   output: { offPeak: number; peak: number };
 };
 
+export function isDeepSeekFlashModel(model: unknown): boolean;
+
 export function estimateDeepSeekFlashCost(usage?: {
   inputTokens?: number;
   outputTokens?: number;

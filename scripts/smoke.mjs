@@ -27,7 +27,10 @@ import {
 } from "../src/lib/project-path.mjs";
 import { classifyProjectIntent } from "../src/lib/project-intent.mjs";
 import { createCalendarExport, inspectCalendarSchedule } from "../src/lib/calendar-export.mjs";
-import { estimateDeepSeekFlashCost } from "../src/lib/deepseek-cost-estimate.mjs";
+import {
+  estimateDeepSeekFlashCost,
+  isDeepSeekFlashModel,
+} from "../src/lib/deepseek-cost-estimate.mjs";
 import { getDeepSeekApiKey, parseEnvValue } from "../src/lib/deepseek-key.mjs";
 import { getDeepSeekCacheHitTokens, parseDeepSeekUsage } from "../src/lib/deepseek-usage.mjs";
 import { hashPassword, needsPasswordUpgrade, verifyPassword } from "../src/lib/password.mjs";
@@ -290,6 +293,9 @@ try {
     unmeasuredInputTokens: 0,
     confirmedCacheSavingsUsd: { lower: 0, upper: 0 },
   });
+  assert.equal(isDeepSeekFlashModel("deepseek-flash"), true);
+  assert.equal(isDeepSeekFlashModel("deepseek-v4-flash"), true);
+  assert.equal(isDeepSeekFlashModel("deepseek-v4-pro"), false);
   check(
     true,
     "Estimate current DeepSeek Flash token cost as a bounded USD range and count only confirmed cache savings",

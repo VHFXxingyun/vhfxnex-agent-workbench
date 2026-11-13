@@ -27,6 +27,8 @@ flowchart LR
 
 实时模式会调用 DeepSeek；演示模式使用清楚标记的固定样例和本地规则，不伪装模型调用。登录、账户恢复、知识库、管理员控制台与 SQLite 持久化用于完整的工作空间流程；管理员能力按角色校验。
 
+管理员用量页可按工作区查看 DeepSeek Flash 的当前价费用估值；对应工作区也会在实时 Flash 用量摘要中显示美元费用区间。估值只针对已记录的 Flash Token，演示模式与未知模型不显示价格；它按当前价格回算，不代表历史账单，也不含汇率或独立搜索/抓取费用，实际扣费以 DeepSeek 开放平台账单为准。
+
 ## 本地运行
 
 需要 Node.js 24+。运行 `npm install`，复制 `.env.example` 为 `.env.local`，填写 `DEEPSEEK_API_KEY` 和 `SESSION_SECRET`，再运行 `npm run dev`。打开 <http://localhost:3000>。所有 DeepSeek 请求都直接读取项目根目录的 `.env.local`；系统环境或 Codex 预览器继承的同名变量会被忽略。修改文件后，下一次请求立即读取新值，无需重启服务。

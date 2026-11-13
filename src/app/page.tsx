@@ -61,7 +61,7 @@ import ConfirmDialog, { type ConfirmRequest } from "@/components/ConfirmDialog";
 import { clientSession } from "@/lib/client-session";
 import { isSupportedImageDataUrl, MAX_IMAGE_BYTES } from "@/lib/image";
 import { createCalendarExport, inspectCalendarSchedule } from "@/lib/calendar-export.mjs";
-import { estimateDeepSeekFlashCost } from "@/lib/deepseek-cost-estimate.mjs";
+import { estimateDeepSeekFlashCost, isDeepSeekFlashModel } from "@/lib/deepseek-cost-estimate.mjs";
 import { DEFAULT_THINKING_MODE } from "@/lib/thinking-mode.mjs";
 import { createProjectZip } from "@/lib/project-zip";
 import { isSupportedChatTextFile, readChatDocument } from "@/lib/attachment-reader";
@@ -3150,6 +3150,10 @@ export default function Home() {
         cacheMeasuredHitTokens: admin.aiUsage.flashCacheMeasuredHitTokens,
       })
     : null;
+  const currentWorkspaceFlashCostEstimate =
+    workspace?.mode === "live" && workspace.usage && isDeepSeekFlashModel(workspace.usage.model)
+      ? estimateDeepSeekFlashCost(workspace.usage)
+      : null;
   const adminWorkspaceCostEstimates = new Map(
     admin?.workspaces.map((item) => [
       item.id,
@@ -3890,6 +3894,16 @@ export default function Home() {
                               {workspace.usage.totalTokens.toLocaleString("zh-CN")} tokens ·{" "}
                               {(workspace.usage.latencyMs / 1000).toFixed(1)} 秒
                             </strong>
+                            {!workspace.result && currentWorkspaceFlashCostEstimate && (
+                              <small
+                                className="workspace-flash-cost-estimate"
+                                title="仅对当前目标已记录的 DeepSeek Flash 用量按当前公开美元价回算；不等于历史人民币账单，也不含未知模型或汇率。"
+                              >
+                                当前价费用估值{" "}
+                                {formatEstimatedUsd(currentWorkspaceFlashCostEstimate.lowerUsd)} –{" "}
+                                {formatEstimatedUsd(currentWorkspaceFlashCostEstimate.upperUsd)}
+                              </small>
+                            )}
                           </div>
                         )}
                         <div className="section-title planned-task-title">
@@ -3993,6 +4007,16 @@ export default function Home() {
                               ) : (
                                 <small title="供应商未提供缓存统计字段，无法计算输入缓存命中率。">
                                   输入缓存命中率暂无接口统计样本
+                                </small>
+                              )}
+                              {currentWorkspaceFlashCostEstimate && (
+                                <small
+                                  className="workspace-flash-cost-estimate"
+                                  title="仅对当前目标已记录的 DeepSeek Flash 用量按当前公开美元价回算；不等于历史人民币账单，也不含未知模型或汇率。"
+                                >
+                                  Flash 当前价费用估值：
+                                  {formatEstimatedUsd(currentWorkspaceFlashCostEstimate.lowerUsd)} –
+                                  {formatEstimatedUsd(currentWorkspaceFlashCostEstimate.upperUsd)}
                                 </small>
                               )}
                               <small>

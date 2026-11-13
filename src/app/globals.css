@@ -1615,6 +1615,10 @@ textarea:focus-visible {
   line-height: 1.45;
   overflow-wrap: anywhere;
 }
+.workspace-flash-cost-estimate {
+  color: #d4baff;
+  font-weight: 650;
+}
 /* History and admin */
 .listing-head {
   padding: 24px 0 20px;
