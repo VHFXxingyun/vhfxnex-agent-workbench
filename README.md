@@ -75,7 +75,7 @@ node -e "console.log(require('node:crypto').randomBytes(32).toString('base64url'
 
 ## 技术与结构
 
-管理员用量页按 DeepSeek 明确支持的 Flash 模型名展示当前公开价回算的美元费用区间；区间同时反映未报告缓存数据和高峰/非高峰费率的不确定性。另列出供应商确认的缓存命中所少付的输入费用估算。它是按当前价重新计算的估值，不是历史账单；其他模型、人民币换算、赠送额度及独立搜索/抓取费用不计入，实际费用以 DeepSeek 平台为准。
+管理员用量页按 DeepSeek 明确支持的 Flash 模型名展示当前公开价回算的美元费用区间，并按目标工作区拆分；区间同时反映未报告缓存数据和高峰/非高峰费率的不确定性。另列出供应商确认的缓存命中所少付的输入费用估算。它是按当前价重新计算的估值，不是历史账单；其他模型、人民币换算、赠送额度及独立搜索/抓取费用不计入，实际费用以 DeepSeek 平台为准。
 
 - Next.js App Router、React、TypeScript、自定义响应式 CSS、Motion、Lucide；左侧 ProjectFlowPanel 根据当前目标与实际任务展示领域阶段，聊天流展示实时状态、工具调用与来源，右侧独立呈现可滚动的行动计划。
 - 执行 Agent 使用 Vercel AI SDK `streamText` 和官方 `@ai-sdk/deepseek` provider，支持 DeepSeek 多步工具调用、逐步取消与模型用量回报；执行状态、工具完成事件和最终工作区通过 SSE 实时送到页面。每轮对话会保存简明的阶段摘要和真实工具记录，便于回看并纳入完整工作区导出。

@@ -21,14 +21,22 @@ export async function GET() {
         COALESCE(usage.plannerTokens, 0) AS plannerTokens,
         COALESCE(usage.dialogueTokens, 0) AS dialogueTokens,
         COALESCE(usage.workbenchTokens, 0) AS workbenchTokens,
-        COALESCE(usage.legacyTokens, 0) AS legacyTokens
+        COALESCE(usage.legacyTokens, 0) AS legacyTokens,
+        COALESCE(usage.flashInputTokens, 0) AS flashInputTokens,
+        COALESCE(usage.flashOutputTokens, 0) AS flashOutputTokens,
+        COALESCE(usage.flashCacheMeasuredInputTokens, 0) AS flashCacheMeasuredInputTokens,
+        COALESCE(usage.flashCacheMeasuredHitTokens, 0) AS flashCacheMeasuredHitTokens
        FROM workspaces w JOIN users u ON u.id = w.user_id
        LEFT JOIN (
          SELECT workspace_id, user_id, COUNT(*) AS requests, SUM(total_tokens) AS totalTokens,
            SUM(CASE WHEN source = 'planner' THEN total_tokens ELSE 0 END) AS plannerTokens,
            SUM(CASE WHEN source = 'dialogue' THEN total_tokens ELSE 0 END) AS dialogueTokens,
            SUM(CASE WHEN source = 'workbench' THEN total_tokens ELSE 0 END) AS workbenchTokens,
-           SUM(CASE WHEN source = 'unknown' THEN total_tokens ELSE 0 END) AS legacyTokens
+           SUM(CASE WHEN source = 'unknown' THEN total_tokens ELSE 0 END) AS legacyTokens,
+           SUM(CASE WHEN model IN ('deepseek-flash', 'deepseek-v4-flash', 'deepseek-v4-flash-vision-exp') THEN input_tokens ELSE 0 END) AS flashInputTokens,
+           SUM(CASE WHEN model IN ('deepseek-flash', 'deepseek-v4-flash', 'deepseek-v4-flash-vision-exp') THEN output_tokens ELSE 0 END) AS flashOutputTokens,
+           SUM(CASE WHEN model IN ('deepseek-flash', 'deepseek-v4-flash', 'deepseek-v4-flash-vision-exp') THEN cache_measured_input_tokens ELSE 0 END) AS flashCacheMeasuredInputTokens,
+           SUM(CASE WHEN model IN ('deepseek-flash', 'deepseek-v4-flash', 'deepseek-v4-flash-vision-exp') THEN cache_measured_hit_tokens ELSE 0 END) AS flashCacheMeasuredHitTokens
          FROM ai_usage WHERE workspace_id IS NOT NULL GROUP BY workspace_id, user_id
        ) usage ON usage.workspace_id = w.id AND usage.user_id = w.user_id
        ORDER BY w.updated_at DESC LIMIT 100`,

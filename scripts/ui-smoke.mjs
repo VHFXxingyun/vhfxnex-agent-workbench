@@ -628,7 +628,12 @@ try {
     await workspaceUsage.innerText(),
     /规划\s+1,100\s+·\s+对话\s+600\s+·\s+工作台\s+800/,
   );
-  check(true, "Admin workspace view breaks down planner, dialogue, and workbench token usage");
+  assert.match(await workspaceUsage.innerText(), /Flash 当前价估值：\s*\$[\d,.]+\s*–\s*\$[\d,.]+/);
+  assert.match(await workspaceUsage.innerText(), /已确认缓存节省：\s*\$[\d,.]+\s*–\s*\$[\d,.]+/);
+  check(
+    true,
+    "Admin workspace view breaks down agent tokens, Flash cost range, and confirmed cache savings",
+  );
   const usageBreakdown = page.locator(".usage-breakdown");
   await usageBreakdown.waitFor({ state: "visible" });
   assert.match(

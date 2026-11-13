@@ -2332,6 +2332,19 @@ textarea:focus-visible {
   line-height: 1.5;
   white-space: normal;
 }
+.admin-workspace-cost,
+.admin-workspace-savings {
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.5;
+  white-space: normal;
+}
+.admin-workspace-cost {
+  color: #cbb5ff;
+}
+.admin-workspace-savings {
+  color: #b8dc9a;
+}
 .admin-table td:first-child {
   display: flex;
   align-items: center;

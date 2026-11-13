@@ -3321,9 +3321,14 @@ try {
   assert.ok(adminOverview.payload?.aiUsage?.workbenchRequests >= 1);
   assert.ok(adminOverview.payload?.aiUsage?.healthcheckRequests >= 1);
   assert.ok(
-    adminOverview.payload?.workspaces?.some(
-      (item) => item.id === workspace.id && item.plannerTokens >= 203,
-    ),
+    adminOverview.payload?.workspaces?.some((item) => {
+      if (item.id !== workspace.id) return false;
+      assert.ok(item.plannerTokens >= 203);
+      assert.ok(item.flashInputTokens >= 20);
+      assert.ok(item.flashOutputTokens >= 2);
+      assert.ok(item.flashCacheMeasuredInputTokens >= 20);
+      return true;
+    }),
     "admins should see project-level AI usage attributed to its planning agent",
   );
   assert.equal(adminOverview.payload?.dailyAiUsage?.length, 7);

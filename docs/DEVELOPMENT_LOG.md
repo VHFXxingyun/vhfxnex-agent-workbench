@@ -358,6 +358,20 @@ Google Calendar 与 GitHub 集成继续按用户要求暂缓；本次未创建�
 - 未调用 DeepSeek API；此功能只估算已记录模型 Token，不会读取 DeepSeek 账单或推断截图中的历史账单成因。
 - Google Calendar、GitHub 等外部授权能力按用户要求暂缓。
 
+## 2026-11-13｜按工作区拆分 Flash 费用估值
+
+### 本次完成
+
+- 管理概览对每个工作区聚合 Flash 输入、输出和供应商确认的缓存统计，不改变原有 Token 来源拆分及按更新时间排序。
+- 目标列表展示每个工作区的 Flash 当前价费用区间；有已确认缓存命中时，另列对应的输入费节省区间，便于定位 Token 消耗落在哪些项目。
+- 未使用真实模型调用；费用仅为当前美元价回算估值，不作为 DeepSeek 账单记录。
+
+### 验证与边界
+
+- 管理 API smoke 验证项目级 Flash 输入、输出及缓存字段；UI smoke 验证目标行同时显示费用区间与已确认缓存节省，并通过管理员页 axe 检查。
+- `npm run build`、`npm run lint`、`npx tsc --noEmit`、`npm run smoke:project`、`npm run check:client-secrets`、72 项 API smoke、140 项 UI smoke 均通过。
+- Google Calendar 与 GitHub 外部授权集成继续按用户要求暂缓。
+
 ## 后续记录规则
 
 - 每次真实完成一个功能、修复或验收后，再新增对应记录并提交。

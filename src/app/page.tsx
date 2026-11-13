@@ -180,6 +180,10 @@ type AdminData = {
     dialogueTokens: number;
     workbenchTokens: number;
     legacyTokens: number;
+    flashInputTokens: number;
+    flashOutputTokens: number;
+    flashCacheMeasuredInputTokens: number;
+    flashCacheMeasuredHitTokens: number;
   }[];
 };
 type AiHealth =
@@ -3146,6 +3150,17 @@ export default function Home() {
         cacheMeasuredHitTokens: admin.aiUsage.flashCacheMeasuredHitTokens,
       })
     : null;
+  const adminWorkspaceCostEstimates = new Map(
+    admin?.workspaces.map((item) => [
+      item.id,
+      estimateDeepSeekFlashCost({
+        inputTokens: item.flashInputTokens,
+        outputTokens: item.flashOutputTokens,
+        cacheMeasuredInputTokens: item.flashCacheMeasuredInputTokens,
+        cacheMeasuredHitTokens: item.flashCacheMeasuredHitTokens,
+      }),
+    ]) ?? [],
+  );
   const workspaceExecution =
     workspace && visibleExecution?.workspaceId === workspace.id ? visibleExecution : null;
   return (
@@ -4625,6 +4640,34 @@ export default function Home() {
                                     {item.legacyTokens > 0 &&
                                       ` · 旧记录 ${item.legacyTokens.toLocaleString("zh-CN")}`}
                                   </small>
+                                  {(() => {
+                                    const estimate = adminWorkspaceCostEstimates.get(item.id);
+                                    if (
+                                      !estimate ||
+                                      item.flashInputTokens + item.flashOutputTokens === 0
+                                    )
+                                      return null;
+                                    return (
+                                      <>
+                                        <small className="admin-workspace-cost">
+                                          Flash 当前价估值：{formatEstimatedUsd(estimate.lowerUsd)}{" "}
+                                          – {formatEstimatedUsd(estimate.upperUsd)}
+                                        </small>
+                                        {estimate.measuredHitTokens > 0 && (
+                                          <small className="admin-workspace-savings">
+                                            已确认缓存节省：
+                                            {formatEstimatedUsd(
+                                              estimate.confirmedCacheSavingsUsd.lower,
+                                            )}{" "}
+                                            –{" "}
+                                            {formatEstimatedUsd(
+                                              estimate.confirmedCacheSavingsUsd.upper,
+                                            )}
+                                          </small>
+                                        )}
+                                      </>
+                                    );
+                                  })()}
                                 </div>
                               </td>
                               <td data-label="更新时间">
