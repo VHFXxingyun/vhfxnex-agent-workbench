@@ -469,6 +469,12 @@ Google Calendar 与 GitHub 集成继续按用户要求暂缓；本次未创建�
 - 明确 Docker 镜像尚未实建验收；安装步骤改用 `npm ci` 按锁文件复现，README 与报告工作稿保持一致。
 - 对照 `docs/COMPETITION_READINESS.md` 与 `docs/ACCEPTANCE_MATRIX.md` 核对上述数字和边界；Prettier 与 `git diff --check` 通过。
 
+### 用量与缓存统计口径说明
+
+- 在技术报告中补充项目级 Token 来源归因、供应商报告字段对应的输入缓存命中率公式，以及多请求汇总按 Token 加权的含义。
+- 明确无缓存字段的调用不进入命中率样本，缓存命中仅影响输入费；当前价区间不等于历史账单，Search/Fetch 独立费用不包含在模型 Token 估算中。
+- 对照 DeepSeek 官方缓存与价格说明复核术语；本次仅更新文档，没有发起模型调用或产生模型费用。
+
 ## 后续记录规则
 
 - 每次真实完成一个功能、修复或验收后，再新增对应记录并提交。

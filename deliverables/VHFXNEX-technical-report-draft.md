@@ -157,6 +157,12 @@ flowchart TB
 
 系统可以生成 DOCX、中文 PDF、XLSX、PPTX、Markdown、ICS 和 ZIP 代码项目。代码项目在保存前做语法、JS/Vue/CSS/HTML 本地引用、源码及常见启动脚本所需 npm 依赖声明和 package manifest 静态检查；系统不会执行生成源码。网页预览禁用脚本、远程网络和外部跳转，交互运行需用户自行下载项目并在本地启动。Google Calendar 与 GitHub 直接授权当前未接入：日历可导出 ICS，代码可下载 ZIP。
 
+### 5.6 用量归因与缓存费用解释
+
+系统按目标和规划、对话、工作台、代码复核、连接诊断等来源记录模型输入/输出 Token，工作区和管理界面据此查看用量。DeepSeek 缓存命中率按供应商报告的缓存输入 Token 计算：`缓存命中输入 Token ÷ 已提供缓存统计的输入 Token`。多个请求汇总时先累加 Token 再相除，因此是 Token 加权比例，不是“命中请求数 ÷ 总请求数”。供应商没有提供缓存字段的请求不计入比率；系统不会把 SDK 填充的默认零值当成真实未命中。
+
+DeepSeek 上下文缓存复用的是已保存的相同输入前缀，不是语义相似度，也不表示回答正确或请求成功。缓存命中只按命中 Token 的输入单价降低费用，输出 Token 仍按输出价计费。工作区展示的美元区间按当前公开价估算历史 Token：下限假设未测输入命中且处于非高峰，上限假设未测输入未命中且处于高峰；它不等于账户账单，不含汇率、历史价格变化、赠送额度及单独计费的 Search/Fetch 请求。平台账单才是实际支出依据。供应商也说明缓存尽力而为、不会保证全部命中。 [DeepSeek 缓存规则](https://api-docs.deepseek.com/guides/kv_cache/) · [模型与价格](https://api-docs.deepseek.com/quick_start/pricing/)
+
 ## 6. 数据安全与隐私
 
 1. 登录使用签名 HTTP-only Cookie；密码经过预处理后以 bcrypt 保存，恢复码一次性使用。
