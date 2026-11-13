@@ -516,6 +516,12 @@ Google Calendar 与 GitHub 集成继续按用户要求暂缓；本次未创建�
 - `npm run smoke` 72 项、生产构建服务上的 `npm run smoke:ui` 147 项通过；`npm run lint`、`npx tsc --noEmit`、`npm run build`、Prettier 与 `git diff --check` 均通过。
 - 查看手机管理台、路线选择页和 1366×768 工作区截图，新增统计可读、布局正常；采用隔离 SQLite 与模拟用量，没有调用 DeepSeek API。
 
+## 2026-11-13｜复核桌面计时器代码交付包
+
+- 将 `deliverables/VHFXNEX-Desktop-Timer-v1.0.zip` 解压到系统临时目录，确认包含运行入口、应用模块、测试和 README；归档项目没有第三方运行依赖。
+- 在当前 Windows 环境通过 Python 字节码编译、5 项计时状态机单元测试，并确认 Tkinter 8.6 可用。
+- 未启动桌面窗口，因此本次证据覆盖源码/核心逻辑和 GUI 依赖可用性；窗口在其他操作系统上的视觉与打包仍需目标环境复核。未调用 DeepSeek API。
+
 ## 后续记录规则
 
 - 每次真实完成一个功能、修复或验收后，再新增对应记录并提交。
