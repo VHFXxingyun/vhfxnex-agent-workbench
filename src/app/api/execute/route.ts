@@ -70,6 +70,7 @@ import { isAbortError } from "@/lib/errors";
 import { mergeExecutionCheckpoint } from "@/lib/execution-checkpoint.mjs";
 import { validateGeneratedProject } from "@/lib/project-static-validation";
 import { validateExecutionFeasibility } from "@/lib/feasibility-validation.mjs";
+import { markPlanChecklistItemsPending } from "@/lib/plan-markdown.mjs";
 
 export const runtime = "nodejs";
 const executionLeaseError =
@@ -283,7 +284,7 @@ function applyTool(
       type: "document",
       title,
       description: "Agent 生成的初版方案",
-      content: args.content.slice(0, 12000),
+      content: markPlanChecklistItemsPending(args.content.slice(0, 12000)),
     });
     state.events.push({
       id: crypto.randomUUID(),

@@ -17,6 +17,7 @@ import {
 import { agentToolCatalog } from "../src/lib/agent-tool-catalog.mjs";
 import { agentOutputTokenBudget } from "../src/lib/agent-output-budget.mjs";
 import { mergeExecutionCheckpoint } from "../src/lib/execution-checkpoint.mjs";
+import { markPlanChecklistItemsPending } from "../src/lib/plan-markdown.mjs";
 import { isSupportedChatTextFile, readChatDocument } from "../src/lib/attachment-reader.mjs";
 import { buildStaticPreviewDocument } from "../src/lib/static-preview.mjs";
 import { validateGeneratedProject } from "../src/lib/project-static-validation.mjs";
@@ -522,6 +523,16 @@ try {
     true,
   );
   assert.equal(parseToolArguments("unknown_tool", "{}").ok, false);
+  assert.equal(
+    markPlanChecklistItemsPending(
+      "1. [x] 联系联办学院\n- [X] 招募志愿者\n- [ ] 已待办\n\n```md\n- [x] 代码示例\n```",
+    ),
+    "1. [ ] 联系联办学院\n- [ ] 招募志愿者\n- [ ] 已待办\n\n```md\n- [x] 代码示例\n```",
+  );
+  check(
+    true,
+    "Keep proposed action-plan checklist items pending and preserve fenced code examples",
+  );
   assert.equal(Object.keys(toolSchemas).length, 11);
   assert.equal(agentOutputTokenBudget("create_tasks"), 2000);
   assert.equal(agentOutputTokenBudget("validate_feasibility"), 1800);
