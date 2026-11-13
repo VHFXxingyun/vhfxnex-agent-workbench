@@ -955,9 +955,20 @@ export default function Home() {
   const [busy, setBusy] = useState<"analyze" | "execute" | null>(null);
   const [activeExecution, setActiveExecution] = useState<ActiveExecution | null>(null);
   const [serverExecution, setServerExecution] = useState<ActiveExecution | null>(null);
-  const visibleExecution =
-    serverExecution?.state === "running" &&
-    activeExecution?.workspaceId !== serverExecution.workspaceId
+  const activeExecutionStartedAt = Date.parse(activeExecution?.startedAt || "");
+  const serverExecutionStartedAt = Date.parse(serverExecution?.startedAt || "");
+  const serverExecutionMatchesActiveRun = Boolean(
+    activeExecution &&
+    serverExecution &&
+    activeExecution.workspaceId === serverExecution.workspaceId &&
+    Number.isFinite(activeExecutionStartedAt) &&
+    Number.isFinite(serverExecutionStartedAt) &&
+    serverExecutionStartedAt >= activeExecutionStartedAt - 1_000,
+  );
+  const visibleExecution = serverExecutionMatchesActiveRun
+    ? serverExecution
+    : serverExecution?.state === "running" &&
+        activeExecution?.workspaceId !== serverExecution.workspaceId
       ? serverExecution
       : activeExecution || serverExecution;
   const [completedToolCalls, setCompletedToolCalls] = useState(0);
@@ -1258,15 +1269,24 @@ export default function Home() {
           true,
         );
         if (!active) return;
-        const next =
-          data.executions.find((execution) => execution.state === "running") ||
-          data.executions.find(
-            (execution) =>
-              execution.state === "failed" &&
-              Date.now() - Date.parse(execution.updatedAt || "") < 12 * 60 * 60_000,
-          ) ||
-          null;
-        setServerExecution(next);
+        const running = data.executions.find((execution) => execution.state === "running");
+        const recentFailure = data.executions.find(
+          (execution) =>
+            execution.state === "failed" &&
+            Date.now() - Date.parse(execution.updatedAt || "") < 12 * 60 * 60_000,
+        );
+        setServerExecution((current) => {
+          if (running) return running;
+          const currentStatus = current
+            ? data.executions.find((execution) => execution.workspaceId === current.workspaceId)
+            : undefined;
+          if (
+            currentStatus &&
+            Date.now() - Date.parse(currentStatus.updatedAt || "") < 12 * 60 * 60_000
+          )
+            return currentStatus;
+          return recentFailure || null;
+        });
       } catch {
         // Keep the last known status visible if a brief poll fails.
       }
@@ -1278,6 +1298,31 @@ export default function Home() {
       window.clearInterval(interval);
     };
   }, [user?.id]);
+  const recoveredExecutionSignature = useRef("");
+  useEffect(() => {
+    if (visibleExecution?.state !== "completed" || !visibleExecution.updatedAt) return;
+    const signature = `${visibleExecution.workspaceId}:${visibleExecution.updatedAt}`;
+    if (recoveredExecutionSignature.current === signature) return;
+    recoveredExecutionSignature.current = signature;
+    let active = true;
+    api<{ workspace: Workspace }>(
+      `/api/workspaces/${visibleExecution.workspaceId}`,
+      undefined,
+      true,
+    )
+      .then(({ workspace: saved }) => {
+        if (!active) return;
+        setHistory((current) => [saved, ...current.filter((item) => item.id !== saved.id)]);
+        if (activeWorkspaceIdRef.current === saved.id) setActiveWorkspace(saved);
+      })
+      .catch(() => {
+        if (activeWorkspaceIdRef.current === visibleExecution.workspaceId)
+          setError("执行已完成，但暂时无法读取最新成果；重新打开工作区即可恢复。 ");
+      });
+    return () => {
+      active = false;
+    };
+  }, [visibleExecution?.state, visibleExecution?.updatedAt, visibleExecution?.workspaceId]);
   useEffect(() => {
     const resetExpiredSession = (event: Event) => {
       const expiredEpoch = (event as CustomEvent<{ epoch?: number }>).detail?.epoch;
@@ -2307,6 +2352,7 @@ export default function Home() {
       workspaceTitle: targetWorkspace.plan.title,
       state: "running",
       activity: initialActivity,
+      startedAt: new Date().toISOString(),
     });
     setExecutionStreamText("");
     setError("");
@@ -2493,17 +2539,11 @@ export default function Home() {
       if (requestEpoch === clientSession.epoch) {
         if (targetWorkspace.mode === "live") {
           try {
-            const [recovered, statusSnapshot] = await Promise.all([
-              api<{ targetWorkspace: Workspace }>(
-                `/api/workspaces/${targetWorkspace.id}`,
-                undefined,
-                true,
-              ),
-              api<{ executions: ActiveExecution[] }>("/api/executions", undefined, true).catch(
-                () => ({ executions: [] }),
-              ),
-            ]);
-            const saved = recovered.targetWorkspace;
+            const statusSnapshot = await api<{ executions: ActiveExecution[] }>(
+              "/api/executions",
+              undefined,
+              true,
+            ).catch(() => ({ executions: [] }));
             const recoveredExecution = statusSnapshot.executions
               .filter((execution) => execution.workspaceId === targetWorkspace.id)
               .sort(
@@ -2511,6 +2551,33 @@ export default function Home() {
                   Date.parse(right.updatedAt || right.startedAt || "") -
                   Date.parse(left.updatedAt || left.startedAt || ""),
               )[0];
+            if (recoveredExecution) setServerExecution(recoveredExecution);
+
+            // A dropped browser stream does not stop the durable server-side run.
+            // Reflect that fact immediately, even if reading the saved workspace
+            // snapshot below also fails during the same network interruption.
+            if (recoveredExecution?.state === "running") {
+              setActiveExecution({
+                workspaceId: targetWorkspace.id,
+                workspaceTitle: targetWorkspace.plan.title,
+                state: "running",
+                activity: "连接已断开 · Agent 仍在后台推进",
+                message: recoveredExecution.activity,
+                completedToolCalls: recoveredExecution.completedToolCalls,
+                startedAt: recoveredExecution.startedAt,
+                updatedAt: recoveredExecution.updatedAt,
+                cancelRequested: recoveredExecution.cancelRequested,
+              });
+              if (activeWorkspaceIdRef.current === targetWorkspace.id) setError("");
+              return;
+            }
+
+            const recovered = await api<{ workspace: Workspace }>(
+              `/api/workspaces/${targetWorkspace.id}`,
+              undefined,
+              true,
+            );
+            const saved = recovered.workspace;
             const previousEventCount = targetWorkspace.result?.events.length || 0;
             const savedEventCount = saved.result?.events.length || 0;
             const previousTokens = targetWorkspace.usage?.totalTokens || 0;
@@ -2549,12 +2616,14 @@ export default function Home() {
                         return {
                           ...current,
                           state,
+                          completedToolCalls:
+                            recoveredExecution?.completedToolCalls ?? current.completedToolCalls,
+                          startedAt: recoveredExecution?.startedAt || current.startedAt,
+                          updatedAt: recoveredExecution?.updatedAt || current.updatedAt,
                           activity:
                             state === "completed"
                               ? "本轮结果已恢复 · 点击查看"
-                              : state === "running"
-                                ? "连接已断开 · Agent 仍在后台推进"
-                                : "本轮已中断 · 阶段成果已保存",
+                              : "本轮已中断 · 阶段成果已保存",
                           ...(state === "failed"
                             ? {
                                 message:

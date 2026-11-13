@@ -57,6 +57,8 @@ node -e "console.log(require('node:crypto').randomBytes(32).toString('base64url'
 
 安装本机 Chrome 后，可运行 `npm run smoke:ui` 检查真实浏览器流程：注册并保存恢复码、登录找回、账户资料与密码管理、账户数据备份、后台权限调整、演示规划与执行、左侧流程画布固定比例拖动查看、左侧导航从边缘收起/展开、右侧行动计划独立滚动、自动工具箱与模式说明、聊天最新回复与成果入口、成果展开及复制和下载、任务完成、完整工作区 Markdown 与 `.ics` 日历导出、邀请链接与只读权限、邀请页隐私和可访问性、编辑未保存确认、保存失败与会话过期恢复、工作空间删除，以及 320px 小屏和手机宽度下的认证、工作区项目阶段、账户设置、导航抽屉与管理表格。知识库流程覆盖 DOCX/XLSX/PPTX/PDF 导入、搜索、查看、编辑、保存失败保留草稿和删除；测试还会在注册、后台、路线选择、执行、共享对话框、邀请页、日历导出和知识库页面运行 axe-core 的 WCAG 2.2 AA 可访问性扫描。启用实时浏览器模式时还会模拟执行结果 SSE 中断，检查页面能否恢复服务器已保存的工作区。脚本仅访问本机回环地址，自动清理临时账号及数据；验收截图写入系统临时目录。若 Chrome 不在默认位置，设置 `PLAYWRIGHT_EXECUTABLE_PATH` 指向本地 Chrome/Chromium 可执行文件。可选设置 `NEXORA_TEST_AI_STATUS=1` 会额外触发一次管理员 AI 连接探测，消耗少量 API 额度。
 
+`npm run smoke:ui:background-status` 单独验证断流恢复：模拟浏览器执行连接中断但服务端任务仍运行，核对界面继续显示当前步骤与工具次数，并在后台结束后同步最新聊天回复、交付文件及稳定的完成状态。测试拦截执行请求，只操作隔离 SQLite，不调用 DeepSeek。
+
 浏览器烟测还会创建隔离的实时工作区，拦截 Agent 执行请求并核对浏览器提取出的 Markdown、XLSX、PPTX、PDF 与 `.env.example` 正文确实进入请求；该检查使用模拟 SSE 回执，不会调用真实模型。
 
 如需让浏览器走 DeepSeek 实时规划（包括上传有效参考图和首次规划资料），可在 PowerShell 中运行 `$env:NEXORA_TEST_LIVE_UI = "1"` 后执行 `npm run smoke:ui`；该流程随后会模拟执行结果 SSE 中断来验证工作区恢复，真实 Agent 工具调用则由 `npm run smoke:live` 端到端检查。完成后运行 `Remove-Item Env:NEXORA_TEST_LIVE_UI` 清除标记。实时浏览器规划会消耗少量 API 额度。

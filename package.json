@@ -23,6 +23,7 @@
     "smoke:search:adapter": "node scripts/search-adapter-smoke.mjs",
     "smoke:vision": "node scripts/vision-smoke.mjs",
     "smoke:ui": "node scripts/ui-smoke.mjs",
+    "smoke:ui:background-status": "node scripts/execution-background-status-smoke.mjs",
     "smoke:telemetry": "node scripts/telemetry-smoke.mjs",
     "check:client-secrets": "node scripts/check-client-secrets.mjs",
     "format": "prettier --write \"src/**/*.{ts,tsx,css}\" \"scripts/*.mjs\" README.md next.config.ts eslint.config.mjs package.json"

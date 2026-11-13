@@ -4397,6 +4397,172 @@ try {
     "Transmit extracted Markdown, .env.example, PDF, XLSX, and PPTX bodies to the Agent request without real model calls",
   );
 
+  const backgroundRecoveryWorkspaceId = crypto.randomUUID();
+  const backgroundRecoveryPrompt = "验证断流后 Agent 后台推进状态与最终成果同步";
+  const backgroundRecoveryWorkspace = {
+    ...attachmentFlowWorkspace,
+    id: backgroundRecoveryWorkspaceId,
+    prompt: backgroundRecoveryPrompt,
+    plan: {
+      ...attachmentFlowWorkspace.plan,
+      title: "断流后台推进恢复验证",
+      summary: "执行流断开后，工作台应保留服务端真实运行状态，并同步最终成果。",
+    },
+    result: null,
+    conversation: [
+      { id: crypto.randomUUID(), role: "user", content: backgroundRecoveryPrompt },
+      {
+        id: crypto.randomUUID(),
+        role: "assistant",
+        agent: "planner",
+        content: "计划已准备；接下来生成可交付成果。",
+      },
+    ],
+  };
+  const backgroundRecoverySave = await page.evaluate(async (value) => {
+    const response = await fetch("/api/workspaces", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ workspace: value }),
+    });
+    return { status: response.status, ...(await response.json()) };
+  }, backgroundRecoveryWorkspace);
+  assert.equal(
+    backgroundRecoverySave.status,
+    200,
+    backgroundRecoverySave.error || "Could not save the background-recovery UI fixture.",
+  );
+  await page.reload({ waitUntil: "networkidle" });
+  await page.locator(".home-primary").waitFor({ state: "visible" });
+  await page.getByRole("button", { name: /我的目标/ }).click();
+  const backgroundRecoveryCard = page
+    .locator(".history-grid article")
+    .filter({ hasText: backgroundRecoveryWorkspace.plan.title });
+  await backgroundRecoveryCard.locator(".history-card-open").click();
+  await page.locator("#workspace-chat-input").waitFor({ state: "visible" });
+  let backgroundRecoveryToken;
+  await page.route("**/api/execute", async (route) => {
+    const body = route.request().postDataJSON();
+    if (body.workspaceId !== backgroundRecoveryWorkspaceId) return route.continue();
+    const token = crypto.randomUUID();
+    const startedAt = new Date().toISOString();
+    backgroundRecoveryToken = token;
+    database
+      .prepare(
+        "INSERT INTO workspace_execution_locks (workspace_id, user_id, token, expires_at) VALUES (?, ?, ?, ?)",
+      )
+      .run(backgroundRecoveryWorkspaceId, adminUserId, token, Date.now() + 60_000);
+    database
+      .prepare(
+        `INSERT INTO workspace_execution_status
+          (token, workspace_id, user_id, workspace_title, state, activity, completed_tool_calls,
+           message, started_at, updated_at, finished_at)
+         VALUES (?, ?, ?, ?, 'running', ?, 2, NULL, ?, ?, NULL)`,
+      )
+      .run(
+        token,
+        backgroundRecoveryWorkspaceId,
+        adminUserId,
+        backgroundRecoveryWorkspace.plan.title,
+        "正在生成代码交付物",
+        startedAt,
+        startedAt,
+      );
+    await route.abort("connectionreset");
+  });
+  await page
+    .locator("#workspace-chat-input")
+    .fill("请生成完整代码文件。连接断开后继续在后台完成。");
+  await page.getByRole("button", { name: "发送给 Agent", exact: true }).click();
+  const backgroundProgress = page.locator(".workspace-live-progress.running");
+  await backgroundProgress.waitFor({ state: "visible" });
+  await page.waitForFunction(
+    (title) =>
+      document.querySelector(".workspace-live-progress.running")?.textContent?.includes(title),
+    "正在生成代码交付物",
+  );
+  assert.match(await backgroundProgress.innerText(), /连接已断开|正在生成代码交付物/);
+  assert.match(await backgroundProgress.innerText(), /已完成 2 项工具操作/);
+  check(
+    true,
+    "Keep a server-confirmed background run visible when the browser stream disconnects before a checkpoint",
+  );
+
+  const backgroundRecoveryRow = database
+    .prepare("SELECT body FROM workspaces WHERE id = ?")
+    .get(backgroundRecoveryWorkspaceId);
+  const completedBackgroundWorkspace = JSON.parse(backgroundRecoveryRow.body);
+  const backgroundCompletionAt = new Date(Date.now() + 1_000).toISOString();
+  completedBackgroundWorkspace.result = {
+    summary: "后台成果已同步：本轮代码已生成。",
+    tasks: backgroundRecoveryWorkspace.plan.tasks,
+    milestones: [],
+    artifacts: [
+      {
+        id: "ui-smoke-background-code",
+        type: "code",
+        title: "后台生成的代码文件",
+        description: "由后台执行完成后自动同步。",
+        content: "包含后台生成的代码项目文件。",
+        files: [{ path: "src/timer.ts", content: "export const ready = true;" }],
+      },
+    ],
+    events: [
+      {
+        id: "ui-smoke-background-result",
+        name: "draft_document",
+        title: "代码交付物已生成",
+        detail: "后台任务已完成并保存成果。",
+        status: "done",
+      },
+    ],
+  };
+  completedBackgroundWorkspace.conversation = [
+    ...completedBackgroundWorkspace.conversation,
+    {
+      id: crypto.randomUUID(),
+      role: "assistant",
+      agent: "workbench",
+      content: "后台成果已同步：本轮代码已生成。",
+    },
+  ];
+  database
+    .prepare("UPDATE workspaces SET body = ?, updated_at = ? WHERE id = ?")
+    .run(
+      JSON.stringify(completedBackgroundWorkspace),
+      backgroundCompletionAt,
+      backgroundRecoveryWorkspaceId,
+    );
+  database
+    .prepare(
+      "UPDATE workspace_execution_status SET state = 'completed', activity = ?, message = ?, completed_tool_calls = 3, updated_at = ?, finished_at = ? WHERE token = ?",
+    )
+    .run(
+      "本轮执行已完成",
+      completedBackgroundWorkspace.result.summary,
+      backgroundCompletionAt,
+      backgroundCompletionAt,
+      backgroundRecoveryToken,
+    );
+  database
+    .prepare("DELETE FROM workspace_execution_locks WHERE workspace_id = ? AND token = ?")
+    .run(backgroundRecoveryWorkspaceId, backgroundRecoveryToken);
+  await page
+    .locator(".workspace-live-progress.completed")
+    .getByText(/本轮执行完成 · 共完成 3 项工具操作/)
+    .waitFor({ state: "visible", timeout: 8_000 });
+  await page
+    .locator(".workspace-chat-thread")
+    .getByText("后台成果已同步：本轮代码已生成。", { exact: true })
+    .first()
+    .waitFor({ state: "visible", timeout: 8_000 });
+  check(
+    true,
+    "Sync the final workspace artifacts and chat response after background execution completes",
+  );
+  await page.unroute("**/api/execute");
+  await page.reload({ waitUntil: "networkidle" });
+  await page.locator(".home-primary").waitFor({ state: "visible" });
   await page.getByRole("button", { name: /我的目标/ }).click();
   await page.locator(".history-grid").waitFor({ state: "visible" });
   const speechTestWorkspace = page.locator(".history-grid article .history-card-open").first();

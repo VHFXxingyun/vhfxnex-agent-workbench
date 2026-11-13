@@ -427,6 +427,20 @@ Google Calendar 与 GitHub 集成继续按用户要求暂缓；本次未创建�
 - `npm run smoke:ui` — 通过，142 项；新增场景先在服务端保存 3 次工具操作，刷新并重新进入工作区后确认横幅仍显示 3 次。
 - `npm run lint`、`npx tsc --noEmit`、`npm run build`、`npx prettier --check src/app/page.tsx scripts/ui-smoke.mjs` 通过；未调用 DeepSeek。
 
+## 2026-11-13｜修复浏览器断流后的后台状态与成果恢复
+
+- 浏览器执行流断开时，先查询持久化执行状态；若服务端确认仍在运行，界面继续显示步骤和已完成工具数，不把网络错误误报为 Agent 失败。
+- 后台完成后按工作区 ID 拉取最新工作区，自动恢复聊天回复、代码/文档等产物；修正完成恢复读取工作区响应字段错误。
+- 继续保留完成状态，不因下一次执行状态轮询而退回旧的“运行中”。
+- 增加独立 `npm run smoke:ui:background-status` 与完整 UI smoke 覆盖：模拟断流、后台运行、任务完成、成果同步以及状态跨越后续轮询仍稳定；代码产物夹具通过工作区 schema 校验。
+
+### 验证与边界
+
+- `npm run smoke:ui:background-status` — 通过；使用隔离 SQLite 和 Playwright 请求拦截，没有发起 DeepSeek 请求。
+- `npm run smoke` — 通过，72 项；`npm run smoke:ui` — 通过，144 项，含断流与成果恢复场景。
+- `npm run lint -- --no-warn-ignored`、`npx tsc --noEmit`、`npm run build`、`npm run check:client-secrets` — 通过。
+- 全程未运行真实模型搜索、语音/视觉模型或代码复核；第三方 Calendar/GitHub 授权按用户要求暂缓。
+
 ## 后续记录规则
 
 - 每次真实完成一个功能、修复或验收后，再新增对应记录并提交。
