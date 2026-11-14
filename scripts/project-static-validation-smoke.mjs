@@ -159,6 +159,63 @@ assert.deepEqual(
 );
 assert.deepEqual(validateGeneratedProject(completedAfterResume.files), []);
 
+const initialPatchBatch = prepareProjectDeliveryBatch({
+  args: {
+    name: "后续传入名称",
+    description: "后续传入说明",
+    mode: "patch",
+    complete: false,
+    files: [
+      { path: "index.html", content: "<!doctype html><h1>Patched</h1>" },
+      { path: "src/added.js", content: "export const added = true;" },
+    ],
+    deleteFiles: ["src/obsolete.js"],
+  },
+  draft: null,
+  existingFiles: [
+    ...completedProjectBatch.files,
+    { path: "src/obsolete.js", content: "export const obsolete = true;" },
+  ],
+  existingTitle: "原项目名称",
+  existingDescription: "原项目说明",
+});
+assert.equal(initialPatchBatch.status, "staged");
+const completedPatchDelivery = prepareProjectDeliveryBatch({
+  args: {
+    name: "仍不应覆盖名称",
+    description: "仍不应覆盖说明",
+    mode: "append",
+    complete: true,
+    files: [{ path: "src/final.js", content: "export const final = true;" }],
+  },
+  draft: initialPatchBatch.draft,
+  existingFiles: [
+    ...completedProjectBatch.files,
+    { path: "src/obsolete.js", content: "export const obsolete = true;" },
+  ],
+  existingTitle: "原项目名称",
+  existingDescription: "原项目说明",
+});
+assert.equal(completedPatchDelivery.status, "complete");
+assert.equal(completedPatchDelivery.mode, "patch");
+assert.equal(completedPatchDelivery.title, "原项目名称");
+assert.equal(completedPatchDelivery.description, "原项目说明");
+assert.deepEqual(completedPatchDelivery.changedFiles, [
+  "index.html",
+  "src/added.js",
+  "src/final.js",
+]);
+assert.deepEqual(completedPatchDelivery.removedFiles, ["src/obsolete.js"]);
+assert.equal(
+  completedPatchDelivery.files.some((file) => file.path === "src/obsolete.js"),
+  false,
+);
+assert.match(
+  completedPatchDelivery.files.find((file) => file.path === "index.html")?.content || "",
+  /Patched/,
+);
+assert.deepEqual(validateGeneratedProject(completedPatchDelivery.files), []);
+
 const patchDraft = mergeProjectBatch({
   mode: "patch",
   complete: false,
@@ -572,5 +629,5 @@ assert.equal(
 assert.match(toolDescriptions.create_project, /independentReview\.status.*unavailable/);
 
 console.log(
-  "✓ Project validation checks package declarations, source and asset references, Vue files, manifest structure, and independent-review outcomes.",
+  "✓ Project delivery validates source/manifests, resumes rejected batches, and reports cross-batch patch changes and deletions.",
 );

@@ -72,7 +72,7 @@ export function prepareProjectDeliveryBatch(input) {
     title,
     description,
     files: batch.files,
-    changedFiles: updatedFiles.map((file) => file.path),
-    removedFiles: removedPaths,
+    changedFiles: batch.draftFiles.map((file) => file.path),
+    removedFiles: batch.deleteFiles,
   };
 }

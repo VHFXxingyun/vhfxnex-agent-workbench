@@ -956,3 +956,4 @@ Google Calendar 与 GitHub 集成继续按用户要求暂缓；本次未创建�
 - 将代码批次合并、入口/README 要求和静态校验抽到纯投递函数，执行接口与回归检查共用同一实现；最终批次校验失败时会保留草稿，允许 Agent 通过后续 append 修复。
 - 新增一条端到端批次逻辑回归：保存首批 README 与源码，模拟缺少入口的最终批次并确认拒绝，经过执行检查点恢复草稿，再追加 `index.html`，确认完整项目和本地引用检查通过。
 - `npm run smoke:project`、隔离 API `npm run smoke`（82 项，`NEXORA_DISABLE_AI=1`）、全量 ESLint、TypeScript、生产构建、改动源码 Prettier 与 `git diff --check` 均通过；未调用 DeepSeek。隔离服务已停止，未触碰未跟踪的 `output/`。
+- 追加复核多批次 `patch`：最终结果现在汇总所有被修改的路径及早期批次的删除路径，不再只报告最后一批；新增旧项目文件保留、变更覆盖、跨批删除和项目名称/说明保留断言。`npm run smoke:project`、TypeScript、定向 ESLint 与改动源码 Prettier 通过，未调用 DeepSeek。
