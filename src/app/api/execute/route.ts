@@ -2038,6 +2038,7 @@ export async function POST(request: NextRequest) {
                 finalSummaryWithoutReviewDisclosure,
                 execution.events,
               );
+              execution.summary = finalSummary;
               const checkpointResult = mergeExecutionCheckpoint(
                 previous,
                 execution,
