@@ -1,5 +1,6 @@
 FROM node:24-bookworm-slim AS dependencies
 WORKDIR /app
+ENV ONNXRUNTIME_NODE_INSTALL=skip
 COPY package.json package-lock.json ./
 RUN npm ci
 
@@ -12,7 +13,8 @@ RUN npm run build
 
 FROM node:24-bookworm-slim AS production-dependencies
 WORKDIR /app
-ENV NODE_ENV=production
+ENV NODE_ENV=production \
+    ONNXRUNTIME_NODE_INSTALL=skip
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 

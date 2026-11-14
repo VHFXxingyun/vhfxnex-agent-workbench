@@ -6,6 +6,11 @@
 - 现有 81 条本地用量记录中，73 条旧执行记录的来源为 `unknown`，缓存统计字段没有有效样本；保留这些历史值，不从缺失证据推断来源或命中率。后续请求会按调用点已有的显式来源统计。
 - 没有调用 DeepSeek；本地用量数据只读聚合。
 
+## 2026-11-14｜避免 CPU 部署安装可选 CUDA Provider
+
+- 第 9 次 GitHub Actions 在 Linux `npm ci` 阶段失败：`onnxruntime-node` 默认尝试从 NuGet 下载可选 CUDA 12 Provider，连接超时；本项目知识向量推理使用 CPU。
+- 为 CI 与 Docker 的开发/生产依赖安装设置 `ONNXRUNTIME_NODE_INSTALL=skip`，跳过不需要的 CUDA Provider 下载，保留 npm 包自带 Runtime。远程 CI 复验待完成。
+
 ## 2026-11-14｜补全对话 Markdown 的浏览器覆盖
 
 - 浏览器夹具现在覆盖标题、列表、表格、引用、安全 HTTP(S) 链接、行内/块代码，并确认 `javascript:` 链接不会生成可点击锚点、原始脚本标签不会执行。
