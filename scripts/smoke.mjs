@@ -1548,6 +1548,36 @@ try {
     "an unquantified staffing mention alone must not add a pointless review step",
   );
   assert.equal(
+    requiresExecutionFeasibilityCheck("策划校园活动，预计一百名学生到场"),
+    true,
+    "Chinese hundreds and explicit student attendance must trigger feasibility review",
+  );
+  assert.equal(
+    requiresExecutionFeasibilityCheck("策划校园活动，预计一百多名学生到场"),
+    true,
+    "approximate Chinese attendee counts must trigger feasibility review",
+  );
+  assert.equal(
+    requiresExecutionFeasibilityCheck("策划校园活动，预计来 20 个人"),
+    true,
+    "colloquial counted-person phrasing must trigger feasibility review",
+  );
+  assert.equal(
+    requiresExecutionFeasibilityCheck("策划校园活动，预计 100 多个人参加"),
+    true,
+    "spaced Arabic approximate counts must trigger feasibility review",
+  );
+  assert.equal(
+    requiresExecutionFeasibilityCheck("策划校园活动，预计数十名嘉宾到场"),
+    true,
+    "approximate tens of guests must trigger feasibility review",
+  );
+  assert.equal(
+    requiresExecutionFeasibilityCheck("策划校园活动，邀请多名学生参与"),
+    false,
+    "unquantified attendee mentions must not add a pointless review step",
+  );
+  assert.equal(
     requiresExecutionFeasibilityCheck("开发一个 4 页面 Web 项目，包含 3 个按钮"),
     false,
     "ordinary software UI counts must not trigger event feasibility checks",
