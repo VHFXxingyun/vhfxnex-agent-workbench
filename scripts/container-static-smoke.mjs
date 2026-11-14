@@ -90,6 +90,12 @@ check(
   "runtime must include the persistent workbench worker",
 );
 check(
+  /COPY\s+--from=builder\s+\/app\/src\/lib\/database-path\.mjs\s+\.\/src\/lib\/database-path\.mjs/m.test(
+    runner,
+  ),
+  "runtime must include the database path module imported by the workbench worker",
+);
+check(
   /CMD\s+\[\s*"node"\s*,\s*"scripts\/next\.mjs"/m.test(runner),
   "container startup must use the supervised Next.js launcher",
 );

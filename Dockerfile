@@ -31,6 +31,7 @@ COPY --from=builder /app/package.json ./package.json
 COPY --from=builder /app/scripts/next.mjs ./scripts/next.mjs
 COPY --from=builder /app/scripts/process-supervisor.mjs ./scripts/process-supervisor.mjs
 COPY --from=builder /app/scripts/workbench-worker.mjs ./scripts/workbench-worker.mjs
+COPY --from=builder /app/src/lib/database-path.mjs ./src/lib/database-path.mjs
 
 RUN mkdir -p /app/data /app/.next/cache \
     && chown -R node:node /app/data /app/.next
