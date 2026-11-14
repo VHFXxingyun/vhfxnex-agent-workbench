@@ -2,13 +2,17 @@ import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import Database from "better-sqlite3";
 import { resolveDatabasePath } from "../src/lib/database-path.mjs";
-import { loadSmokeEnvironment } from "./smoke-environment.mjs";
+import {
+  assertSmokeTargetMatchesDatabaseOrExit,
+  loadSmokeEnvironmentOrExit,
+} from "./smoke-environment.mjs";
 
-loadSmokeEnvironment();
+loadSmokeEnvironmentOrExit();
 const baseUrl = new URL(process.env.NEXORA_BASE_URL || "http://localhost:3000");
 if (!/^(localhost|127\.0\.0\.1|\[::1\])$/.test(baseUrl.hostname)) {
   throw new Error("The vision smoke check only runs against a local NEXORA server.");
 }
+await assertSmokeTargetMatchesDatabaseOrExit(baseUrl);
 
 const clientAddress = `198.51.100.${crypto.randomInt(1, 255)}`;
 const email = `nexora-vision-${crypto.randomUUID()}@example.test`;
@@ -79,10 +83,13 @@ try {
     );
   }
 
+  const cacheTelemetry =
+    planning.payload.usage.cachedInputTokens === undefined
+      ? "cache telemetry unavailable"
+      : `${planning.payload.usage.cachedInputTokens} cached input tokens`;
   console.log(
     `✓ DeepSeek image understanding identified the red reference and saved the plan ` +
-      `(${planning.payload.usage.totalTokens} tokens; ` +
-      `${planning.payload.usage.cachedInputTokens ?? 0} cached input tokens; one planning request).`,
+      `(${planning.payload.usage.totalTokens} tokens; ${cacheTelemetry}; one planning request).`,
   );
 } finally {
   if (userId) {

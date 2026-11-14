@@ -4,6 +4,7 @@ import { sameOriginError } from "@/lib/request";
 import {
   DEEPSEEK_AUTH_ERROR,
   DEEPSEEK_MODEL,
+  getDeepSeekUserId,
   readDeepSeekUsage,
   requestDeepSeek,
 } from "@/lib/deepseek";
@@ -32,6 +33,7 @@ export async function POST(request: Request) {
     const response = await requestDeepSeek(
       apiKey,
       {
+        user_id: getDeepSeekUserId(user.id),
         max_tokens: 8,
         messages: [{ role: "user", content: "Reply with exactly: OK" }],
       },

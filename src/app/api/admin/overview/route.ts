@@ -21,22 +21,32 @@ export async function GET() {
         COALESCE(usage.plannerTokens, 0) AS plannerTokens,
         COALESCE(usage.dialogueTokens, 0) AS dialogueTokens,
         COALESCE(usage.workbenchTokens, 0) AS workbenchTokens,
+        COALESCE(usage.reviewerTokens, 0) AS reviewerTokens,
         COALESCE(usage.legacyTokens, 0) AS legacyTokens,
         COALESCE(usage.flashInputTokens, 0) AS flashInputTokens,
         COALESCE(usage.flashOutputTokens, 0) AS flashOutputTokens,
+        COALESCE(usage.reasoningTokens, 0) AS reasoningTokens,
+        COALESCE(usage.reasoningMeasuredRequests, 0) AS reasoningMeasuredRequests,
         COALESCE(usage.flashCacheMeasuredInputTokens, 0) AS flashCacheMeasuredInputTokens,
-        COALESCE(usage.flashCacheMeasuredHitTokens, 0) AS flashCacheMeasuredHitTokens
+        COALESCE(usage.flashCacheMeasuredHitTokens, 0) AS flashCacheMeasuredHitTokens,
+        COALESCE(usage.flashCacheMeasuredRequests, 0) AS flashCacheMeasuredRequests,
+        COALESCE(usage.flashCacheHitRequests, 0) AS flashCacheHitRequests
        FROM workspaces w JOIN users u ON u.id = w.user_id
        LEFT JOIN (
          SELECT workspace_id, user_id, COUNT(*) AS requests, SUM(total_tokens) AS totalTokens,
            SUM(CASE WHEN source = 'planner' THEN total_tokens ELSE 0 END) AS plannerTokens,
            SUM(CASE WHEN source = 'dialogue' THEN total_tokens ELSE 0 END) AS dialogueTokens,
            SUM(CASE WHEN source = 'workbench' THEN total_tokens ELSE 0 END) AS workbenchTokens,
+           SUM(CASE WHEN source = 'reviewer' THEN total_tokens ELSE 0 END) AS reviewerTokens,
            SUM(CASE WHEN source = 'unknown' THEN total_tokens ELSE 0 END) AS legacyTokens,
+           SUM(reasoning_tokens) AS reasoningTokens,
+           SUM(reasoning_measured_requests) AS reasoningMeasuredRequests,
            SUM(CASE WHEN model IN ('deepseek-flash', 'deepseek-v4-flash', 'deepseek-v4-flash-vision-exp') THEN input_tokens ELSE 0 END) AS flashInputTokens,
            SUM(CASE WHEN model IN ('deepseek-flash', 'deepseek-v4-flash', 'deepseek-v4-flash-vision-exp') THEN output_tokens ELSE 0 END) AS flashOutputTokens,
            SUM(CASE WHEN model IN ('deepseek-flash', 'deepseek-v4-flash', 'deepseek-v4-flash-vision-exp') THEN cache_measured_input_tokens ELSE 0 END) AS flashCacheMeasuredInputTokens,
-           SUM(CASE WHEN model IN ('deepseek-flash', 'deepseek-v4-flash', 'deepseek-v4-flash-vision-exp') THEN cache_measured_hit_tokens ELSE 0 END) AS flashCacheMeasuredHitTokens
+           SUM(CASE WHEN model IN ('deepseek-flash', 'deepseek-v4-flash', 'deepseek-v4-flash-vision-exp') THEN cache_measured_hit_tokens ELSE 0 END) AS flashCacheMeasuredHitTokens,
+           SUM(CASE WHEN model IN ('deepseek-flash', 'deepseek-v4-flash', 'deepseek-v4-flash-vision-exp') AND cache_measured_input_tokens > 0 THEN 1 ELSE 0 END) AS flashCacheMeasuredRequests,
+           SUM(CASE WHEN model IN ('deepseek-flash', 'deepseek-v4-flash', 'deepseek-v4-flash-vision-exp') AND cache_measured_input_tokens > 0 AND cache_measured_hit_tokens > 0 THEN 1 ELSE 0 END) AS flashCacheHitRequests
          FROM ai_usage WHERE workspace_id IS NOT NULL GROUP BY workspace_id, user_id
        ) usage ON usage.workspace_id = w.id AND usage.user_id = w.user_id
        ORDER BY w.updated_at DESC LIMIT 100`,
@@ -63,21 +73,102 @@ export async function GET() {
         COALESCE(SUM(cache_measured_input_tokens), 0) AS cacheMeasuredInputTokens,
         COALESCE(SUM(cache_measured_hit_tokens), 0) AS cacheMeasuredHitTokens,
         COALESCE(SUM(output_tokens), 0) AS outputTokens,
+        COALESCE(SUM(reasoning_tokens), 0) AS reasoningTokens,
+        COALESCE(SUM(reasoning_measured_requests), 0) AS reasoningMeasuredRequests,
         COALESCE(SUM(total_tokens), 0) AS totalTokens,
         COALESCE(SUM(CASE WHEN model IN ('deepseek-flash', 'deepseek-v4-flash', 'deepseek-v4-flash-vision-exp') THEN input_tokens ELSE 0 END), 0) AS flashInputTokens,
         COALESCE(SUM(CASE WHEN model IN ('deepseek-flash', 'deepseek-v4-flash', 'deepseek-v4-flash-vision-exp') THEN output_tokens ELSE 0 END), 0) AS flashOutputTokens,
         COALESCE(SUM(CASE WHEN model IN ('deepseek-flash', 'deepseek-v4-flash', 'deepseek-v4-flash-vision-exp') THEN cache_measured_input_tokens ELSE 0 END), 0) AS flashCacheMeasuredInputTokens,
         COALESCE(SUM(CASE WHEN model IN ('deepseek-flash', 'deepseek-v4-flash', 'deepseek-v4-flash-vision-exp') THEN cache_measured_hit_tokens ELSE 0 END), 0) AS flashCacheMeasuredHitTokens,
+        COALESCE(SUM(CASE WHEN cache_measured_input_tokens > 0 THEN 1 ELSE 0 END), 0) AS cacheMeasuredRequests,
+        COALESCE(SUM(CASE WHEN cache_measured_input_tokens > 0 AND cache_measured_hit_tokens > 0 THEN 1 ELSE 0 END), 0) AS cacheHitRequests,
         COALESCE(ROUND(AVG(latency_ms)), 0) AS averageLatencyMs,
         COALESCE(SUM(CASE WHEN operation = 'plan' THEN 1 ELSE 0 END), 0) AS planningRequests,
         COALESCE(SUM(CASE WHEN source = 'dialogue' THEN 1 ELSE 0 END), 0) AS dialogueRequests,
         COALESCE(SUM(CASE WHEN source = 'workbench' THEN 1 ELSE 0 END), 0) AS workbenchRequests,
+        COALESCE(SUM(CASE WHEN source = 'reviewer' THEN 1 ELSE 0 END), 0) AS reviewerRequests,
         COALESCE(SUM(CASE WHEN source = 'healthcheck' THEN 1 ELSE 0 END), 0) AS healthcheckRequests,
         COALESCE(SUM(CASE WHEN source = 'unknown' THEN 1 ELSE 0 END), 0) AS legacyRequests
       FROM ai_usage
     `,
     )
     .get();
+  const usageBySource = database
+    .prepare(
+      `
+      SELECT
+        source,
+        COUNT(*) AS requests,
+        COALESCE(SUM(input_tokens), 0) AS inputTokens,
+        COALESCE(SUM(output_tokens), 0) AS outputTokens,
+        COALESCE(SUM(reasoning_tokens), 0) AS reasoningTokens,
+        COALESCE(SUM(reasoning_measured_requests), 0) AS reasoningMeasuredRequests,
+        COALESCE(SUM(cache_measured_input_tokens), 0) AS cacheMeasuredInputTokens,
+        COALESCE(SUM(cache_measured_hit_tokens), 0) AS cacheMeasuredHitTokens,
+        COALESCE(SUM(CASE WHEN cache_measured_input_tokens > 0 THEN 1 ELSE 0 END), 0) AS cacheMeasuredRequests,
+        COALESCE(SUM(CASE WHEN cache_measured_input_tokens > 0 AND cache_measured_hit_tokens > 0 THEN 1 ELSE 0 END), 0) AS cacheHitRequests,
+        COALESCE(SUM(CASE WHEN model IN ('deepseek-flash', 'deepseek-v4-flash', 'deepseek-v4-flash-vision-exp') THEN 1 ELSE 0 END), 0) AS flashRequests,
+        COALESCE(SUM(CASE WHEN model IN ('deepseek-flash', 'deepseek-v4-flash', 'deepseek-v4-flash-vision-exp') THEN input_tokens ELSE 0 END), 0) AS flashInputTokens,
+        COALESCE(SUM(CASE WHEN model IN ('deepseek-flash', 'deepseek-v4-flash', 'deepseek-v4-flash-vision-exp') THEN output_tokens ELSE 0 END), 0) AS flashOutputTokens,
+        COALESCE(SUM(CASE WHEN model IN ('deepseek-flash', 'deepseek-v4-flash', 'deepseek-v4-flash-vision-exp') THEN cache_measured_input_tokens ELSE 0 END), 0) AS flashCacheMeasuredInputTokens,
+        COALESCE(SUM(CASE WHEN model IN ('deepseek-flash', 'deepseek-v4-flash', 'deepseek-v4-flash-vision-exp') THEN cache_measured_hit_tokens ELSE 0 END), 0) AS flashCacheMeasuredHitTokens
+      FROM ai_usage
+      GROUP BY source
+      ORDER BY CASE source
+        WHEN 'planner' THEN 1
+        WHEN 'dialogue' THEN 2
+        WHEN 'workbench' THEN 3
+        WHEN 'reviewer' THEN 4
+        WHEN 'healthcheck' THEN 5
+        WHEN 'unknown' THEN 6
+        ELSE 7
+      END, source
+    `,
+    )
+    .all() as {
+    source: string;
+    requests: number;
+    inputTokens: number;
+    outputTokens: number;
+    reasoningTokens: number;
+    reasoningMeasuredRequests: number;
+    cacheMeasuredInputTokens: number;
+    cacheMeasuredHitTokens: number;
+    cacheMeasuredRequests: number;
+    cacheHitRequests: number;
+    flashRequests: number;
+    flashInputTokens: number;
+    flashOutputTokens: number;
+    flashCacheMeasuredInputTokens: number;
+    flashCacheMeasuredHitTokens: number;
+  }[];
+  const recentUsage = database
+    .prepare(
+      `
+      SELECT
+        usage.id,
+        usage.workspace_id AS workspaceId,
+        COALESCE(workspaces.title, '未关联工作区') AS workspaceTitle,
+        usage.source,
+        usage.operation,
+        usage.model,
+        usage.input_tokens AS inputTokens,
+        usage.output_tokens AS outputTokens,
+        usage.reasoning_tokens AS reasoningTokens,
+        usage.reasoning_measured_requests AS reasoningMeasuredRequests,
+        usage.cache_measured_input_tokens AS cacheMeasuredInputTokens,
+        usage.cache_measured_hit_tokens AS cacheMeasuredHitTokens,
+        usage.latency_ms AS latencyMs,
+        usage.created_at AS createdAt
+      FROM ai_usage AS usage
+      LEFT JOIN workspaces
+        ON workspaces.id = usage.workspace_id
+        AND workspaces.user_id = usage.user_id
+      ORDER BY usage.created_at DESC, usage.rowid DESC
+      LIMIT 100
+      `,
+    )
+    .all();
   const todayParts = new Intl.DateTimeFormat("en-US", {
     timeZone: "Asia/Shanghai",
     year: "numeric",
@@ -107,13 +198,18 @@ export async function GET() {
         COUNT(*) AS requests,
         COALESCE(SUM(input_tokens), 0) AS inputTokens,
         COALESCE(SUM(total_tokens), 0) AS totalTokens,
+        COALESCE(SUM(reasoning_tokens), 0) AS reasoningTokens,
+        COALESCE(SUM(reasoning_measured_requests), 0) AS reasoningMeasuredRequests,
         COALESCE(SUM(cached_input_tokens), 0) AS cachedInputTokens,
         COALESCE(SUM(cache_measured_input_tokens), 0) AS cacheMeasuredInputTokens,
         COALESCE(SUM(cache_measured_hit_tokens), 0) AS cacheMeasuredHitTokens,
+        COALESCE(SUM(CASE WHEN cache_measured_input_tokens > 0 THEN 1 ELSE 0 END), 0) AS cacheMeasuredRequests,
+        COALESCE(SUM(CASE WHEN cache_measured_input_tokens > 0 AND cache_measured_hit_tokens > 0 THEN 1 ELSE 0 END), 0) AS cacheHitRequests,
         COALESCE(SUM(latency_ms), 0) AS latencyMs,
         COALESCE(SUM(CASE WHEN operation = 'plan' THEN 1 ELSE 0 END), 0) AS planningRequests,
         COALESCE(SUM(CASE WHEN source = 'dialogue' THEN 1 ELSE 0 END), 0) AS dialogueRequests,
         COALESCE(SUM(CASE WHEN source = 'workbench' THEN 1 ELSE 0 END), 0) AS workbenchRequests,
+        COALESCE(SUM(CASE WHEN source = 'reviewer' THEN 1 ELSE 0 END), 0) AS reviewerRequests,
         COALESCE(SUM(CASE WHEN source = 'healthcheck' THEN 1 ELSE 0 END), 0) AS healthcheckRequests,
         COALESCE(SUM(CASE WHEN source = 'unknown' THEN 1 ELSE 0 END), 0) AS legacyRequests
       FROM ai_usage
@@ -126,13 +222,18 @@ export async function GET() {
     requests: number;
     inputTokens: number;
     totalTokens: number;
+    reasoningTokens: number;
+    reasoningMeasuredRequests: number;
     cachedInputTokens: number;
     cacheMeasuredInputTokens: number;
     cacheMeasuredHitTokens: number;
+    cacheMeasuredRequests: number;
+    cacheHitRequests: number;
     latencyMs: number;
     planningRequests: number;
     dialogueRequests: number;
     workbenchRequests: number;
+    reviewerRequests: number;
     healthcheckRequests: number;
     legacyRequests: number;
   }[];
@@ -145,13 +246,18 @@ export async function GET() {
       requests: row?.requests ?? 0,
       inputTokens: row?.inputTokens ?? 0,
       totalTokens: row?.totalTokens ?? 0,
+      reasoningTokens: row?.reasoningTokens ?? 0,
+      reasoningMeasuredRequests: row?.reasoningMeasuredRequests ?? 0,
       cachedInputTokens: row?.cachedInputTokens ?? 0,
       cacheMeasuredInputTokens: row?.cacheMeasuredInputTokens ?? 0,
       cacheMeasuredHitTokens: row?.cacheMeasuredHitTokens ?? 0,
+      cacheMeasuredRequests: row?.cacheMeasuredRequests ?? 0,
+      cacheHitRequests: row?.cacheHitRequests ?? 0,
       latencyMs: row?.latencyMs ?? 0,
       planningRequests: row?.planningRequests ?? 0,
       dialogueRequests: row?.dialogueRequests ?? 0,
       workbenchRequests: row?.workbenchRequests ?? 0,
+      reviewerRequests: row?.reviewerRequests ?? 0,
       healthcheckRequests: row?.healthcheckRequests ?? 0,
       legacyRequests: row?.legacyRequests ?? 0,
     };
@@ -161,6 +267,8 @@ export async function GET() {
     workspaceCount,
     completedCount,
     aiUsage,
+    usageBySource,
+    recentUsage,
     dailyAiUsage,
     users,
     workspaces,

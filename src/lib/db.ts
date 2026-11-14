@@ -160,6 +160,8 @@ if (process.env.NEXT_PHASE !== "phase-production-build") {
     cached_input_tokens INTEGER NOT NULL DEFAULT 0,
     cache_measured_input_tokens INTEGER NOT NULL DEFAULT 0,
     cache_measured_hit_tokens INTEGER NOT NULL DEFAULT 0,
+    reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+    reasoning_measured_requests INTEGER NOT NULL DEFAULT 0,
     output_tokens INTEGER NOT NULL,
     total_tokens INTEGER NOT NULL,
     latency_ms INTEGER NOT NULL,
@@ -188,6 +190,14 @@ if (process.env.NEXT_PHASE !== "phase-production-build") {
   if (!usageColumns.some((column) => column.name === "cache_measured_hit_tokens")) {
     database.exec(
       "ALTER TABLE ai_usage ADD COLUMN cache_measured_hit_tokens INTEGER NOT NULL DEFAULT 0",
+    );
+  }
+  if (!usageColumns.some((column) => column.name === "reasoning_tokens")) {
+    database.exec("ALTER TABLE ai_usage ADD COLUMN reasoning_tokens INTEGER NOT NULL DEFAULT 0");
+  }
+  if (!usageColumns.some((column) => column.name === "reasoning_measured_requests")) {
+    database.exec(
+      "ALTER TABLE ai_usage ADD COLUMN reasoning_measured_requests INTEGER NOT NULL DEFAULT 0",
     );
   }
   if (!usageColumns.some((column) => column.name === "workspace_id")) {

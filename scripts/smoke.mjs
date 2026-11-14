@@ -3,9 +3,11 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createDeepSeek } from "@ai-sdk/deepseek";
 import Database from "better-sqlite3";
 import bcrypt from "bcryptjs";
 import JSZip from "jszip";
+import { generateText } from "ai";
 import * as pdfjs from "pdfjs-dist/legacy/build/pdf.mjs";
 import { configuredTrustedProxyHops, resolveClientAddress } from "../src/lib/client-address.mjs";
 import { missingInitialAgentOutputs } from "../src/lib/agent-validation.mjs";
@@ -32,13 +34,20 @@ import {
   estimateDeepSeekFlashCost,
   isDeepSeekFlashModel,
 } from "../src/lib/deepseek-cost-estimate.mjs";
+import { createAdminUsageCsv } from "../src/lib/admin-usage-export.mjs";
 import { getDeepSeekApiKey, parseEnvValue } from "../src/lib/deepseek-key.mjs";
-import { getDeepSeekCacheHitTokens, parseDeepSeekUsage } from "../src/lib/deepseek-usage.mjs";
+import {
+  getDeepSeekCacheHitTokens,
+  getDeepSeekReasoningTokens,
+  parseDeepSeekUsage,
+} from "../src/lib/deepseek-usage.mjs";
+import { getDeepSeekUserId } from "../src/lib/deepseek-user-id.mjs";
 import { hashPassword, needsPasswordUpgrade, verifyPassword } from "../src/lib/password.mjs";
 import { isSessionSecretValid, MIN_SESSION_SECRET_BYTES } from "../src/lib/session-secret.mjs";
 import { parseDuckDuckGoResults, searchDuckDuckGo } from "../src/lib/web-search.mjs";
 import { compactToolFailure } from "../src/lib/tool-failure.mjs";
 import { deepSeekThinkingOptions, normalizeThinkingMode } from "../src/lib/thinking-mode.mjs";
+import { parsePlannerResponse, PLANNER_MAX_OUTPUT_TOKENS } from "../src/lib/planner-response.mjs";
 import { classifySearchIntent } from "../src/lib/search-intent.mjs";
 import { fuseKnowledgeSources } from "../src/lib/knowledge-ranking.mjs";
 import { selectKnowledgeChunkIndexes } from "../src/lib/knowledge-chunks.mjs";
@@ -58,10 +67,18 @@ import {
   buildWorkspaceProgressAnswer,
   isWorkspaceProgressQuestion,
 } from "../src/lib/workspace-progress-answer.mjs";
+import { buildDialogueWorkspaceContext } from "../src/lib/dialogue-context.mjs";
 import { availableCapacity, keepWithinLimit } from "../src/lib/workspace-capacity.mjs";
 import { createWorkspaceExecutionLeaseStore } from "../src/lib/workspace-execution-lease.mjs";
 import { resolveDatabasePath } from "../src/lib/database-path.mjs";
-import { loadSmokeEnvironment } from "./smoke-environment.mjs";
+import {
+  createSmokeDatabaseProof,
+  matchesSmokeDatabaseProof,
+} from "../src/lib/smoke-database-proof.mjs";
+import {
+  assertSmokeTargetMatchesDatabase,
+  loadSmokeEnvironmentOrExit,
+} from "./smoke-environment.mjs";
 import { BUDGET_AMOUNT_LIMIT, normalizeBudgetItems } from "../src/lib/budget-validation.mjs";
 import {
   AI_RATE_LIMITS,
@@ -70,7 +87,7 @@ import {
   hashRateLimitKey,
 } from "../src/lib/rate-limit-policy.mjs";
 
-loadSmokeEnvironment();
+loadSmokeEnvironmentOrExit();
 const baseUrl = new URL(process.env.NEXORA_BASE_URL || "http://localhost:3000");
 const liveMode = process.argv.includes("--live");
 const smokeClientAddress = `198.51.100.${crypto.randomInt(1, 255)}`;
@@ -79,6 +96,7 @@ if (!/^(localhost|127\.0\.0\.1|\[::1\])$/.test(baseUrl.hostname)) {
 }
 
 const checkpoints = [];
+let smokeServerUnavailable = false;
 let database;
 let rateLimitDatabase;
 let testUserId;
@@ -242,19 +260,124 @@ function checkExecutionLeaseStore() {
   leases.release("lease-user", "lease-workspace", "third-token");
   leaseDatabase.close();
   check(true, "Acquire, renew, expire, replace, and safely release workspace execution leases");
+
+  const smokeProofPath = path.join(os.tmpdir(), "vhfxnex-smoke-proof.sqlite");
+  const smokeProofSecret = "isolated-smoke-proof-secret-for-test-only";
+  const smokeProof = createSmokeDatabaseProof(smokeProofPath, smokeProofSecret);
+  assert.equal(matchesSmokeDatabaseProof(smokeProof, smokeProofPath, smokeProofSecret), true);
+  assert.equal(
+    matchesSmokeDatabaseProof(
+      smokeProof,
+      path.join(os.tmpdir(), "different-smoke-proof.sqlite"),
+      smokeProofSecret,
+    ),
+    false,
+  );
+  assert.equal(
+    matchesSmokeDatabaseProof(smokeProof, smokeProofPath, `${smokeProofSecret}-other`),
+    false,
+  );
+  check(true, "Bind the local smoke preflight to the matching SQLite path without exposing it");
+}
+
+function checkDialogueWorkspaceContext() {
+  const tasks = Array.from({ length: 24 }, (_, index) => ({
+    id: `task-${index}`,
+    title: `任务 ${index}`,
+    detail: "任务细节。".repeat(80),
+    phase: "执行",
+    status: index < 4 ? "done" : "pending",
+  }));
+  const workspace = {
+    prompt: "制作一个完整项目",
+    selectedRouteId: "route-1",
+    plan: {
+      title: "演示项目",
+      category: "软件项目",
+      summary: "项目摘要",
+      routes: [{ id: "route-1", title: "稳定路线" }],
+      tasks,
+    },
+    result: {
+      summary: "执行摘要",
+      tasks,
+      artifacts: Array.from({ length: 9 }, (_, index) => ({
+        id: `artifact-${index}`,
+        title: `成果 ${index}`,
+        type: "document",
+        description: "成果说明。".repeat(80),
+        content: "ARTIFACT_PRIVATE_CONTENT_SENTINEL",
+        files: [{ path: "private/full/source/path.txt", content: "FILE_PRIVATE_CONTENT_SENTINEL" }],
+      })),
+    },
+  };
+  const context = buildDialogueWorkspaceContext(workspace);
+  const serialized = JSON.stringify(context);
+  assert.equal(context.taskProgress.total, 24);
+  assert.equal(context.taskProgress.completed, 4);
+  assert.equal(context.taskProgress.omitted, 12);
+  assert.equal(context.tasks.length, 12);
+  assert.equal(context.recentDeliverables.length, 5);
+  assert.equal(context.omittedDeliverables, 4);
+  assert.deepEqual(context.recentDeliverables[0].fileNames, ["path.txt"]);
+  assert.ok(serialized.length < 8_000, "dialogue context should have a bounded size");
+  assert.ok(!serialized.includes("ARTIFACT_PRIVATE_CONTENT_SENTINEL"));
+  assert.ok(!serialized.includes("FILE_PRIVATE_CONTENT_SENTINEL"));
+  assert.ok(!serialized.includes("private/full/source/path.txt"));
+  check(true, "Keep dialogue context compact while preserving progress and full workbench state");
+}
+
+function checkAdminUsageCsvExport() {
+  const csv = createAdminUsageCsv([
+    {
+      source: "reviewer",
+      operation: "execute",
+      model: "deepseek-flash",
+      workspaceTitle: '=HYPERLINK("https://attacker.invalid","open")',
+      inputTokens: 1_000,
+      outputTokens: 250,
+      reasoningTokens: 8,
+      cacheMeasuredInputTokens: 500,
+      cacheMeasuredHitTokens: 125,
+      latencyMs: 800,
+      createdAt: "2026-11-14T12:00:00.000Z",
+    },
+  ]);
+  assert.ok(csv.startsWith('\uFEFF"时间（北京时间）"'));
+  assert.match(csv, /"'=HYPERLINK\(""https:\/\/attacker\.invalid"",""open""\)"/);
+  assert.ok(csv.includes('"代码复核 Agent"'));
+  assert.ok(csv.includes('"1000"'));
+  assert.ok(csv.includes('"125"'));
+  assert.ok(csv.includes('"375"'));
+  assert.ok(csv.includes('"已命中"'));
+  assert.doesNotMatch(csv, /userId|email|prompt|attachment/i);
+  check(true, "Export recent usage as UTF-8 CSV while neutralizing spreadsheet formulas");
 }
 
 try {
+  await assertSmokeTargetMatchesDatabase(baseUrl);
+
   checkExecutionLeaseStore();
+  checkDialogueWorkspaceContext();
+  checkAdminUsageCsvExport();
   const envTestDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "nexora-env-smoke-"));
   const inheritedApiKey = process.env.DEEPSEEK_API_KEY;
+  const disableAiOverride = process.env.NEXORA_DISABLE_AI;
   try {
     fs.writeFileSync(
       path.join(envTestDirectory, ".env.local"),
       'OTHER_VALUE=ignored\nDEEPSEEK_API_KEY="file-test-key" # inline comment\n',
     );
+    delete process.env.NEXORA_DISABLE_AI;
     process.env.DEEPSEEK_API_KEY = "inherited-test-key";
     assert.equal(getDeepSeekApiKey(envTestDirectory), "file-test-key");
+    process.env.NEXORA_DISABLE_AI = "1";
+    assert.equal(
+      getDeepSeekApiKey(envTestDirectory),
+      "",
+      "an explicit AI-off runtime must ignore a configured local credential",
+    );
+    delete process.env.NEXORA_DISABLE_AI;
     assert.equal(
       parseEnvValue(
         "# DEEPSEEK_API_KEY=commented\nexport DEEPSEEK_API_KEY = bare-key",
@@ -269,6 +392,8 @@ try {
   } finally {
     if (inheritedApiKey === undefined) delete process.env.DEEPSEEK_API_KEY;
     else process.env.DEEPSEEK_API_KEY = inheritedApiKey;
+    if (disableAiOverride === undefined) delete process.env.NEXORA_DISABLE_AI;
+    else process.env.NEXORA_DISABLE_AI = disableAiOverride;
     fs.rmSync(envTestDirectory, { recursive: true, force: true });
   }
   check(true, "Read the DeepSeek credential from .env.local and ignore inherited environment keys");
@@ -310,6 +435,7 @@ try {
         prompt_cache_hit_tokens: 80,
         prompt_tokens_details: { cached_tokens: 70 },
         completion_tokens: 25,
+        completion_tokens_details: { reasoning_tokens: 9 },
         total_tokens: 145,
       },
     },
@@ -322,6 +448,8 @@ try {
     cacheMeasuredInputTokens: 120,
     cacheMeasuredHitTokens: 80,
     outputTokens: 25,
+    reasoningTokens: 9,
+    reasoningMeasuredRequests: 1,
     totalTokens: 145,
     latencyMs: 13,
     requests: 1,
@@ -340,6 +468,19 @@ try {
   assert.equal(nestedCacheUsage?.cachedInputTokens, 40);
   assert.equal(nestedCacheUsage?.cacheMeasuredInputTokens, 40);
   assert.equal(nestedCacheUsage?.cacheMeasuredHitTokens, 40);
+  const alternateReasoningUsage = parseDeepSeekUsage(
+    {
+      usage: {
+        prompt_tokens: 12,
+        completion_tokens: 8,
+        output_tokens_details: { reasoning_tokens: 99 },
+        total_tokens: 20,
+      },
+    },
+    1,
+  );
+  assert.equal(alternateReasoningUsage?.reasoningTokens, 8);
+  assert.equal(alternateReasoningUsage?.reasoningMeasuredRequests, 1);
   const missOnlyCacheUsage = parseDeepSeekUsage(
     {
       usage: {
@@ -373,8 +514,91 @@ try {
   );
   assert.equal(getDeepSeekCacheHitTokens({}, 120), undefined);
   assert.equal(getDeepSeekCacheHitTokens({ prompt_cache_hit_tokens: "0" }, 120), undefined);
+  assert.equal(getDeepSeekReasoningTokens({}, 20), undefined);
+  assert.equal(
+    getDeepSeekReasoningTokens({ completion_tokens_details: { reasoning_tokens: 0 } }, 20),
+    0,
+  );
+  assert.equal(
+    getDeepSeekReasoningTokens({ completion_tokens_details: { reasoning_tokens: "4" } }, 20),
+    undefined,
+  );
   check(true, "Preserve DeepSeek cache hit/miss telemetry and clamp invalid provider counts");
   check(true, "Distinguish raw provider cache telemetry from SDK-normalized zero defaults");
+
+  const isolatedDeepSeekUserId = getDeepSeekUserId("account-1", "test-session-secret");
+  assert.match(isolatedDeepSeekUserId, /^vhfxnex_[a-f0-9]{64}$/);
+  assert.equal(getDeepSeekUserId("account-1", "test-session-secret"), isolatedDeepSeekUserId);
+  assert.notEqual(getDeepSeekUserId("account-2", "test-session-secret"), isolatedDeepSeekUserId);
+  assert.notEqual(getDeepSeekUserId("account-1", "rotated-session-secret"), isolatedDeepSeekUserId);
+  assert.equal(isolatedDeepSeekUserId.includes("account-1"), false);
+  assert.throws(() => getDeepSeekUserId("", "test-session-secret"), /non-empty/);
+  const originalNodeEnvironment = process.env.NODE_ENV;
+  process.env.NODE_ENV = "production";
+  try {
+    assert.throws(() => getDeepSeekUserId("account-1", ""), /SESSION_SECRET/);
+  } finally {
+    if (originalNodeEnvironment === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = originalNodeEnvironment;
+  }
+  const deepSeekRequestPaths = [
+    ["src/app/api/plan/route.ts", "user_id", 1],
+    ["src/app/api/chat/route.ts", "userId", 1],
+    ["src/app/api/execute/route.ts", "userId", 2],
+    ["src/app/api/admin/ai-status/route.ts", "user_id", 1],
+  ];
+  for (const [routePath, field, expectedCalls] of deepSeekRequestPaths) {
+    const routeSource = fs.readFileSync(path.join(process.cwd(), routePath), "utf8");
+    const userIdCalls = routeSource.match(
+      new RegExp(`${field}:\\s*getDeepSeekUserId\\(user\\.id\\)`, "g"),
+    );
+    assert.equal(
+      userIdCalls?.length || 0,
+      expectedCalls,
+      `${routePath} should isolate every request`,
+    );
+  }
+  check(
+    true,
+    "Derive pseudonymous DeepSeek IDs and pass them through every model-backed app route",
+  );
+
+  let capturedDeepSeekRequest;
+  const testDeepSeekProvider = createDeepSeek({
+    apiKey: "local-smoke-only",
+    fetch: async (_input, init) => {
+      capturedDeepSeekRequest = JSON.parse(init.body);
+      return Response.json({
+        id: "local-smoke",
+        object: "chat.completion",
+        created: 1,
+        model: "deepseek-flash",
+        choices: [
+          {
+            index: 0,
+            message: { role: "assistant", content: "ok" },
+            finish_reason: "stop",
+          },
+        ],
+        usage: {
+          prompt_tokens: 1,
+          completion_tokens: 1,
+          total_tokens: 2,
+          prompt_cache_hit_tokens: 0,
+          prompt_cache_miss_tokens: 1,
+        },
+      });
+    },
+  });
+  const isolatedProviderUserId = "vhfxnex_0123456789abcdef";
+  const mockedProviderResult = await generateText({
+    model: testDeepSeekProvider("deepseek-flash"),
+    prompt: "local provider smoke",
+    providerOptions: { deepseek: { userId: isolatedProviderUserId } },
+  });
+  assert.equal(capturedDeepSeekRequest?.user_id, isolatedProviderUserId);
+  assert.equal(mockedProviderResult.text, "ok");
+  check(true, "Serialize the pseudonymous account ID as DeepSeek user_id without a live API call");
 
   assert.equal(isSessionSecretValid("s".repeat(MIN_SESSION_SECRET_BYTES - 1)), false);
   assert.equal(isSessionSecretValid("s".repeat(MIN_SESSION_SECRET_BYTES)), true);
@@ -560,6 +784,14 @@ try {
       new Error("AI_InvalidToolInputError: AI_JSONParseError: JSON parsing failed"),
     ),
     "工具参数 JSON 不完整或被截断；请缩小本次产物范围后重新生成。",
+  );
+  assert.equal(
+    compactToolFailure(
+      new Error(
+        `AI_InvalidToolInputError: AI_TypeValidationError: Type validation failed: Value: ${"<source>".repeat(2_000)}.\nError message: files：项目源文件不能超过 45 KB`,
+      ),
+    ),
+    "files：项目源文件不能超过 45 KB",
   );
   check(true, "Keep tool repair feedback concise and preserve the actual schema issue");
 
@@ -859,6 +1091,31 @@ try {
     reasoning_effort: "high",
   });
   check(true, "Default planning uses deep reasoning and the fast option disables it");
+  assert.ok(PLANNER_MAX_OUTPUT_TOKENS >= 4000);
+  assert.deepEqual(
+    parsePlannerResponse({
+      choices: [{ finish_reason: "stop", message: { content: '{"title":"ok"}' } }],
+    }),
+    { title: "ok" },
+  );
+  assert.throws(
+    () =>
+      parsePlannerResponse({
+        choices: [{ finish_reason: "length", message: { content: '{"title":"partial"' } }],
+      }),
+    /达到长度上限/,
+  );
+  assert.throws(
+    () =>
+      parsePlannerResponse({
+        choices: [{ finish_reason: "stop", message: { content: '{"title":' } }],
+      }),
+    /规划结果不完整/,
+  );
+  check(
+    true,
+    "Reject truncated or malformed plans and preserve enough output budget for deep planning",
+  );
   assert.equal(
     parseToolArguments(
       "create_project",
@@ -3127,6 +3384,36 @@ try {
   });
   assert.equal(executionAfterProgressDialogue.payload?.executions?.[0]?.state, "running");
   check(true, "Persist dialogue-Agent progress replies while the workbench continues running");
+  const queuedInstruction = "请直接生成并交付一个可下载运行的桌面计时器代码项目。";
+  const queuedDialogue = await request("/api/chat", {
+    method: "POST",
+    cookie: sessionCookie,
+    body: {
+      workspaceId: workspace.id,
+      question: queuedInstruction,
+      thinkingMode: "deep",
+    },
+  });
+  assert.equal(queuedDialogue.response.status, 200, queuedDialogue.payload?.error);
+  assert.equal(queuedDialogue.payload?.kind, "handoff");
+  assert.equal(queuedDialogue.payload?.queued, true);
+  const pendingHandoffsDuringExecution = await request("/api/handoffs", {
+    cookie: sessionCookie,
+  });
+  const queuedHandoff = pendingHandoffsDuringExecution.payload?.handoffs?.find(
+    (handoff) => handoff.instruction === queuedInstruction,
+  );
+  assert.ok(queuedHandoff, "explicit new work should be durably queued during active execution");
+  const blockedClaim = await request("/api/handoffs", {
+    method: "PATCH",
+    cookie: sessionCookie,
+    body: { action: "claim", id: queuedHandoff.id },
+  });
+  assert.equal(blockedClaim.payload?.status, "busy");
+  check(
+    true,
+    "Queue explicit new work during an active run and prevent it from taking over the workspace",
+  );
   const outsiderExecutionStatuses = await request("/api/executions", { cookie: outsiderCookie });
   assert.equal(outsiderExecutionStatuses.response.status, 200);
   assert.deepEqual(outsiderExecutionStatuses.payload?.executions, []);
@@ -3162,6 +3449,32 @@ try {
   assert.equal(interruptedExecutionStatuses.response.status, 200);
   assert.equal(interruptedExecutionStatuses.payload?.executions?.[0]?.state, "failed");
   assert.match(interruptedExecutionStatuses.payload?.executions?.[0]?.message || "", /连接已中断/);
+  const releasedQueuedClaim = await request("/api/handoffs", {
+    method: "PATCH",
+    cookie: sessionCookie,
+    body: { action: "claim", id: queuedHandoff.id },
+  });
+  assert.equal(releasedQueuedClaim.payload?.status, "claimed");
+  assert.equal(releasedQueuedClaim.payload?.handoff?.instruction, queuedInstruction);
+  const completedQueuedHandoff = await request("/api/handoffs", {
+    method: "PATCH",
+    cookie: sessionCookie,
+    body: {
+      action: "complete",
+      id: queuedHandoff.id,
+      token: releasedQueuedClaim.payload?.token,
+    },
+  });
+  assert.equal(completedQueuedHandoff.payload?.ok, true);
+  const pendingHandoffsAfterCompletion = await request("/api/handoffs", {
+    cookie: sessionCookie,
+  });
+  assert.ok(
+    !pendingHandoffsAfterCompletion.payload?.handoffs?.some(
+      (handoff) => handoff.id === queuedHandoff.id,
+    ),
+  );
+  check(true, "Release queued work after the previous run ends and remove it after completion");
   database
     .prepare("DELETE FROM workspace_execution_locks WHERE workspace_id = ? AND token = ?")
     .run(workspace.id, executionStatusToken);
@@ -3288,6 +3601,11 @@ try {
     450,
     new Date().toISOString(),
   );
+  database
+    .prepare(
+      "UPDATE ai_usage SET reasoning_tokens = ?, reasoning_measured_requests = ? WHERE user_id = ? AND workspace_id = ? AND source = 'planner'",
+    )
+    .run(9, 1, testUserId, workspace.id);
   addUsageFixture.run(
     crypto.randomUUID(),
     outsiderId,
@@ -3302,6 +3620,22 @@ try {
     202,
     403,
     850,
+    new Date().toISOString(),
+  );
+  addUsageFixture.run(
+    crypto.randomUUID(),
+    testUserId,
+    workspace.id,
+    "reviewer",
+    "execute",
+    "deepseek-flash",
+    250,
+    25,
+    250,
+    25,
+    50,
+    300,
+    650,
     new Date().toISOString(),
   );
   addUsageFixture.run(
@@ -3345,24 +3679,88 @@ try {
   const adminOverview = await request("/api/admin/overview", { cookie: sessionCookie });
   assert.equal(adminOverview.response.status, 200, "admins must be able to open the overview");
   assert.ok(adminOverview.payload?.users?.some((item) => item.id === outsiderId));
+  assert.ok(Array.isArray(adminOverview.payload?.recentUsage));
+  assert.ok(adminOverview.payload.recentUsage.length <= 100);
+  const recentReviewerCall = adminOverview.payload.recentUsage.find(
+    (item) => item.source === "reviewer" && item.workspaceId === workspace.id,
+  );
+  assert.ok(
+    recentReviewerCall,
+    `recent reviewer usage row for workspace ${workspace.id} must be present`,
+  );
+  assert.equal(
+    recentReviewerCall?.inputTokens,
+    250,
+    "recent reviewer usage row must expose inputTokens",
+  );
+  assert.equal(recentReviewerCall?.outputTokens, 50);
+  assert.equal(recentReviewerCall?.cacheMeasuredInputTokens, 250);
+  assert.equal(recentReviewerCall?.cacheMeasuredHitTokens, 25);
+  assert.equal(recentReviewerCall?.workspaceId, workspace.id);
+  assert.equal("userId" in (recentReviewerCall || {}), false);
+  assert.equal("prompt" in (recentReviewerCall || {}), false);
+  assert.equal("attachments" in (recentReviewerCall || {}), false);
+  check(true, "Expose recent per-call usage metadata without prompts, attachments, or account IDs");
   assert.ok(adminOverview.payload?.aiUsage?.totalTokens >= 606);
   assert.ok(adminOverview.payload?.aiUsage?.cachedInputTokens >= 110);
   assert.ok(adminOverview.payload?.aiUsage?.cacheMeasuredInputTokens >= 302);
   assert.ok(adminOverview.payload?.aiUsage?.cacheMeasuredHitTokens >= 110);
+  assert.ok(adminOverview.payload?.aiUsage?.cacheMeasuredRequests >= 2);
+  assert.ok(adminOverview.payload?.aiUsage?.cacheHitRequests >= 2);
   assert.ok(adminOverview.payload?.aiUsage?.flashInputTokens >= 20);
   assert.ok(adminOverview.payload?.aiUsage?.flashOutputTokens >= 2);
   assert.ok(adminOverview.payload?.aiUsage?.flashCacheMeasuredInputTokens >= 20);
   assert.ok(adminOverview.payload?.aiUsage?.flashCacheMeasuredHitTokens >= 0);
+  assert.ok(adminOverview.payload?.aiUsage?.reasoningTokens >= 9);
+  assert.ok(adminOverview.payload?.aiUsage?.reasoningMeasuredRequests >= 1);
   assert.ok(adminOverview.payload?.aiUsage?.planningRequests >= 1);
   assert.ok(adminOverview.payload?.aiUsage?.workbenchRequests >= 1);
+  assert.ok(adminOverview.payload?.aiUsage?.reviewerRequests >= 1);
   assert.ok(adminOverview.payload?.aiUsage?.healthcheckRequests >= 1);
+  const plannerCacheUsage = adminOverview.payload?.usageBySource?.find(
+    (item) => item.source === "planner",
+  );
+  const workbenchCacheUsage = adminOverview.payload?.usageBySource?.find(
+    (item) => item.source === "workbench",
+  );
+  const reviewerCacheUsage = adminOverview.payload?.usageBySource?.find(
+    (item) => item.source === "reviewer",
+  );
+  const healthcheckCacheUsage = adminOverview.payload?.usageBySource?.find(
+    (item) => item.source === "healthcheck",
+  );
+  assert.ok(plannerCacheUsage?.cacheMeasuredInputTokens >= 101);
+  assert.ok(plannerCacheUsage?.cacheMeasuredHitTokens >= 40);
+  assert.ok(plannerCacheUsage?.cacheMeasuredRequests >= 1);
+  assert.ok(plannerCacheUsage?.cacheHitRequests >= 1);
+  assert.ok(plannerCacheUsage?.reasoningTokens >= 9);
+  assert.ok(plannerCacheUsage?.reasoningMeasuredRequests >= 1);
+  assert.ok(workbenchCacheUsage?.cacheMeasuredInputTokens >= 201);
+  assert.ok(workbenchCacheUsage?.cacheMeasuredHitTokens >= 70);
+  assert.ok(reviewerCacheUsage?.cacheMeasuredInputTokens >= 250);
+  assert.ok(reviewerCacheUsage?.cacheMeasuredHitTokens >= 25);
+  assert.ok(reviewerCacheUsage?.cacheMeasuredRequests >= 1);
+  assert.ok(reviewerCacheUsage?.cacheHitRequests >= 1);
+  assert.ok(reviewerCacheUsage?.outputTokens >= 50);
+  assert.ok(reviewerCacheUsage?.flashRequests >= 1);
+  assert.ok(reviewerCacheUsage?.flashInputTokens >= 250);
+  assert.ok(reviewerCacheUsage?.flashOutputTokens >= 50);
+  assert.ok(reviewerCacheUsage?.flashCacheMeasuredInputTokens >= 250);
+  assert.ok(reviewerCacheUsage?.flashCacheMeasuredHitTokens >= 25);
+  assert.ok(healthcheckCacheUsage?.cacheMeasuredInputTokens >= 20);
+  assert.ok(healthcheckCacheUsage?.cacheMeasuredHitTokens >= 5);
   assert.ok(
     adminOverview.payload?.workspaces?.some((item) => {
       if (item.id !== workspace.id) return false;
       assert.ok(item.plannerTokens >= 203);
+      assert.ok(item.reviewerTokens >= 300);
       assert.ok(item.flashInputTokens >= 20);
       assert.ok(item.flashOutputTokens >= 2);
       assert.ok(item.flashCacheMeasuredInputTokens >= 20);
+      assert.ok(item.flashCacheMeasuredRequests >= 1);
+      assert.ok(item.flashCacheHitRequests >= 1);
+      assert.ok(item.reasoningTokens >= 9);
+      assert.ok(item.reasoningMeasuredRequests >= 1);
       return true;
     }),
     "admins should see project-level AI usage attributed to its planning agent",
@@ -3370,6 +3768,9 @@ try {
   assert.equal(adminOverview.payload?.dailyAiUsage?.length, 7);
   assert.ok(
     adminOverview.payload.dailyAiUsage.reduce((sum, day) => sum + day.totalTokens, 0) >= 606,
+  );
+  assert.ok(
+    adminOverview.payload.dailyAiUsage.reduce((sum, day) => sum + day.reviewerRequests, 0) >= 1,
   );
   assert.ok(
     adminOverview.payload.dailyAiUsage.reduce((sum, day) => sum + day.cachedInputTokens, 0) >= 110,
@@ -3383,6 +3784,13 @@ try {
   assert.ok(
     adminOverview.payload.dailyAiUsage.reduce((sum, day) => sum + day.cacheMeasuredHitTokens, 0) >=
       110,
+  );
+  assert.ok(
+    adminOverview.payload.dailyAiUsage.reduce((sum, day) => sum + day.cacheMeasuredRequests, 0) >=
+      2,
+  );
+  assert.ok(
+    adminOverview.payload.dailyAiUsage.reduce((sum, day) => sum + day.cacheHitRequests, 0) >= 2,
   );
 
   const promote = await request(`/api/admin/users/${outsiderId}`, {
@@ -3691,6 +4099,14 @@ try {
     true,
     "Enforce the 100-workspace limit before AI spend without blocking updates or partial imports",
   );
+} catch (error) {
+  if (
+    !(error instanceof Error) ||
+    !["SmokeServerUnavailableError", "SmokeDatabaseMismatchError"].includes(error.name)
+  )
+    throw error;
+  console.error(error.message);
+  smokeServerUnavailable = true;
 } finally {
   rateLimitDatabase?.close();
   if (testUserIds.length) {
@@ -3709,5 +4125,9 @@ try {
   database?.close();
 }
 
-for (const checkpoint of checkpoints) console.log(`✓ ${checkpoint}`);
-console.log(`NEXORA smoke check passed (${checkpoints.length} checkpoints).`);
+if (smokeServerUnavailable) {
+  process.exitCode = 1;
+} else {
+  for (const checkpoint of checkpoints) console.log(`✓ ${checkpoint}`);
+  console.log(`NEXORA smoke check passed (${checkpoints.length} checkpoints).`);
+}

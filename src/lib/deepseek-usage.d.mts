@@ -10,9 +10,18 @@ export function parseDeepSeekUsage(
       cacheMeasuredInputTokens?: number;
       cacheMeasuredHitTokens?: number;
       outputTokens: number;
+      reasoningTokens?: number;
+      reasoningMeasuredRequests?: number;
       totalTokens: number;
       latencyMs: number;
       requests: number;
     }
   | undefined;
-export function getDeepSeekCacheHitTokens(rawUsage: unknown, inputTokens: number): number | undefined;
+export function getDeepSeekCacheHitTokens(
+  rawUsage: unknown,
+  inputTokens: number,
+): number | undefined;
+export function getDeepSeekReasoningTokens(
+  rawUsage: unknown,
+  outputTokens: number,
+): number | undefined;

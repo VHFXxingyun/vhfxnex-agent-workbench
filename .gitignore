@@ -37,6 +37,7 @@ yarn-error.log*
 !.env.example
 /data/
 /backups/
+/tmp/pdfs/
 
 # Python artifacts produced by downloadable code-project examples
 __pycache__/

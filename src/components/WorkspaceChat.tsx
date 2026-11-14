@@ -103,6 +103,8 @@ export default function WorkspaceChat({
 }) {
   const threadRef = useRef<HTMLDivElement>(null);
   const speechRecognitionRef = useRef<SpeechRecognitionLike | null>(null);
+  const speechHasResultRef = useRef(false);
+  const speechErrorRef = useRef(false);
   const draftRef = useRef(draft);
   const [speechListening, setSpeechListening] = useState(false);
   const [speechNotice, setSpeechNotice] = useState("");
@@ -194,15 +196,19 @@ export default function WorkspaceChat({
     }
     const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!Recognition) {
-      setSpeechNotice("当前浏览器不支持语音识别，请使用文字输入。" );
+      setSpeechNotice("当前浏览器不支持语音识别，请使用文字输入。");
       return;
     }
-    setSpeechNotice("语音识别由浏览器提供；部分浏览器可能会将音频发送给其语音服务商。" );
+    setSpeechNotice("语音识别由浏览器提供；部分浏览器可能会将音频发送给其语音服务商。");
     const recognition = new Recognition();
     recognition.lang = "zh-CN";
     recognition.continuous = true;
     recognition.interimResults = false;
+    speechHasResultRef.current = false;
+    speechErrorRef.current = false;
+    const isCurrentRecognition = () => speechRecognitionRef.current === recognition;
     recognition.onresult = (event) => {
+      if (!isCurrentRecognition()) return;
       const transcript = Array.from(event.results)
         .slice(event.resultIndex)
         .filter((result) => result.isFinal)
@@ -210,6 +216,7 @@ export default function WorkspaceChat({
         .filter(Boolean)
         .join("。 ");
       if (transcript) {
+        speechHasResultRef.current = true;
         const current = draftRef.current.trimEnd();
         const next = `${current}${current ? " " : ""}${transcript}`;
         draftRef.current = next;
@@ -217,16 +224,23 @@ export default function WorkspaceChat({
       }
     };
     recognition.onerror = (event) => {
+      if (!isCurrentRecognition()) return;
+      speechErrorRef.current = true;
       setSpeechListening(false);
       setSpeechNotice(
         event.error === "not-allowed"
           ? "麦克风权限未开启；请在浏览器地址栏允许麦克风后重试。"
-          : "语音识别中断，可以重试或改用文字输入。",
+          : event.error === "no-speech"
+            ? "没有识别到语音，请说话后重试。"
+            : "语音识别中断，可以重试或改用文字输入。",
       );
     };
     recognition.onend = () => {
+      if (!isCurrentRecognition()) return;
       setSpeechListening(false);
       speechRecognitionRef.current = null;
+      if (!speechErrorRef.current && !speechHasResultRef.current)
+        setSpeechNotice("没有识别到语音，请说话后重试或直接输入。");
     };
     speechRecognitionRef.current = recognition;
     try {
@@ -235,7 +249,7 @@ export default function WorkspaceChat({
     } catch {
       speechRecognitionRef.current = null;
       setSpeechListening(false);
-      setSpeechNotice("无法启动语音识别，请检查麦克风权限后重试。" );
+      setSpeechNotice("无法启动语音识别，请检查麦克风权限后重试。");
     }
   };
 
@@ -338,7 +352,8 @@ export default function WorkspaceChat({
           <span>
             <strong>工作台 Agent 正在推进「{blockedByOtherExecution.title}」</strong>
             <small>
-              {blockedByOtherExecution.activity} · 仍可在这里交流；新的工作要求会排队，完成后自动接手。
+              {blockedByOtherExecution.activity} ·
+              仍可在这里交流；新的工作要求会排队，完成后自动接手。
             </small>
           </span>
         </div>
@@ -647,10 +662,10 @@ export default function WorkspaceChat({
             readOnly
               ? "这是只读共享工作区。你可以查看项目内容与成果，但不能发送消息或修改任务。"
               : busy
-              ? "随时问进度或继续安排工作；新的执行要求会自动排队…"
-              : workspace.result
-                ? "和对话 Agent 继续交流；明确的修改或制作要求会自动交给工作台执行…"
-                : "描述你想做的事，也可以先问问题；选定路线后会由工作台 Agent 完整推进…"
+                ? "随时问进度或继续安排工作；新的执行要求会自动排队…"
+                : workspace.result
+                  ? "和对话 Agent 继续交流；明确的修改或制作要求会自动交给工作台执行…"
+                  : "描述你想做的事，也可以先问问题；选定路线后会由工作台 Agent 完整推进…"
           }
           onKeyDown={(event) => {
             if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
@@ -761,10 +776,10 @@ export default function WorkspaceChat({
             {readOnly
               ? "共享权限：只读"
               : queuedHandoffCount > 0
-              ? `${queuedHandoffCount} 项工作已排队，当前轮完成后自动接手。`
-              : busy
-                ? "对话 Agent 会回答问题；新的工作要求会在当前轮结束后自动执行。"
-                : "对话 Agent 负责交流与判断；需要实际产出时会交给工作台 Agent 连续完成。"}
+                ? `${queuedHandoffCount} 项工作已排队，当前轮完成后自动接手。`
+                : busy
+                  ? "对话 Agent 会回答问题；新的工作要求会在当前轮结束后自动执行。"
+                  : "对话 Agent 负责交流与判断；需要实际产出时会交给工作台 Agent 连续完成。"}
           </span>
           {busy && !readOnly ? (
             <div className="chat-execution-actions">

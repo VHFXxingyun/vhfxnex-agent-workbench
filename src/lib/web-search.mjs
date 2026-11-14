@@ -50,6 +50,7 @@ export function parseDuckDuckGoResults(html, limit = 5) {
   const snippets =
     html.match(/<a\b[^>]*class=["'][^"']*result__snippet[^"']*["'][^>]*>[\s\S]*?<\/a>/gi) || [];
   const results = [];
+  const seenUrls = new Set();
   for (let index = 0; index < anchors.length && results.length < Math.min(5, limit); index += 1) {
     const tag = anchors[index].match(/^<a\b[^>]*>/i)?.[0] || "";
     const url = unwrapDuckDuckGoUrl(attribute(tag, "href"));
@@ -66,9 +67,12 @@ export function parseDuckDuckGoResults(html, limit = 5) {
         parsed.password
       )
         continue;
+      const normalizedUrl = parsed.href.split("#", 1)[0];
+      if (seenUrls.has(normalizedUrl)) continue;
+      seenUrls.add(normalizedUrl);
       results.push({
         title: title.slice(0, 300),
-        url: parsed.href.slice(0, 2000),
+        url: normalizedUrl.slice(0, 2000),
         snippet: snippet.slice(0, 1200),
       });
     } catch {

@@ -12,7 +12,7 @@ services:
       HOSTNAME: 0.0.0.0
       GOALFLOW_BACKUP_DIR: /backups
     ports:
-      - "127.0.0.1:3000:3000"
+      - "127.0.0.1:${GOALFLOW_HOST_PORT:-3000}:3000"
     volumes:
       - goalflow_data:/app/data
       - type: bind
@@ -36,4 +36,4 @@ services:
 
 volumes:
   goalflow_data:
-    name: vhfxnex_goalflow_data
+    name: ${GOALFLOW_VOLUME_NAME:-vhfxnex_goalflow_data}

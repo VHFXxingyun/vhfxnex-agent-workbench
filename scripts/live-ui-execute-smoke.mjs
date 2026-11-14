@@ -6,13 +6,17 @@ import Database from "better-sqlite3";
 import JSZip from "jszip";
 import { chromium } from "playwright-core";
 import { resolveDatabasePath } from "../src/lib/database-path.mjs";
-import { loadSmokeEnvironment } from "./smoke-environment.mjs";
+import {
+  assertSmokeTargetMatchesDatabaseOrExit,
+  loadSmokeEnvironmentOrExit,
+} from "./smoke-environment.mjs";
 
-loadSmokeEnvironment();
+loadSmokeEnvironmentOrExit();
 const baseUrl = new URL(process.env.NEXORA_BASE_URL || "http://localhost:3000");
 if (!/^(localhost|127\.0\.0\.1|\[::1\])$/.test(baseUrl.hostname)) {
   throw new Error("The live browser smoke check only runs against a local NEXORA server.");
 }
+await assertSmokeTargetMatchesDatabaseOrExit(baseUrl);
 
 const chromeCandidates = [
   process.env.PLAYWRIGHT_EXECUTABLE_PATH,
@@ -33,7 +37,7 @@ const suffix = crypto.randomUUID();
 const email = `nexora-live-ui-${suffix}@example.test`;
 const password = crypto.randomBytes(24).toString("base64url");
 const prompt =
-  "请为大学生周末旧物交换市集直接创建一个可运行的报名网页演示，不要只给计划；同时生成落地执行方案、任务清单和两周时间线。";
+  "请直接制作一个大学生周末旧物交换市集报名网页，交付可运行的完整源码和 README。做成单页：填写姓名、物品名、类别和时段；报名后新增报名卡片，显示人数并允许删除；刷新后用浏览器 localStorage 保留。手机适配，不接后端、不联网。并附简短执行方案、任务清单和两周时间线。";
 let browser;
 let userId;
 let workspaceId;
@@ -82,8 +86,20 @@ try {
     await route.continue();
   });
   await page.getByRole("textbox", { name: "描述你想完成的目标" }).fill(prompt);
+  const planningResponsePromise = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === "/api/plan" && response.request().method() === "POST",
+    { timeout: 210_000 },
+  );
   await page.getByRole("button", { name: "开始探索" }).click();
-  await page.locator(".chat-route-option").first().waitFor({ timeout: 210_000 });
+  const planningResponse = await planningResponsePromise;
+  const planningPayload = await planningResponse.json().catch(() => null);
+  assert.equal(
+    planningResponse.status(),
+    200,
+    `Live planning failed: ${planningPayload?.error || `HTTP ${planningResponse.status()}`}`,
+  );
+  await page.locator(".chat-route-option").first().waitFor({ timeout: 30_000 });
   assert.match(await page.locator(".goal-strip").innerText(), /实时 AI/);
   assert.match(workspaceId || "", /^[0-9a-f-]{36}$/i);
 
@@ -174,6 +190,13 @@ try {
 
   const toolNames = [...new Set(saved.result.events.map((event) => event.name))];
   const executionUsage = saved.result.usage;
+  const measuredCacheInputTokens = saved.usage.cacheMeasuredInputTokens || 0;
+  const measuredCacheHitTokens = saved.usage.cacheMeasuredHitTokens || 0;
+  const cacheSummary =
+    measuredCacheInputTokens > 0
+      ? `cache hits ${measuredCacheHitTokens}/${measuredCacheInputTokens} measured input tokens ` +
+        `(${((measuredCacheHitTokens / measuredCacheInputTokens) * 100).toFixed(1)}%)`
+      : "provider cache telemetry unavailable";
   assert.ok(executionUsage?.totalTokens > 0, "execution usage must be available separately");
   assert.ok(toolNames.includes("create_project"), "the live tool stream must show create_project");
   const artifactShelf = page.locator(".chat-artifact-shelf");
@@ -205,10 +228,29 @@ try {
       `${saved.usage.totalTokens} total tokens ` +
       `(planning ${saved.usage.totalTokens - executionUsage.totalTokens}, ` +
       `execution ${executionUsage.totalTokens}; ` +
-      `${executionUsage.inputTokens} input / ${executionUsage.outputTokens} output).`,
+      `${executionUsage.inputTokens} input / ${executionUsage.outputTokens} output; ${cacheSummary}).`,
   );
 } finally {
   if (page && workspaceId) {
+    const usage = await page
+      .evaluate(async (id) => {
+        const response = await fetch(`/api/workspaces/${id}`, { cache: "no-store" });
+        if (!response.ok) return null;
+        const payload = await response.json();
+        return payload.workspace?.usage || null;
+      }, workspaceId)
+      .catch(() => null);
+    if (usage?.totalTokens) {
+      const measuredInputTokens = usage.cacheMeasuredInputTokens || 0;
+      const hitTokens = usage.cacheMeasuredHitTokens || 0;
+      const cacheSummary = measuredInputTokens
+        ? `; cache ${hitTokens}/${measuredInputTokens} measured input tokens`
+        : "; cache telemetry unavailable";
+      console.log(
+        `Live test API usage: ${usage.totalTokens} tokens ` +
+          `(${usage.inputTokens} input / ${usage.outputTokens} output${cacheSummary}).`,
+      );
+    }
     await page
       .evaluate(async (id) => {
         await fetch(`/api/workspaces/${id}`, { method: "DELETE" });

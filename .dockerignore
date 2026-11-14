@@ -9,3 +9,9 @@ data
 backups
 coverage
 *.tsbuildinfo
+.github
+docs
+deliverables
+output
+scripts/*smoke*.mjs
+scripts/fixtures

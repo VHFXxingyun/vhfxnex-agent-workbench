@@ -34,6 +34,177 @@ const projectWithDeclaredDependencies = [
 
 assert.deepEqual(validateGeneratedProject(projectWithDeclaredDependencies), []);
 
+const validPathAlias = validateGeneratedProject([
+  {
+    path: "tsconfig.json",
+    content: JSON.stringify({
+      compilerOptions: {
+        baseUrl: ".",
+        paths: { "@/*": ["src/*"] },
+      },
+    }),
+  },
+  {
+    path: "src/main.ts",
+    content: 'import Button from "@/components/Button"; void Button;',
+  },
+  { path: "src/components/Button.tsx", content: "export default function Button() {}" },
+]);
+assert.deepEqual(validPathAlias, []);
+
+const validCustomPathAlias = validateGeneratedProject([
+  {
+    path: "jsconfig.json",
+    content: JSON.stringify({
+      compilerOptions: {
+        baseUrl: ".",
+        paths: { "@components/*": ["src/components/*"], "~/*": ["src/*"] },
+      },
+    }),
+  },
+  {
+    path: "src/main.js",
+    content:
+      'import Button from "@components/Button"; import Layout from "~/layout/Layout"; void Button; void Layout;',
+  },
+  { path: "src/components/Button.jsx", content: "export default function Button() {}" },
+  { path: "src/layout/Layout.jsx", content: "export default function Layout() {}" },
+]);
+assert.deepEqual(validCustomPathAlias, []);
+
+const specificAliasOverridesBroadAlias = validateGeneratedProject([
+  {
+    path: "tsconfig.json",
+    content: JSON.stringify({
+      compilerOptions: {
+        baseUrl: ".",
+        paths: {
+          "@/*": ["src/*"],
+          "@/components/*": ["missing-components/*"],
+        },
+      },
+    }),
+  },
+  {
+    path: "src/main.ts",
+    content: 'import Button from "@/components/Button"; void Button;',
+  },
+  { path: "src/components/Button.tsx", content: "export default function Button() {}" },
+]);
+assert.match(
+  specificAliasOverridesBroadAlias.join(" "),
+  /找不到路径别名引用.*@\/components\/Button/,
+  "the most specific matching path alias must take precedence over a broader mapping",
+);
+
+const aliasFallbackTarget = validateGeneratedProject([
+  {
+    path: "tsconfig.json",
+    content: JSON.stringify({
+      compilerOptions: {
+        paths: { "@/*": ["missing/*", "src/*"] },
+      },
+    }),
+  },
+  { path: "src/main.ts", content: 'import Button from "@/Button"; void Button;' },
+  { path: "src/Button.tsx", content: "export default function Button() {}" },
+]);
+assert.deepEqual(aliasFallbackTarget, [], "path mapping targets must support fallback resolution");
+
+const inheritedPathAlias = validateGeneratedProject([
+  { path: "tsconfig.json", content: JSON.stringify({ extends: "./config/tsconfig.base.json" }) },
+  {
+    path: "config/tsconfig.base.json",
+    content: JSON.stringify({ compilerOptions: { paths: { "@base/*": ["../src/*"] } } }),
+  },
+  {
+    path: "src/main.ts",
+    content: 'import Button from "@base/components/Button"; void Button;',
+  },
+  { path: "src/components/Button.tsx", content: "export default function Button() {}" },
+]);
+assert.deepEqual(inheritedPathAlias, [], "local extended config aliases must be resolved");
+
+const inheritedPathAliasUsesOverriddenBaseUrl = validateGeneratedProject([
+  {
+    path: "tsconfig.json",
+    content: JSON.stringify({
+      extends: "./config/tsconfig.base.json",
+      compilerOptions: { baseUrl: "." },
+    }),
+  },
+  {
+    path: "config/tsconfig.base.json",
+    content: JSON.stringify({ compilerOptions: { paths: { "@root/*": ["src/*"] } } }),
+  },
+  { path: "src/main.ts", content: 'import Button from "@root/Button"; void Button;' },
+  { path: "src/Button.tsx", content: "export default function Button() {}" },
+]);
+assert.deepEqual(
+  inheritedPathAliasUsesOverriddenBaseUrl,
+  [],
+  "an extending config's baseUrl must be honored when resolving inherited path targets",
+);
+
+const missingInheritedPathAlias = validateGeneratedProject([
+  { path: "tsconfig.json", content: JSON.stringify({ extends: "./config/tsconfig.base.json" }) },
+  {
+    path: "config/tsconfig.base.json",
+    content: JSON.stringify({ compilerOptions: { paths: { "@base/*": ["../src/*"] } } }),
+  },
+  { path: "src/main.ts", content: 'import Missing from "@base/Missing"; void Missing;' },
+]);
+assert.match(
+  missingInheritedPathAlias.join(" "),
+  /找不到路径别名引用.*@base\/Missing/,
+  "missing files referenced through an inherited alias must be reported",
+);
+
+const externalExtendedConfig = validateGeneratedProject([
+  {
+    path: "package.json",
+    content: JSON.stringify({ dependencies: { next: "16.0.0" } }),
+  },
+  { path: "tsconfig.json", content: JSON.stringify({ extends: "next/tsconfig" }) },
+  { path: "src/main.ts", content: "export {};" },
+]);
+assert.deepEqual(
+  externalExtendedConfig,
+  [],
+  "package-provided configs must not be reported missing when the generated bundle omits node_modules",
+);
+
+const missingLocalExtendedConfig = validateGeneratedProject([
+  { path: "tsconfig.json", content: JSON.stringify({ extends: "./config/missing.json" }) },
+  { path: "src/main.ts", content: "export {};" },
+]);
+assert.match(missingLocalExtendedConfig.join(" "), /Cannot read file .*config\/missing\.json/);
+
+const missingPathAlias = validateGeneratedProject([
+  {
+    path: "tsconfig.json",
+    content: JSON.stringify({
+      compilerOptions: {
+        baseUrl: ".",
+        paths: { "@/*": ["src/*"] },
+      },
+    }),
+  },
+  {
+    path: "src/main.ts",
+    content: 'import Button from "@/components/Missing"; void Button;',
+  },
+]);
+assert.match(missingPathAlias.join(" "), /找不到路径别名引用.*@\/components\/Missing/);
+
+const bundlerPathAliasWithoutTsConfig = validateGeneratedProject([
+  {
+    path: "src/main.ts",
+    content: 'import Button from "@/components/Button"; void Button;',
+  },
+]);
+assert.deepEqual(bundlerPathAliasWithoutTsConfig, []);
+
 const missingNpmDependency = validateGeneratedProject([
   { path: "package.json", content: JSON.stringify({ scripts: { dev: "vite" } }) },
   { path: "src/main.ts", content: 'import React from "react"; void React;' },

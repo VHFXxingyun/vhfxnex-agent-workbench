@@ -78,14 +78,159 @@ function localImportExists(importPath, importer, fileKeys) {
   const basePath = path.posix.normalize(
     path.posix.join(path.posix.dirname(importer), cleanImportPath),
   );
+  return projectPathExists(basePath, fileKeys);
+}
+
+function projectPathExists(basePath, fileKeys) {
+  const normalizedPath = path.posix.normalize(basePath);
+  if (
+    !normalizedPath ||
+    normalizedPath === ".." ||
+    normalizedPath.startsWith("../") ||
+    normalizedPath.startsWith("/")
+  ) {
+    return false;
+  }
+  const cleanPath = normalizedPath.replace(/^\.\//, "");
   return (
     IMPORT_EXTENSIONS.some((extension) =>
-      fileKeys.has(projectPathKey(`${basePath}${extension}`)),
+      fileKeys.has(projectPathKey(`${cleanPath}${extension}`)),
     ) ||
     IMPORT_EXTENSIONS.some((extension) =>
-      fileKeys.has(projectPathKey(`${basePath}/index${extension}`)),
+      fileKeys.has(projectPathKey(`${cleanPath}/index${extension}`)),
     )
   );
+}
+
+function wildcardMatch(pattern, value) {
+  const wildcardIndex = pattern.indexOf("*");
+  if (wildcardIndex < 0) return pattern === value ? "" : null;
+  if (pattern.indexOf("*", wildcardIndex + 1) >= 0) return null;
+  const prefix = pattern.slice(0, wildcardIndex);
+  const suffix = pattern.slice(wildcardIndex + 1);
+  if (
+    !value.startsWith(prefix) ||
+    !value.endsWith(suffix) ||
+    value.length < prefix.length + suffix.length
+  ) {
+    return null;
+  }
+  return value.slice(prefix.length, value.length - suffix.length);
+}
+
+function projectPathAliases(files) {
+  const configFile = files.find(({ filePath }) =>
+    ["tsconfig.json", "jsconfig.json"].includes(projectPathKey(filePath)),
+  );
+  if (!configFile) return { aliases: [], errors: [] };
+
+  const parsed = ts.parseConfigFileTextToJson(configFile.filePath, configFile.content);
+  if (parsed.error) {
+    return {
+      aliases: [],
+      errors: [
+        `${configFile.filePath}：JSON 格式错误（${ts.flattenDiagnosticMessageText(parsed.error.messageText, " ")}）。`,
+      ],
+    };
+  }
+
+  const projectRoot = path.resolve(".vhfxnex-project-validation");
+  const virtualPath = (filePath) => path.resolve(projectRoot, ...filePath.split("/"));
+  const virtualKey = (filePath) => path.resolve(filePath).replaceAll("\\", "/").toLowerCase();
+  const virtualFiles = new Map(
+    files.map(({ filePath, content }) => [virtualKey(virtualPath(filePath)), content]),
+  );
+  const virtualFilePaths = files.map(({ filePath }) => virtualPath(filePath));
+  const diagnostics = [];
+  const configHost = {
+    useCaseSensitiveFileNames: false,
+    getCurrentDirectory: () => projectRoot,
+    fileExists: (filePath) => virtualFiles.has(virtualKey(filePath)),
+    readFile: (filePath) => virtualFiles.get(virtualKey(filePath)),
+    readDirectory: (directory) => {
+      const root = virtualKey(directory).replace(/\/$/, "");
+      return virtualFilePaths.filter((filePath) => virtualKey(filePath).startsWith(`${root}/`));
+    },
+    directoryExists: (directory) => {
+      const root = `${virtualKey(directory).replace(/\/$/, "")}/`;
+      return virtualFilePaths.some((filePath) => virtualKey(filePath).startsWith(root));
+    },
+    getDirectories: (directory) => {
+      const root = `${virtualKey(directory).replace(/\/$/, "")}/`;
+      return Array.from(
+        new Set(
+          virtualFilePaths.flatMap((filePath) => {
+            const relative = virtualKey(filePath).slice(root.length);
+            const childDirectory = relative.split("/")[0];
+            return childDirectory && relative.includes("/") ? [childDirectory] : [];
+          }),
+        ),
+      );
+    },
+    onUnRecoverableConfigFileDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+  };
+  const parsedConfig = ts.getParsedCommandLineOfConfigFile(
+    virtualPath(configFile.filePath),
+    {},
+    configHost,
+  );
+  const configDiagnostics = [...diagnostics, ...(parsedConfig?.errors || [])].filter(
+    (diagnostic) => {
+      if (diagnostic.code === 18003) return false;
+      if (diagnostic.code !== 6053) return true;
+      const message = ts.flattenDiagnosticMessageText(diagnostic.messageText, " ");
+      const missingFile = message.match(/^File '([^']+)' not found\.?$/);
+      return !missingFile || missingFile[1].startsWith(".") || path.isAbsolute(missingFile[1]);
+    },
+  );
+  const errors = configDiagnostics.map(
+    (diagnostic) =>
+      `${configFile.filePath}：${ts.flattenDiagnosticMessageText(diagnostic.messageText, " ")}。`,
+  );
+  const compilerOptions = parsedConfig?.options;
+  const paths = compilerOptions?.paths;
+  if (!paths || typeof paths !== "object" || Array.isArray(paths)) {
+    return { aliases: [], errors };
+  }
+
+  const aliasBaseDirectory =
+    compilerOptions.baseUrl || compilerOptions.pathsBasePath || virtualPath(".");
+  const baseUrl = path.relative(projectRoot, aliasBaseDirectory).replaceAll("\\", "/");
+  const aliases = Object.entries(paths).flatMap(([pattern, targets]) => {
+    if (!pattern.trim() || !Array.isArray(targets)) return [];
+    return [
+      {
+        pattern,
+        baseUrl,
+        targets: targets.filter((target) => typeof target === "string" && target.trim()),
+      },
+    ];
+  });
+  return { aliases, errors };
+}
+
+function aliasedImportExists(importPath, aliases, fileKeys) {
+  const matches = aliases.flatMap((alias, order) => {
+    const captured = wildcardMatch(alias.pattern, importPath);
+    if (captured === null) return [];
+    const wildcardIndex = alias.pattern.indexOf("*");
+    return [
+      {
+        alias,
+        captured,
+        prefixLength: wildcardIndex < 0 ? alias.pattern.length : wildcardIndex,
+        order,
+      },
+    ];
+  });
+  if (!matches.length) return null;
+
+  matches.sort((left, right) => right.prefixLength - left.prefixLength || left.order - right.order);
+  const { alias, captured } = matches[0];
+  const mappings = alias.targets.map((target) => ({
+    basePath: path.posix.join(alias.baseUrl, target.replace("*", captured)),
+  }));
+  return mappings.some(({ basePath }) => projectPathExists(basePath, fileKeys));
 }
 
 function localAssetExists(assetPath, importer, fileKeys) {
@@ -192,6 +337,8 @@ export function validateGeneratedProject(files) {
     return filePath ? [{ filePath, content: file.content }] : [];
   });
   const fileKeys = new Set(normalized.map(({ filePath }) => projectPathKey(filePath)));
+  const { aliases, errors: aliasErrors } = projectPathAliases(normalized);
+  errors.push(...aliasErrors);
   const sourceFiles = normalized.filter(({ filePath }) =>
     SOURCE_EXTENSIONS.has(path.posix.extname(filePath).toLowerCase()),
   );
@@ -221,7 +368,13 @@ export function validateGeneratedProject(files) {
       if (request.startsWith(".") && !localImportExists(request, file.filePath, fileKeys)) {
         errors.push(`${file.filePath}：找不到本地引用「${request}」，请补充文件或修正引用。`);
       }
-      const packageName = packageNameForImport(request);
+      const aliasExists = aliasedImportExists(request, aliases, fileKeys);
+      if (aliasExists === false) {
+        errors.push(
+          `${file.filePath}：找不到路径别名引用「${request}」，请检查 tsconfig/jsconfig 的 paths 并补充目标文件。`,
+        );
+      }
+      const packageName = aliasExists === null ? packageNameForImport(request) : null;
       if (packageName) {
         const importers = importedPackages.get(packageName) || [];
         importers.push(file.filePath);

@@ -1,0 +1,156 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Verify application
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js 24
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Install Chromium for browser regression
+        run: |
+          npx playwright-core install --with-deps chromium
+          printf 'PLAYWRIGHT_EXECUTABLE_PATH=%s\n' "$(node --input-type=module -e 'import { chromium } from "playwright-core"; process.stdout.write(chromium.executablePath())')" >> "$GITHUB_ENV"
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Check TypeScript
+        run: npx tsc --noEmit
+
+      - name: Check worker startup and supervision
+        run: |
+          npm run smoke:worker
+          npm run smoke:supervisor
+
+      - name: Check generated project validation
+        run: npm run smoke:project
+
+      - name: Check main demo kit consistency
+        run: npm run smoke:demo-kit
+
+      - name: Check container configuration safety
+        run: npm run smoke:container
+
+      - name: Check shared AI prompt prefix
+        run: npm run smoke:agent-prefix
+
+      - name: Verify desktop timer deliverable
+        run: npm run smoke:desktop-timer
+
+      - name: Check search result parsing
+        run: npm run smoke:search:parser
+
+      - name: Check telemetry privacy and spans
+        run: npm run smoke:telemetry
+
+      - name: Prepare isolated build settings
+        run: |
+          umask 077
+          printf 'DEEPSEEK_API_KEY=%s\nSESSION_SECRET=%s\n' 'ci-placeholder-not-a-real-key' 'ci-only-session-secret-with-at-least-32-bytes' > .env.local
+          chmod 0644 .env.local
+
+      - name: Build production application
+        run: npm run build
+
+      - name: Scan built browser bundles for secrets
+        run: npm run check:client-secrets
+
+      - name: Run API and local integration checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          export GOALFLOW_DATABASE_PATH="${RUNNER_TEMP}/vhfxnex-ci-smoke.sqlite"
+          export NEXORA_BASE_URL="http://127.0.0.1:3000"
+          export NEXORA_DISABLE_AI=1
+          server_log="${RUNNER_TEMP}/vhfxnex-ci-server.log"
+          node scripts/next.mjs start > "$server_log" 2>&1 &
+          server_pid=$!
+          cleanup() {
+            local exit_code=$?
+            kill "$server_pid" 2>/dev/null || true
+            wait "$server_pid" 2>/dev/null || true
+            if [ "$exit_code" -ne 0 ]; then
+              tail -n 120 "$server_log" || true
+            fi
+            exit "$exit_code"
+          }
+          trap cleanup EXIT
+
+          ready=false
+          for attempt in $(seq 1 90); do
+            if curl --fail --silent http://127.0.0.1:3000/api/health >/dev/null; then
+              ready=true
+              break
+            fi
+            if ! kill -0 "$server_pid" 2>/dev/null; then
+              echo "The production server exited before becoming healthy."
+              break
+            fi
+            sleep 2
+          done
+          if [ "$ready" != true ]; then
+            echo "The production server did not become healthy within 180 seconds."
+            tail -n 120 "$server_log" || true
+            exit 1
+          fi
+
+          npm run smoke
+          npm run smoke:ui
+
+      - name: Build and smoke-test production container
+        shell: bash
+        run: |
+          set -euo pipefail
+          project="vhfxnex-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          export GOALFLOW_VOLUME_NAME="vhfxnex-ci-data-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          export GOALFLOW_HOST_PORT=39217
+          cleanup() {
+            local exit_code=$?
+            if [ "$exit_code" -ne 0 ]; then
+              docker compose -p "$project" logs app || true
+            fi
+            docker compose -p "$project" down --volumes --remove-orphans || true
+            exit "$exit_code"
+          }
+          trap cleanup EXIT
+
+          docker compose -p "$project" up --build --detach --wait --wait-timeout 180
+          container_id="$(docker compose -p "$project" ps --quiet app)"
+          test -n "$container_id"
+          image_user="$(docker inspect --format '{{.Config.User}}' "$container_id")"
+          test "$image_user" = "node"
+          docker compose -p "$project" exec --no-TTY app node -e 'if (typeof process.getuid !== "function" || process.getuid() === 0) process.exit(1)'
+          docker compose -p "$project" exec --no-TTY app node -e 'fetch("http://127.0.0.1:3000/api/health").then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))'
+
+      - name: Summarize verification scope
+        if: always()
+        run: |
+          {
+            echo '### VHFXNEX CI scope'
+            echo '- This workflow runs local, simulated API, browser UI, and isolated Docker image startup checks.'
+            echo '- It does not call DeepSeek or consume model API quota.'
+            echo '- Live-model, public HTTPS, and real reviewer-account checks remain separate.'
+          } >> "$GITHUB_STEP_SUMMARY"

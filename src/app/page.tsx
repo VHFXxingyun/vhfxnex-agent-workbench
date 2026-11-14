@@ -58,10 +58,12 @@ import ProjectFlowPanel from "@/components/ProjectFlowPanel";
 import WorkspaceChat from "@/components/WorkspaceChat";
 import ArtifactPreview from "@/components/ArtifactPreview";
 import ConfirmDialog, { type ConfirmRequest } from "@/components/ConfirmDialog";
-import { clientSession } from "@/lib/client-session";
+import { clientSession, reconcileUnauthorizedSession } from "@/lib/client-session";
 import { isSupportedImageDataUrl, MAX_IMAGE_BYTES } from "@/lib/image";
 import { createCalendarExport, inspectCalendarSchedule } from "@/lib/calendar-export.mjs";
 import { estimateDeepSeekFlashCost, isDeepSeekFlashModel } from "@/lib/deepseek-cost-estimate.mjs";
+import { createAdminUsageCsv } from "@/lib/admin-usage-export.mjs";
+import { markPlanChecklistItemsPending } from "@/lib/plan-markdown.mjs";
 import { DEFAULT_THINKING_MODE } from "@/lib/thinking-mode.mjs";
 import { createProjectZip } from "@/lib/project-zip";
 import { isSupportedChatTextFile, readChatDocument } from "@/lib/attachment-reader";
@@ -70,6 +72,35 @@ import { createVideoContactSheet, isVideoFile } from "@/lib/video-contact-sheet"
 
 const SIDEBAR_COLLAPSED_PREFERENCE_KEY = "nexora:sidebar-collapsed:v1";
 const SIDEBAR_PREFERENCE_EVENT = "nexora:sidebar-preference-change";
+const ACTIVE_WORKSPACE_SESSION_KEY_PREFIX = "vhfxnex:active-workspace:v1:";
+
+function activeWorkspaceSessionKey(userId: string) {
+  return `${ACTIVE_WORKSPACE_SESSION_KEY_PREFIX}${userId}`;
+}
+
+function readActiveWorkspaceSession(userId: string) {
+  try {
+    return window.sessionStorage.getItem(activeWorkspaceSessionKey(userId));
+  } catch {
+    return null;
+  }
+}
+
+function writeActiveWorkspaceSession(userId: string, workspaceId: string) {
+  try {
+    window.sessionStorage.setItem(activeWorkspaceSessionKey(userId), workspaceId);
+  } catch {
+    // The workspace remains usable when browser session storage is unavailable.
+  }
+}
+
+function clearActiveWorkspaceSession(userId: string) {
+  try {
+    window.sessionStorage.removeItem(activeWorkspaceSessionKey(userId));
+  } catch {
+    // Leaving the workspace remains usable when browser session storage is unavailable.
+  }
+}
 
 function subscribeToSidebarPreference(onChange: () => void) {
   window.addEventListener("storage", onChange);
@@ -139,7 +170,11 @@ type AdminData = {
     cachedInputTokens: number;
     cacheMeasuredInputTokens: number;
     cacheMeasuredHitTokens: number;
+    cacheMeasuredRequests: number;
+    cacheHitRequests: number;
     outputTokens: number;
+    reasoningTokens: number;
+    reasoningMeasuredRequests: number;
     totalTokens: number;
     flashInputTokens: number;
     flashOutputTokens: number;
@@ -149,22 +184,61 @@ type AdminData = {
     planningRequests: number;
     dialogueRequests: number;
     workbenchRequests: number;
+    reviewerRequests: number;
     healthcheckRequests: number;
     legacyRequests: number;
   };
+  usageBySource: {
+    source: string;
+    requests: number;
+    inputTokens: number;
+    outputTokens: number;
+    reasoningTokens: number;
+    reasoningMeasuredRequests: number;
+    cacheMeasuredInputTokens: number;
+    cacheMeasuredHitTokens: number;
+    cacheMeasuredRequests: number;
+    cacheHitRequests: number;
+    flashRequests: number;
+    flashInputTokens: number;
+    flashOutputTokens: number;
+    flashCacheMeasuredInputTokens: number;
+    flashCacheMeasuredHitTokens: number;
+  }[];
+  recentUsage: {
+    id: string;
+    workspaceId: string | null;
+    workspaceTitle: string;
+    source: string;
+    operation: "plan" | "execute";
+    model: string;
+    inputTokens: number;
+    outputTokens: number;
+    reasoningTokens: number;
+    reasoningMeasuredRequests: number;
+    cacheMeasuredInputTokens: number;
+    cacheMeasuredHitTokens: number;
+    latencyMs: number;
+    createdAt: string;
+  }[];
   dailyAiUsage: {
     date: string;
     label: string;
     requests: number;
     inputTokens: number;
     totalTokens: number;
+    reasoningTokens: number;
+    reasoningMeasuredRequests: number;
     cachedInputTokens: number;
     cacheMeasuredInputTokens: number;
     cacheMeasuredHitTokens: number;
+    cacheMeasuredRequests: number;
+    cacheHitRequests: number;
     latencyMs: number;
     planningRequests: number;
     dialogueRequests: number;
     workbenchRequests: number;
+    reviewerRequests: number;
     healthcheckRequests: number;
     legacyRequests: number;
   }[];
@@ -177,14 +251,19 @@ type AdminData = {
     updated_at: string;
     aiRequests: number;
     aiTokens: number;
+    reasoningTokens: number;
+    reasoningMeasuredRequests: number;
     plannerTokens: number;
     dialogueTokens: number;
     workbenchTokens: number;
+    reviewerTokens: number;
     legacyTokens: number;
     flashInputTokens: number;
     flashOutputTokens: number;
     flashCacheMeasuredInputTokens: number;
     flashCacheMeasuredHitTokens: number;
+    flashCacheMeasuredRequests: number;
+    flashCacheHitRequests: number;
   }[];
 };
 type AiHealth =
@@ -199,6 +278,45 @@ function formatEstimatedUsd(value: number) {
     minimumFractionDigits: digits,
     maximumFractionDigits: digits,
   }).format(value);
+}
+function adminUsageSourceLabel(source: string) {
+  return source === "planner"
+    ? "规划 Agent"
+    : source === "dialogue"
+      ? "对话 Agent"
+      : source === "workbench"
+        ? "工作台 Agent"
+        : source === "reviewer"
+          ? "代码复核 Agent"
+          : source === "healthcheck"
+            ? "连接诊断"
+            : source === "unknown"
+              ? "历史 / 未分类"
+              : source;
+}
+function formatAdminUsageTimestamp(value: string) {
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return "时间未知";
+  return new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  }).format(date);
+}
+function downloadAdminUsageCsv(items: AdminData["recentUsage"]) {
+  const csv = createAdminUsageCsv(items);
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `vhfxnex-ai-usage-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}.csv`;
+  link.click();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 function getInputCacheCoverage(inputTokens: number, measuredInputTokens: number) {
   const total = Number.isFinite(inputTokens) ? Math.max(0, Math.floor(inputTokens)) : 0;
@@ -242,16 +360,7 @@ async function api<T>(url: string, options?: RequestInit, sessionBound = false):
     headers: { "Content-Type": "application/json", ...options?.headers },
   });
   const data = await response.json();
-  if (
-    response.status === 401 &&
-    sessionBound &&
-    requestEpoch === clientSession.epoch &&
-    typeof window !== "undefined"
-  ) {
-    window.dispatchEvent(
-      new CustomEvent("nexora:session-expired", { detail: { epoch: requestEpoch } }),
-    );
-  }
+  if (response.status === 401 && sessionBound) void reconcileUnauthorizedSession(requestEpoch);
   if (!response.ok) throw new ApiError(data.error || "请求失败", response.status);
   return data as T;
 }
@@ -363,16 +472,7 @@ async function streamApi<T>(
     headers: { "Content-Type": "application/json", ...options.headers },
   });
   const dispatchSessionExpired = () => {
-    if (
-      response.status === 401 &&
-      sessionBound &&
-      requestEpoch === clientSession.epoch &&
-      typeof window !== "undefined"
-    ) {
-      window.dispatchEvent(
-        new CustomEvent("nexora:session-expired", { detail: { epoch: requestEpoch } }),
-      );
-    }
+    if (response.status === 401 && sessionBound) void reconcileUnauthorizedSession(requestEpoch);
   };
   if (!response.ok) {
     const data = await response.json().catch(() => ({}));
@@ -1033,6 +1133,7 @@ export default function Home() {
   } | null>(null);
   const [artifact, setArtifact] = useState<Artifact | null>(null);
   const [artifactDraft, setArtifactDraft] = useState("");
+  const [artifactChecklistNotice, setArtifactChecklistNotice] = useState(false);
   const [editingArtifact, setEditingArtifact] = useState(false);
   const [savingArtifact, setSavingArtifact] = useState(false);
   const [artifactError, setArtifactError] = useState("");
@@ -1065,15 +1166,18 @@ export default function Home() {
   const expiredPlanDraftRecoveryRef = useRef<PlanDraftRecovery | null>(null);
   const artifactDialogRef = useRef<HTMLDivElement>(null);
   const calendarDialogRef = useRef<HTMLDivElement>(null);
+  const shareDialogRef = useRef<HTMLElement | null>(null);
   const calendarAnchorInputRef = useRef<HTMLInputElement>(null);
   const closeConfirmation = useCallback(() => setConfirmation(null), []);
   const artifactReturnFocusRef = useRef<HTMLElement | null>(null);
   const calendarReturnFocusRef = useRef<HTMLElement | null>(null);
+  const shareReturnFocusRef = useRef<HTMLElement | null>(null);
   function setActiveWorkspace(next: Workspace | null) {
     activeWorkspaceIdRef.current = next?.id ?? null;
     setWorkspace(next);
   }
   function openWorkspace(next: Workspace, accessRole = workspaceAccessById[next.id] || "owner") {
+    if (user?.id) writeActiveWorkspaceSession(user.id, next.id);
     setWorkspaceAccessById((current) => ({
       ...current,
       [next.id]: accessRole,
@@ -1151,7 +1255,7 @@ export default function Home() {
     visibleExecution?.state,
     visibleExecution?.workspaceId,
   ]);
-  const loadHistory = useCallback(async () => {
+  const loadHistory = useCallback(async (): Promise<Workspace[] | null> => {
     const requestEpoch = clientSession.epoch;
     setHistoryStatus("loading");
     try {
@@ -1169,14 +1273,16 @@ export default function Home() {
             undefined,
             true,
           );
-          if (requestEpoch !== clientSession.epoch) return;
+          if (requestEpoch !== clientSession.epoch) return null;
           queuedHandoffsRef.current = queued.handoffs;
           setQueuedHandoffCount(queued.handoffs.length);
           if (queued.handoffs.length) scheduleQueuedHandoffRetry(0);
         } catch {
           // The saved workspaces remain available if queue recovery is temporarily unavailable.
         }
+        return data.workspaces;
       }
+      return null;
     } catch (cause) {
       if (requestEpoch === clientSession.epoch) {
         setHistoryStatus("error");
@@ -1186,6 +1292,7 @@ export default function Home() {
             : "目标列表加载失败，请重试。",
         );
       }
+      return null;
     }
   }, []);
   const clearPrivateSessionState = useCallback(() => {
@@ -1203,6 +1310,7 @@ export default function Home() {
       queuedHandoffRetryRef.current = null;
     }
     clientSession.epoch += 1;
+    if (user?.id) clearActiveWorkspaceSession(user.id);
     queryClient.clear();
     setActiveWorkspace(null);
     setHistory([]);
@@ -1252,7 +1360,7 @@ export default function Home() {
     setSavingTaskId(null);
     setMobileNav(false);
     setView("home");
-  }, [queryClient]);
+  }, [queryClient, user?.id]);
   useEffect(
     () => () => {
       const activeAgentRequest = agentRequestControllerRef.current;
@@ -1264,15 +1372,37 @@ export default function Home() {
     [],
   );
   useEffect(() => {
-    api<{ user: User | null; aiConfigured: boolean }>("/api/auth/me")
-      .then((data) => {
+    let active = true;
+    const restoreSession = async () => {
+      try {
+        const data = await api<{ user: User | null; aiConfigured: boolean }>("/api/auth/me");
+        if (!active) return;
         setUser(data.user);
         setAiConfigured(data.aiConfigured);
         setUseDemo(!data.aiConfigured);
-        if (data.user) loadHistory();
-      })
-      .catch(() => setError("暂时无法连接服务。请检查网络后重试登录，已有数据不会因此删除。"))
-      .finally(() => setLoading(false));
+        if (data.user) {
+          const workspaces = await loadHistory();
+          if (!active) return;
+          const savedWorkspaceId = readActiveWorkspaceSession(data.user.id);
+          const savedWorkspace = workspaces?.find((item) => item.id === savedWorkspaceId);
+          if (savedWorkspace) {
+            setActiveWorkspace(savedWorkspace);
+            setWorkspaceSidebarExpanded(false);
+            setView("workspace");
+          } else if (savedWorkspaceId) {
+            clearActiveWorkspaceSession(data.user.id);
+          }
+        }
+      } catch {
+        if (active) setError("暂时无法连接服务。请检查网络后重试登录，已有数据不会因此删除。");
+      } finally {
+        if (active) setLoading(false);
+      }
+    };
+    void restoreSession();
+    return () => {
+      active = false;
+    };
   }, [loadHistory]);
   useEffect(() => {
     if (!user?.id) return;
@@ -1382,6 +1512,55 @@ export default function Home() {
     }
   }, [artifactId]);
   useEffect(() => {
+    if (!sharingOpen) {
+      const returnFocus = shareReturnFocusRef.current;
+      shareReturnFocusRef.current = null;
+      if (returnFocus?.isConnected) returnFocus.focus();
+      return;
+    }
+
+    const dialog = shareDialogRef.current;
+    const focusableSelector =
+      'button:not(:disabled), input:not(:disabled), select:not(:disabled), a[href], [tabindex]:not([tabindex="-1"])';
+    const focusable = dialog?.querySelectorAll<HTMLElement>(focusableSelector);
+    (focusable?.[0] || dialog)?.focus();
+
+    function handleDialogKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setSharingOpen(false);
+        return;
+      }
+      if (event.key !== "Tab") return;
+
+      const currentFocusable = dialog?.querySelectorAll<HTMLElement>(focusableSelector);
+      if (!currentFocusable?.length) {
+        event.preventDefault();
+        dialog?.focus();
+        return;
+      }
+
+      const first = currentFocusable[0];
+      const last = currentFocusable[currentFocusable.length - 1];
+      if (
+        event.shiftKey &&
+        (document.activeElement === first || !dialog?.contains(document.activeElement))
+      ) {
+        event.preventDefault();
+        last.focus();
+      } else if (
+        !event.shiftKey &&
+        (document.activeElement === last || !dialog?.contains(document.activeElement))
+      ) {
+        event.preventDefault();
+        first.focus();
+      }
+    }
+
+    document.addEventListener("keydown", handleDialogKeyDown);
+    return () => document.removeEventListener("keydown", handleDialogKeyDown);
+  }, [sharingOpen]);
+  useEffect(() => {
     if (!calendarAnchorOpen) {
       calendarReturnFocusRef.current?.focus();
       calendarReturnFocusRef.current = null;
@@ -1471,6 +1650,13 @@ export default function Home() {
     setError("");
     try {
       await persistWorkspace(next, requestEpoch);
+      if (
+        requestEpoch === clientSession.epoch &&
+        user?.id &&
+        activeWorkspaceIdRef.current === next.id
+      ) {
+        writeActiveWorkspaceSession(user.id, next.id);
+      }
     } catch (cause) {
       if (requestEpoch === clientSession.epoch) {
         setError(cause instanceof Error ? cause.message : "保存仍未完成，请稍后重试。");
@@ -1482,8 +1668,15 @@ export default function Home() {
   function openArtifact(item: Artifact) {
     artifactReturnFocusRef.current =
       document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    setArtifact(item);
-    setArtifactDraft(item.content);
+    const isGeneratedPlan = item.type === "document" && item.description === "Agent 生成的初版方案";
+    const normalizedContent = isGeneratedPlan
+      ? markPlanChecklistItemsPending(item.content)
+      : item.content;
+    const checklistWasReset = normalizedContent !== item.content;
+    const openedArtifact = checklistWasReset ? { ...item, content: normalizedContent } : item;
+    setArtifact(openedArtifact);
+    setArtifactDraft(openedArtifact.content);
+    setArtifactChecklistNotice(checklistWasReset);
     setEditingArtifact(false);
     setArtifactError("");
     setArtifactActionStatus(null);
@@ -1507,6 +1700,8 @@ export default function Home() {
   }
   function openSharing() {
     if (!workspace || activeWorkspaceAccess !== "owner") return;
+    shareReturnFocusRef.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setSharingOpen(true);
     setShareRole("editor");
     setShareExpiryDays(7);
@@ -1737,6 +1932,7 @@ export default function Home() {
   function discardArtifactChanges() {
     setArtifact(null);
     setEditingArtifact(false);
+    setArtifactChecklistNotice(false);
     setArtifactError("");
     setArtifactActionStatus(null);
   }
@@ -1845,7 +2041,13 @@ export default function Home() {
   async function saveArtifact() {
     if (!artifact || !workspace?.result) return;
     const requestEpoch = clientSession.epoch;
-    const updated = { ...artifact, content: artifactDraft.trim() };
+    const updated = {
+      ...artifact,
+      description: artifactChecklistNotice
+        ? `${artifact.description} · 用户已编辑`
+        : artifact.description,
+      content: artifactDraft.trim(),
+    };
     if (!updated.content) {
       setArtifactError("内容不能为空。");
       return;
@@ -1866,6 +2068,7 @@ export default function Home() {
       if (requestEpoch !== clientSession.epoch) return;
       setArtifact(updated);
       setArtifactDraft(updated.content);
+      setArtifactChecklistNotice(false);
       setEditingArtifact(false);
       setArtifactActionStatus(null);
     } catch (cause) {
@@ -1962,12 +2165,15 @@ export default function Home() {
       setWorkspaceSidebarExpanded(false);
       setView("workspace");
       if (data.persisted && data.workspace) {
+        if (user?.id) writeActiveWorkspaceSession(user.id, next.id);
         setActiveWorkspace(next);
         setHistory((current) => [next, ...current.filter((item) => item.id !== next.id)]);
       } else {
         await save(next, requestEpoch);
       }
     } catch (cause) {
+      if (cause instanceof ApiError && cause.status === 401)
+        await reconcileUnauthorizedSession(requestEpoch);
       if (requestEpoch === clientSession.epoch) {
         if (!controller.signal.aborted && !(cause instanceof ApiError)) {
           try {
@@ -1989,6 +2195,7 @@ export default function Home() {
               setInstruction("");
               setWorkspaceSidebarExpanded(false);
               setView("workspace");
+              if (user?.id) writeActiveWorkspaceSession(user.id, savedWorkspace.id);
               setError("");
               return;
             }
@@ -3011,6 +3218,8 @@ export default function Home() {
       }
       setHistory((current) => current.filter((item) => item.id !== id));
       setError("");
+      if (user?.id && readActiveWorkspaceSession(user.id) === id)
+        clearActiveWorkspaceSession(user.id);
       if (workspace?.id === id) {
         setActiveWorkspace(null);
         setView("home");
@@ -3024,6 +3233,7 @@ export default function Home() {
   }
   async function openAdmin() {
     const requestEpoch = clientSession.epoch;
+    if (user?.id) clearActiveWorkspaceSession(user.id);
     setView("admin");
     setMobileNav(false);
     setError("");
@@ -3097,7 +3307,10 @@ export default function Home() {
       if (requestEpoch !== clientSession.epoch) return;
       setAdmin(data);
       await loadHistory();
-      if (workspace?.id === id) setActiveWorkspace(null);
+      if (workspace?.id === id) {
+        if (user?.id) clearActiveWorkspaceSession(user.id);
+        setActiveWorkspace(null);
+      }
     } catch (cause) {
       if (requestEpoch === clientSession.epoch)
         setError(cause instanceof Error ? cause.message : "删除失败");
@@ -3127,6 +3340,7 @@ export default function Home() {
   }
   function navigate(next: View) {
     if (next === "workspace") setWorkspaceSidebarExpanded(false);
+    else if (user?.id) clearActiveWorkspaceSession(user.id);
     setView(next);
     setMobileNav(false);
     setError("");
@@ -3200,7 +3414,10 @@ export default function Home() {
             setView("workspace");
             const requestEpoch = clientSession.epoch;
             void persistWorkspace(recovery.workspace, requestEpoch)
-              .then(() => loadHistory())
+              .then(() => {
+                writeActiveWorkspaceSession(current.id, recovery.workspace.id);
+                return loadHistory();
+              })
               .catch((cause) => {
                 if (requestEpoch === clientSession.epoch) {
                   setError(
@@ -3998,6 +4215,7 @@ export default function Home() {
                                 ? `缓存命中 ${workspace.usage.cacheMeasuredHitTokens?.toLocaleString("zh-CN") ?? 0} / 已统计 ${workspace.usage.cacheMeasuredInputTokens.toLocaleString("zh-CN")}（${(((workspace.usage.cacheMeasuredHitTokens || 0) / workspace.usage.cacheMeasuredInputTokens) * 100).toFixed(1)}%）· 覆盖 ${workspaceCacheCoverage?.percent.toFixed(1) ?? "0.0"}%`
                                 : "缓存命中暂无统计样本"}
                               {` · 输出 ${workspace.usage.outputTokens.toLocaleString("zh-CN")}`}
+                              {` · 思考 Token ${workspace.usage.reasoningMeasuredRequests ? (workspace.usage.reasoningTokens ?? 0).toLocaleString("zh-CN") : "暂无样本"}${workspace.usage.reasoningMeasuredRequests ? `（已报告 ${workspace.usage.reasoningMeasuredRequests}/${workspace.usage.requests} 次，包含在输出中）` : ""}`}
                             </small>
                             {!workspace.result && currentWorkspaceFlashCostEstimate && (
                               <small
@@ -4096,6 +4314,13 @@ export default function Home() {
                                   : "（缓存命中暂无统计样本）"}
                                 {" · 输出 "}
                                 {workspace.usage.outputTokens.toLocaleString("zh-CN")}
+                                {workspace.usage.reasoningMeasuredRequests
+                                  ? ` · 思考 ${(
+                                      workspace.usage.reasoningTokens ?? 0
+                                    ).toLocaleString(
+                                      "zh-CN",
+                                    )}（输出内，已报告 ${workspace.usage.reasoningMeasuredRequests}/${workspace.usage.requests} 次）`
+                                  : " · 思考 Token 暂无样本"}
                               </small>
                               {workspace.usage.cacheMeasuredInputTokens !== undefined &&
                               workspace.usage.cacheMeasuredInputTokens > 0 ? (
@@ -4464,9 +4689,10 @@ export default function Home() {
                           ? `供应商报告缓存命中 ${admin.aiUsage.cacheMeasuredHitTokens.toLocaleString("zh-CN")} / 已统计输入 ${admin.aiUsage.cacheMeasuredInputTokens.toLocaleString("zh-CN")}`
                           : "缓存命中暂无统计样本"}{" "}
                         · 输出 {admin.aiUsage.outputTokens.toLocaleString("zh-CN")}
+                        {` · 思考 Token ${admin.aiUsage.reasoningMeasuredRequests > 0 ? `${admin.aiUsage.reasoningTokens.toLocaleString("zh-CN")}（已报告 ${admin.aiUsage.reasoningMeasuredRequests}/${admin.aiUsage.requests} 次，包含在输出中）` : "暂无样本"}`}
                       </small>
                       <small
-                        title={`命中率 = 供应商报告的缓存命中输入 Token ÷ 已统计输入 Token。${adminCacheCoverage?.title ?? ""} 按 Token 加权，不是命中请求占比；未提供统计的请求不参与。缓存只影响输入费，不影响输出费。`}
+                        title={`命中请求率 = 至少命中 1 个输入 Token 的请求数 ÷ 已提供缓存统计的请求数；Token 命中率 = 缓存命中输入 Token ÷ 已统计输入 Token，按 Token 加权，更接近输入费用影响。${adminCacheCoverage?.title ?? ""} 未提供统计的请求不参与。缓存只影响输入费，不影响输出费。`}
                       >
                         {admin.aiUsage.cacheMeasuredInputTokens > 0
                           ? "输入 Token 缓存命中率 " +
@@ -4475,17 +4701,25 @@ export default function Home() {
                                 admin.aiUsage.cacheMeasuredInputTokens) *
                               100
                             ).toFixed(1) +
-                            "% · 缓存统计覆盖 " +
+                            "% · 命中请求率 " +
+                            (admin.aiUsage.cacheMeasuredRequests > 0
+                              ? `${((admin.aiUsage.cacheHitRequests / admin.aiUsage.cacheMeasuredRequests) * 100).toFixed(1)}%（${admin.aiUsage.cacheHitRequests}/${admin.aiUsage.cacheMeasuredRequests}）`
+                              : "暂无样本") +
+                            " · 统计覆盖 " +
                             (adminCacheCoverage?.percent.toFixed(1) ?? "0.0") +
                             "%"
-                          : "输入 Token 缓存命中率暂无样本 · 缓存统计覆盖 " +
+                          : "输入 Token 缓存命中率暂无样本 · 命中请求率 " +
+                            (admin.aiUsage.cacheMeasuredRequests > 0
+                              ? `${((admin.aiUsage.cacheHitRequests / admin.aiUsage.cacheMeasuredRequests) * 100).toFixed(1)}%（${admin.aiUsage.cacheHitRequests}/${admin.aiUsage.cacheMeasuredRequests}）`
+                              : "暂无样本") +
+                            " · 统计覆盖 " +
                             (adminCacheCoverage?.percent.toFixed(1) ?? "0.0") +
                             "%"}
                       </small>
                       {adminAiCostEstimate && (
                         <small
                           className="admin-cost-estimate"
-                          title="按 2026-11-13 的 DeepSeek V4.1 Flash 公开美元单价回算 DeepSeek Flash 及其当前计费别名的历史 Token；低值假设未测输入命中缓存且全部为非高峰计费，高值假设未测输入未命中且全部为高峰计费。其它或未知模型、历史单价、人民币换算、赠送额度及独立搜索/抓取费用不包含在内，实际账单请以 DeepSeek 平台为准。"
+                          title="按 2026-11-14 核对的 DeepSeek V4.1 Flash 公开美元单价回算 DeepSeek Flash 及其当前计费别名的历史 Token；低值假设未测输入命中缓存且全部为非高峰计费，高值假设未测输入未命中且全部为高峰计费。其它或未知模型、历史单价、人民币换算、赠送额度及独立搜索/抓取费用不包含在内，实际账单请以 DeepSeek 平台为准。"
                         >
                           当前价回算估值：
                           {formatEstimatedUsd(adminAiCostEstimate.lowerUsd)} –
@@ -4493,7 +4727,7 @@ export default function Home() {
                         </small>
                       )}
                       {adminAiCostEstimate?.measuredHitTokens ? (
-                        <small title="只按供应商明确报告的缓存命中 Token 计算相对缓存未命中的输入节省；仅限 DeepSeek Flash 及其当前计费别名，并使用 2026-11-13 公开价，不推测没有缓存统计的请求。">
+                        <small title="只按供应商明确报告的缓存命中 Token 计算相对缓存未命中的输入节省；仅限 DeepSeek Flash 及其当前计费别名，并使用 2026-11-14 核对的公开价，不推测没有缓存统计的请求。">
                           已确认缓存命中可少付输入费约{" "}
                           {formatEstimatedUsd(adminAiCostEstimate.confirmedCacheSavingsUsd.lower)} –
                           {formatEstimatedUsd(adminAiCostEstimate.confirmedCacheSavingsUsd.upper)}
@@ -4536,6 +4770,10 @@ export default function Home() {
                         (total, item) => total + item.workbenchRequests,
                         0,
                       );
+                      const reviewerRequests = days.reduce(
+                        (total, item) => total + item.reviewerRequests,
+                        0,
+                      );
                       const healthcheckRequests = days.reduce(
                         (total, item) => total + item.healthcheckRequests,
                         0,
@@ -4550,6 +4788,14 @@ export default function Home() {
                       );
                       const cacheMeasuredHitTokens = days.reduce(
                         (total, item) => total + item.cacheMeasuredHitTokens,
+                        0,
+                      );
+                      const cacheMeasuredRequests = days.reduce(
+                        (total, item) => total + item.cacheMeasuredRequests,
+                        0,
+                      );
+                      const cacheHitRequests = days.reduce(
+                        (total, item) => total + item.cacheHitRequests,
                         0,
                       );
                       const totalInputTokens = days.reduce(
@@ -4571,7 +4817,7 @@ export default function Home() {
                           <div
                             className="usage-chart"
                             role="img"
-                            aria-label={`近七日 AI 请求量：规划 ${planningRequests} 次，对话 ${dialogueRequests} 次，工作台 ${workbenchRequests} 次，连接诊断 ${healthcheckRequests} 次，旧记录 ${legacyRequests} 次`}
+                            aria-label={`近七日 AI 请求量：规划 ${planningRequests} 次，对话 ${dialogueRequests} 次，工作台 ${workbenchRequests} 次，代码复核 ${reviewerRequests} 次，连接诊断 ${healthcheckRequests} 次，旧记录 ${legacyRequests} 次`}
                           >
                             {days.map((item) => {
                               const height = maximum
@@ -4600,6 +4846,7 @@ export default function Home() {
                             <span>{planningRequests.toLocaleString("zh-CN")} 次规划</span>
                             <span>{dialogueRequests.toLocaleString("zh-CN")} 次对话</span>
                             <span>{workbenchRequests.toLocaleString("zh-CN")} 次工作台执行</span>
+                            <span>{reviewerRequests.toLocaleString("zh-CN")} 次代码复核</span>
                             <span>{healthcheckRequests.toLocaleString("zh-CN")} 次连接诊断</span>
                             {legacyRequests > 0 && (
                               <span title="这些历史记录未保存来源分类。">
@@ -4612,7 +4859,7 @@ export default function Home() {
                                 : "缓存命中暂无统计样本"}
                             </span>
                             <span
-                              title={`命中率 = 供应商报告的缓存命中输入 Token ÷ 已统计输入 Token。${cacheCoverage.title} 按 Token 加权，不是命中请求占比；未提供统计的请求不参与。缓存只影响输入费，不影响输出费。`}
+                              title={`命中请求率 = 至少命中 1 个输入 Token 的请求数 ÷ 已提供缓存统计的请求数；Token 命中率 = 缓存命中输入 Token ÷ 已统计输入 Token，按 Token 加权，更接近输入费用影响。${cacheCoverage.title} 未提供统计的请求不参与。缓存只影响输入费，不影响输出费。`}
                             >
                               {cacheMeasuredInputTokens > 0
                                 ? "输入 Token 缓存命中率 " +
@@ -4620,10 +4867,18 @@ export default function Home() {
                                     (cacheMeasuredHitTokens / cacheMeasuredInputTokens) *
                                     100
                                   ).toFixed(1) +
-                                  "% · 覆盖 " +
+                                  "% · 命中请求率 " +
+                                  (cacheMeasuredRequests > 0
+                                    ? `${((cacheHitRequests / cacheMeasuredRequests) * 100).toFixed(1)}%（${cacheHitRequests}/${cacheMeasuredRequests}）`
+                                    : "暂无样本") +
+                                  " · 覆盖 " +
                                   cacheCoverage.percent.toFixed(1) +
                                   "%"
-                                : "暂无缓存统计样本 · 覆盖 " +
+                                : "暂无缓存统计样本 · 命中请求率 " +
+                                  (cacheMeasuredRequests > 0
+                                    ? `${((cacheHitRequests / cacheMeasuredRequests) * 100).toFixed(1)}%（${cacheHitRequests}/${cacheMeasuredRequests}）`
+                                    : "暂无样本") +
+                                  " · 覆盖 " +
                                   cacheCoverage.percent.toFixed(1) +
                                   "%"}
                             </span>
@@ -4633,6 +4888,236 @@ export default function Home() {
                       );
                     })()}
                   </section>
+                  <details className="usage-source-breakdown">
+                    <summary>
+                      <span>按 Agent 来源查看用量与缓存</span>
+                      <small>全部历史记录 · {admin.usageBySource.length} 个来源</small>
+                    </summary>
+                    <div className="usage-source-scroll">
+                      <div
+                        className="usage-source-table"
+                        role="table"
+                        aria-label="按 Agent 来源查看 Token 用量、Flash 费用估值和缓存命中率"
+                      >
+                        <div className="usage-source-row usage-source-head" role="row">
+                          <span role="columnheader">来源</span>
+                          <span role="columnheader">请求数</span>
+                          <span role="columnheader">输入 / 输出 Token</span>
+                          <span role="columnheader">Flash 当前价估值</span>
+                          <span role="columnheader">命中请求</span>
+                          <span role="columnheader">请求命中率</span>
+                          <span role="columnheader">Token 命中率</span>
+                          <span role="columnheader">统计覆盖</span>
+                        </div>
+                        {admin.usageBySource.map((item) => {
+                          const requestRate =
+                            item.cacheMeasuredRequests > 0
+                              ? `${((item.cacheHitRequests / item.cacheMeasuredRequests) * 100).toFixed(1)}%`
+                              : "暂无样本";
+                          const tokenRate =
+                            item.cacheMeasuredInputTokens > 0
+                              ? `${((item.cacheMeasuredHitTokens / item.cacheMeasuredInputTokens) * 100).toFixed(1)}%`
+                              : "暂无样本";
+                          const coverage =
+                            item.inputTokens > 0
+                              ? `${((item.cacheMeasuredInputTokens / item.inputTokens) * 100).toFixed(1)}%`
+                              : "暂无样本";
+                          const flashEstimate =
+                            item.flashRequests > 0
+                              ? estimateDeepSeekFlashCost({
+                                  inputTokens: item.flashInputTokens,
+                                  outputTokens: item.flashOutputTokens,
+                                  cacheMeasuredInputTokens: item.flashCacheMeasuredInputTokens,
+                                  cacheMeasuredHitTokens: item.flashCacheMeasuredHitTokens,
+                                })
+                              : null;
+                          return (
+                            <div className="usage-source-row" role="row" key={item.source}>
+                              <strong role="rowheader">{adminUsageSourceLabel(item.source)}</strong>
+                              <span role="cell" data-label="请求数">
+                                {item.requests.toLocaleString("zh-CN")}
+                              </span>
+                              <span role="cell" data-label="输入 / 输出 Token">
+                                {item.inputTokens.toLocaleString("zh-CN")} /{" "}
+                                {item.outputTokens.toLocaleString("zh-CN")}
+                                <small className="usage-source-reasoning">
+                                  {item.reasoningMeasuredRequests > 0
+                                    ? `思考 ${item.reasoningTokens.toLocaleString("zh-CN")}（输出内；${item.reasoningMeasuredRequests}/${item.requests} 次有统计）`
+                                    : "思考 Token 暂无样本"}
+                                </small>
+                              </span>
+                              <span
+                                role="cell"
+                                data-label="Flash 费用估值"
+                                title={
+                                  flashEstimate
+                                    ? `${item.flashRequests.toLocaleString("zh-CN")} 次 Flash 请求 · 输入 ${item.flashInputTokens.toLocaleString("zh-CN")} · 输出 ${item.flashOutputTokens.toLocaleString("zh-CN")} · 按当前公开价估算`
+                                    : "此来源没有可估价的 DeepSeek Flash 用量"
+                                }
+                              >
+                                {flashEstimate
+                                  ? `${formatEstimatedUsd(flashEstimate.lowerUsd)} – ${formatEstimatedUsd(flashEstimate.upperUsd)}`
+                                  : "无 Flash 用量"}
+                              </span>
+                              <span role="cell" data-label="缓存命中请求">
+                                {item.cacheHitRequests.toLocaleString("zh-CN")} /{" "}
+                                {item.cacheMeasuredRequests.toLocaleString("zh-CN")}
+                              </span>
+                              <span role="cell" data-label="请求命中率">
+                                {requestRate}
+                              </span>
+                              <span role="cell" data-label="Token 命中率">
+                                {item.cacheMeasuredHitTokens.toLocaleString("zh-CN")} /{" "}
+                                {item.cacheMeasuredInputTokens.toLocaleString("zh-CN")} ·{" "}
+                                {tokenRate}
+                              </span>
+                              <span role="cell" data-label="统计覆盖">
+                                {item.cacheMeasuredInputTokens.toLocaleString("zh-CN")} /{" "}
+                                {item.inputTokens.toLocaleString("zh-CN")} · {coverage}
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                    <p>
+                      请求数与输入 / 输出 Token 汇总该来源的全部模型；费用区间只估算 DeepSeek Flash
+                      及其计费别名，使用当前公开价，不代表历史账单，也不含搜索或抓取费用。{" "}
+                      请求命中率看“命中过的请求占比”；Token 命中率按输入 Token
+                      加权，更接近缓存对输入费用的影响。
+                      未提供缓存统计的请求不计入两个命中率分母；其输入 Token 仍计入覆盖率分母。
+                      例如，请求命中率 50% 但 Token 命中率
+                      0.5%，表示命中的请求只复用了很少输入；因此不能单靠请求命中率估算省了多少钱。
+                    </p>
+                  </details>
+                  <details className="usage-recent-breakdown">
+                    <summary>
+                      <span>最近 100 次 AI 调用</span>
+                      <small>{admin.recentUsage.length} 条 · 查看单次 Token 与缓存明细</small>
+                    </summary>
+                    <p>
+                      仅统计通过 VHFXNEX 服务端记录的调用，不包含同一 DeepSeek Key
+                      在其他应用中的请求。
+                      此处不保存提示词、文件内容或原始账户标识；费用是按当前公开价估算，不是账单金额。
+                    </p>
+                    <div className="usage-export-toolbar">
+                      <span>CSV 仅含当前列表中的用量指标，不含提示词、文件内容或账户标识。</span>
+                      <button
+                        className="usage-export-button"
+                        type="button"
+                        onClick={() => downloadAdminUsageCsv(admin.recentUsage)}
+                        disabled={admin.recentUsage.length === 0}
+                      >
+                        <Download size={14} aria-hidden="true" />
+                        导出最近调用 CSV
+                      </button>
+                    </div>
+                    {admin.recentUsage.length > 0 ? (
+                      <div className="usage-recent-scroll">
+                        <div
+                          className="usage-recent-table"
+                          role="table"
+                          aria-label="最近 100 次 AI 调用的 Token、缓存与费用估值"
+                        >
+                          <div className="usage-recent-row usage-recent-head" role="row">
+                            <span role="columnheader">时间（北京时间）</span>
+                            <span role="columnheader">工作区 / Agent</span>
+                            <span role="columnheader">输入 / 输出 Token</span>
+                            <span role="columnheader">缓存命中 / 已统计</span>
+                            <span role="columnheader">请求命中</span>
+                            <span role="columnheader">耗时</span>
+                            <span role="columnheader">Flash 费用估值</span>
+                          </div>
+                          {admin.recentUsage.map((item) => {
+                            const measuredInputTokens = Math.min(
+                              item.inputTokens,
+                              Math.max(0, item.cacheMeasuredInputTokens),
+                            );
+                            const hitTokens = Math.min(
+                              measuredInputTokens,
+                              Math.max(0, item.cacheMeasuredHitTokens),
+                            );
+                            const missTokens = measuredInputTokens - hitTokens;
+                            const cacheCoverage =
+                              item.inputTokens > 0
+                                ? (measuredInputTokens / item.inputTokens) * 100
+                                : 0;
+                            const flashEstimate = isDeepSeekFlashModel(item.model)
+                              ? estimateDeepSeekFlashCost({
+                                  inputTokens: item.inputTokens,
+                                  outputTokens: item.outputTokens,
+                                  cacheMeasuredInputTokens: measuredInputTokens,
+                                  cacheMeasuredHitTokens: hitTokens,
+                                })
+                              : null;
+                            return (
+                              <div className="usage-recent-row" role="row" key={item.id}>
+                                <span role="cell" data-label="时间（北京时间）">
+                                  {formatAdminUsageTimestamp(item.createdAt)}
+                                </span>
+                                <span role="cell" data-label="工作区 / Agent">
+                                  <strong>{adminUsageSourceLabel(item.source)}</strong>
+                                  <small title={item.workspaceTitle}>{item.workspaceTitle}</small>
+                                  <small>{item.model}</small>
+                                </span>
+                                <span role="cell" data-label="输入 / 输出 Token">
+                                  {item.inputTokens.toLocaleString("zh-CN")} /{" "}
+                                  {item.outputTokens.toLocaleString("zh-CN")}
+                                  {item.reasoningMeasuredRequests > 0 && (
+                                    <small>
+                                      思考 {item.reasoningTokens.toLocaleString("zh-CN")}
+                                      （包含在输出中）
+                                    </small>
+                                  )}
+                                </span>
+                                <span role="cell" data-label="缓存命中 / 已统计">
+                                  {measuredInputTokens > 0 ? (
+                                    <>
+                                      {hitTokens.toLocaleString("zh-CN")} /{" "}
+                                      {measuredInputTokens.toLocaleString("zh-CN")}
+                                      <small>
+                                        未命中 {missTokens.toLocaleString("zh-CN")} · 覆盖{" "}
+                                        {cacheCoverage.toFixed(1)}%
+                                      </small>
+                                    </>
+                                  ) : (
+                                    "暂无缓存遥测"
+                                  )}
+                                </span>
+                                <span
+                                  className={
+                                    measuredInputTokens > 0
+                                      ? hitTokens > 0
+                                        ? "usage-request-hit"
+                                        : "usage-request-miss"
+                                      : "usage-request-unknown"
+                                  }
+                                  role="cell"
+                                  data-label="请求命中"
+                                >
+                                  {measuredInputTokens > 0
+                                    ? hitTokens > 0
+                                      ? "已命中"
+                                      : "无命中"
+                                    : "暂无样本"}
+                                </span>
+                                <span role="cell" data-label="耗时">
+                                  {item.latencyMs.toLocaleString("zh-CN")} ms
+                                </span>
+                                <span role="cell" data-label="Flash 费用估值">
+                                  {flashEstimate
+                                    ? `${formatEstimatedUsd(flashEstimate.lowerUsd)} – ${formatEstimatedUsd(flashEstimate.upperUsd)}`
+                                    : "非 Flash 模型"}
+                                </span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="usage-recent-empty">还没有记录到模型调用。</div>
+                    )}
+                  </details>
                   <section className={`ai-health ai-health-${aiHealth.state}`}>
                     <div className="ai-health-mark">
                       <Sparkles size={19} />
@@ -4756,7 +5241,8 @@ export default function Home() {
                   </div>
                   <div className="admin-table">
                     <h2>
-                      最近的目标 <small>按最后更新时间排序 · Token 按规划、对话和工作台拆分</small>
+                      最近的目标{" "}
+                      <small>按最后更新时间排序 · Token 按规划、对话、工作台和代码复核拆分</small>
                     </h2>
                     <div className="table-scroll">
                       <table aria-label="最近的目标工作空间">
@@ -4792,8 +5278,14 @@ export default function Home() {
                                     规划 {item.plannerTokens.toLocaleString("zh-CN")} · 对话{" "}
                                     {item.dialogueTokens.toLocaleString("zh-CN")} · 工作台{" "}
                                     {item.workbenchTokens.toLocaleString("zh-CN")}
+                                    {` · 代码复核 ${item.reviewerTokens.toLocaleString("zh-CN")}`}
                                     {item.legacyTokens > 0 &&
                                       ` · 旧记录 ${item.legacyTokens.toLocaleString("zh-CN")}`}
+                                  </small>
+                                  <small className="admin-workspace-usage-detail">
+                                    {item.reasoningMeasuredRequests > 0
+                                      ? `思考 Token ${item.reasoningTokens.toLocaleString("zh-CN")}（已报告 ${item.reasoningMeasuredRequests}/${item.aiRequests} 次，包含在输出中）`
+                                      : "思考 Token 暂无样本"}
                                   </small>
                                   {(() => {
                                     const estimate = adminWorkspaceCostEstimates.get(item.id);
@@ -4812,6 +5304,12 @@ export default function Home() {
                                             estimate.measuredInputTokens) *
                                           100
                                         : null;
+                                    const requestHitRate =
+                                      item.flashCacheMeasuredRequests > 0
+                                        ? (item.flashCacheHitRequests /
+                                            item.flashCacheMeasuredRequests) *
+                                          100
+                                        : null;
                                     return (
                                       <>
                                         <small className="admin-workspace-cost">
@@ -4826,6 +5324,7 @@ export default function Home() {
                                           {cacheHitRate === null
                                             ? "暂无样本"
                                             : `${cacheHitRate.toFixed(1)}%`}
+                                          {` · 命中请求率 ${requestHitRate === null ? "暂无样本" : `${requestHitRate.toFixed(1)}%（${item.flashCacheHitRequests}/${item.flashCacheMeasuredRequests}）`}`}
                                           {` · ${cacheCoverage.label}（${cacheCoverage.measured.toLocaleString("zh-CN")}/${cacheCoverage.total.toLocaleString("zh-CN")}）`}
                                         </small>
                                         {estimate.measuredHitTokens > 0 && (
@@ -4890,9 +5389,11 @@ export default function Home() {
           >
             <motion.section
               className="share-modal"
+              ref={shareDialogRef}
               role="dialog"
               aria-modal="true"
               aria-labelledby="share-dialog-title"
+              tabIndex={-1}
               onClick={(event) => event.stopPropagation()}
               initial={{ opacity: 0, y: 18 }}
               animate={{ opacity: 1, y: 0 }}
@@ -5178,6 +5679,12 @@ export default function Home() {
               </div>
               <h2 id="artifact-dialog-title">{artifact.title}</h2>
               <p id="artifact-dialog-description">{artifact.description}</p>
+              {artifactChecklistNotice && (
+                <div className="artifact-checklist-notice" role="status">
+                  这是旧版 AI
+                  方案。为避免把未执行的建议误标为已完成，清单已恢复为待办；请按实际进度重新勾选，保存后会保留你的状态。
+                </div>
+              )}
               {editingArtifact ? (
                 <textarea
                   className="artifact-editor"

@@ -9,14 +9,19 @@ import AxeBuilder from "@axe-core/playwright";
 import { chromium, request } from "playwright-core";
 import { readChatDocument } from "../src/lib/attachment-reader.mjs";
 import { resolveDatabasePath } from "../src/lib/database-path.mjs";
-import { loadSmokeEnvironment } from "./smoke-environment.mjs";
+import { estimateDeepSeekFlashCost } from "../src/lib/deepseek-cost-estimate.mjs";
+import {
+  assertSmokeTargetMatchesDatabaseOrExit,
+  loadSmokeEnvironmentOrExit,
+} from "./smoke-environment.mjs";
 
-const { liveUiRequested } = loadSmokeEnvironment();
+const { liveUiRequested } = loadSmokeEnvironmentOrExit();
 const baseUrl = new URL(process.env.NEXORA_BASE_URL || "http://localhost:3000");
 const liveUiMode = liveUiRequested;
 if (!/^(localhost|127\.0\.0\.1|\[::1\])$/.test(baseUrl.hostname)) {
   throw new Error("The UI smoke check only runs against a local VHFXNEX server.");
 }
+await assertSmokeTargetMatchesDatabaseOrExit(baseUrl);
 
 const chromeCandidates = [
   process.env.PLAYWRIGHT_EXECUTABLE_PATH,
@@ -136,6 +141,22 @@ const uiSmokeDownloadArtifacts = [
     description: "检查中文字体嵌入与 PDF 下载。",
     content:
       "# PDF 活动方案\n\n**活动目标：** 检查生成文件中的中文文字与分页。\n\n1. 确认执行人员。\n2. 完成现场复盘。\n\n| 阶段 | 内容 |\n| --- | --- |\n| 筹备 | 确认场地 |",
+  },
+  {
+    id: "ui-smoke-legacy-plan",
+    type: "document",
+    title: "UI Smoke Legacy Plan",
+    description: "Agent 生成的初版方案",
+    content: [
+      "# 旧版方案",
+      "",
+      "- [x] 联系活动场地",
+      "- [X] 招募志愿者",
+      "",
+      "```md",
+      "- [x] Markdown 示例",
+      "```",
+    ].join("\n"),
   },
 ];
 const screenshots = path.join(os.tmpdir(), `nexora-ui-smoke-${suffix}`);
@@ -575,6 +596,11 @@ try {
     1100,
     new Date().toISOString(),
   );
+  database
+    .prepare(
+      "UPDATE ai_usage SET reasoning_tokens = 42, reasoning_measured_requests = 1 WHERE workspace_id = ? AND source = 'planner'",
+    )
+    .run(usageWorkspaceId);
   const noCacheUsageWorkspaceId = crypto.randomUUID();
   database
     .prepare(
@@ -620,6 +646,20 @@ try {
     crypto.randomUUID(),
     adminUsageUser.id,
     usageWorkspaceId,
+    "reviewer",
+    "execute",
+    250,
+    25,
+    250,
+    25,
+    50,
+    300,
+    new Date().toISOString(),
+  );
+  insertAdminUsage.run(
+    crypto.randomUUID(),
+    adminUsageUser.id,
+    usageWorkspaceId,
     "workbench",
     "execute",
     700,
@@ -628,6 +668,20 @@ try {
     0,
     100,
     800,
+    new Date().toISOString(),
+  );
+  insertAdminUsage.run(
+    crypto.randomUUID(),
+    adminUsageUser.id,
+    usageWorkspaceId,
+    "workbench",
+    "execute",
+    400,
+    0,
+    400,
+    0,
+    50,
+    450,
     new Date().toISOString(),
   );
   insertAdminUsage.run(
@@ -649,18 +703,19 @@ try {
   await page.getByRole("heading", { name: "管理控制台" }).waitFor();
   await page.getByText("累计 AI Token").waitFor();
   await page.getByRole("heading", { name: "AI 调用趋势" }).waitFor();
-  const workspaceUsage = page.locator(".admin-workspace-usage").filter({ hasText: "2,500 tokens" });
+  const workspaceUsage = page.locator(".admin-workspace-usage").filter({ hasText: "3,250 tokens" });
   await workspaceUsage.waitFor({ state: "visible" });
   assert.match(
     await workspaceUsage.innerText(),
-    /规划\s+1,100\s+·\s+对话\s+600\s+·\s+工作台\s+800/,
+    /规划\s+1,100\s+·\s+对话\s+600\s+·\s+工作台\s+1,250\s+·\s+代码复核\s+300/,
   );
   assert.match(await workspaceUsage.innerText(), /Flash 当前价估值：\s*\$[\d,.]+\s*–\s*\$[\d,.]+/);
   assert.match(
     await workspaceUsage.innerText(),
-    /输入 Token 缓存命中率：\s*35\.0%\s+·\s+缓存统计覆盖 45\.5%（1,000\/2,200）/,
+    /输入 Token 缓存命中率：\s*22\.7%\s+·\s+命中请求率 66\.7%（2\/3）\s+·\s+缓存统计覆盖 57\.9%（1,650\/2,850）/,
   );
   assert.match(await workspaceUsage.innerText(), /已确认缓存节省：\s*\$[\d,.]+\s*–\s*\$[\d,.]+/);
+  assert.match(await workspaceUsage.innerText(), /思考 Token 42（已报告 1\/\d+ 次，包含在输出中）/);
   check(true, "Admin workspace view breaks down tokens, Flash cost, cache hit rate and coverage");
   const noCacheWorkspaceUsage = page
     .getByRole("row")
@@ -669,8 +724,9 @@ try {
   await noCacheWorkspaceUsage.waitFor({ state: "visible" });
   assert.match(
     await noCacheWorkspaceUsage.innerText(),
-    /输入 Token 缓存命中率：暂无样本\s+·\s+缓存统计覆盖 0\.0%（0\/400）/,
+    /输入 Token 缓存命中率：暂无样本\s+·\s+命中请求率 暂无样本\s+·\s+缓存统计覆盖 0\.0%（0\/400）/,
   );
+  assert.match(await noCacheWorkspaceUsage.innerText(), /思考 Token 暂无样本/);
   check(true, "Show a missing cache-stat sample instead of claiming zero hits for a project");
   const usageBreakdown = page.locator(".usage-breakdown");
   await usageBreakdown.waitFor({ state: "visible" });
@@ -684,26 +740,189 @@ try {
     /输入 Token 缓存命中率\s+[\d.]+%/,
     "the seven-day usage panel should show the measured cache-hit rate",
   );
-  assert.match(
-    await usageBreakdown.innerText(),
-    /覆盖\s+38\.2%/,
-    "the seven-day usage panel should show what share of input tokens has cache telemetry",
+  const cacheUsageSnapshot = await page.evaluate(async () => {
+    const response = await fetch("/api/admin/overview");
+    if (!response.ok) throw new Error("the administrator usage snapshot should be available");
+    const data = await response.json();
+    const weekly = data.dailyAiUsage.reduce(
+      (sum, day) => ({
+        inputTokens: sum.inputTokens + day.inputTokens,
+        measuredInputTokens: sum.measuredInputTokens + day.cacheMeasuredInputTokens,
+        hitTokens: sum.hitTokens + day.cacheMeasuredHitTokens,
+        measuredRequests: sum.measuredRequests + day.cacheMeasuredRequests,
+        hitRequests: sum.hitRequests + day.cacheHitRequests,
+      }),
+      {
+        inputTokens: 0,
+        measuredInputTokens: 0,
+        hitTokens: 0,
+        measuredRequests: 0,
+        hitRequests: 0,
+      },
+    );
+    return {
+      aggregate: {
+        inputTokens: data.aiUsage.inputTokens,
+        measuredInputTokens: data.aiUsage.cacheMeasuredInputTokens,
+        hitTokens: data.aiUsage.cacheMeasuredHitTokens,
+        measuredRequests: data.aiUsage.cacheMeasuredRequests,
+        hitRequests: data.aiUsage.cacheHitRequests,
+      },
+      weekly,
+    };
+  });
+  const percentage = (numerator, denominator) =>
+    (denominator > 0 ? (numerator / denominator) * 100 : 0).toFixed(1);
+  const weeklyCoverage = percentage(
+    cacheUsageSnapshot.weekly.measuredInputTokens,
+    cacheUsageSnapshot.weekly.inputTokens,
+  );
+  const weeklyHitRate = percentage(
+    cacheUsageSnapshot.weekly.hitTokens,
+    cacheUsageSnapshot.weekly.measuredInputTokens,
+  );
+  const requestHitRate = (hitRequests, measuredRequests) =>
+    measuredRequests > 0
+      ? `${percentage(hitRequests, measuredRequests)}%（${hitRequests}/${measuredRequests}）`
+      : "暂无样本";
+  const usageBreakdownText = await usageBreakdown.innerText();
+  assert.ok(
+    usageBreakdownText.includes(
+      `输入 Token 缓存命中率 ${weeklyHitRate}% · 命中请求率 ${requestHitRate(cacheUsageSnapshot.weekly.hitRequests, cacheUsageSnapshot.weekly.measuredRequests)} · 覆盖 ${weeklyCoverage}%`,
+    ),
+    "the seven-day usage panel should match request hit rate, token hit rate, and coverage",
   );
   const cacheCoverageSummary = page
     .locator(".admin-usage-stat small")
     .filter({ hasText: "输入 Token 缓存命中率" });
   await cacheCoverageSummary.waitFor({ state: "visible" });
-  assert.match(await cacheCoverageSummary.innerText(), /缓存统计覆盖\s+38\.2%/);
+  const aggregateHitRate = percentage(
+    cacheUsageSnapshot.aggregate.hitTokens,
+    cacheUsageSnapshot.aggregate.measuredInputTokens,
+  );
+  const aggregateCoverage = percentage(
+    cacheUsageSnapshot.aggregate.measuredInputTokens,
+    cacheUsageSnapshot.aggregate.inputTokens,
+  );
+  assert.ok(
+    (await cacheCoverageSummary.innerText()).includes(
+      `输入 Token 缓存命中率 ${aggregateHitRate}% · 命中请求率 ${requestHitRate(cacheUsageSnapshot.aggregate.hitRequests, cacheUsageSnapshot.aggregate.measuredRequests)} · 统计覆盖 ${aggregateCoverage}%`,
+    ),
+    "the aggregate usage summary should match request hit rate, token hit rate, and coverage",
+  );
+  assert.match(
+    (await cacheCoverageSummary.getAttribute("title")) || "",
+    /命中请求率 = 至少命中 1 个输入 Token 的请求数 ÷ 已提供缓存统计的请求数/,
+  );
   check(
     true,
     "Show correct provider cache-stat coverage next to aggregate and seven-day hit rates",
   );
+  const sourceCacheBreakdown = page.locator(".usage-source-breakdown");
+  await sourceCacheBreakdown.locator("summary").click();
+  const plannerSourceUsage = sourceCacheBreakdown
+    .locator(".usage-source-row")
+    .filter({ hasText: "规划 Agent" });
+  await plannerSourceUsage.waitFor({ state: "visible" });
+  assert.match(await plannerSourceUsage.innerText(), /350 \/ 1,000 · 35\.0%/);
+  assert.match(await plannerSourceUsage.innerText(), /1,000 \/ [\d,]+ · [\d.]+%/);
+  assert.match(await plannerSourceUsage.innerText(), /思考 42（输出内；1\/\d+ 次有统计）/);
+  const dialogueSourceUsage = sourceCacheBreakdown
+    .locator(".usage-source-row")
+    .filter({ hasText: "对话 Agent" });
+  assert.match(await dialogueSourceUsage.innerText(), /暂无样本/);
+  assert.match(await sourceCacheBreakdown.innerText(), /工作台 Agent/);
+  const reviewerSourceUsage = sourceCacheBreakdown
+    .locator(".usage-source-row")
+    .filter({ hasText: "代码复核 Agent" });
+  await reviewerSourceUsage.waitFor({ state: "visible" });
+  const reviewerSourceUsageText = await reviewerSourceUsage.innerText();
+  assert.match(reviewerSourceUsageText, /250 \/ 50/);
+  assert.match(reviewerSourceUsageText, /25 \/ 250 · 10\.0%/);
+  const reviewerFlashEstimate = estimateDeepSeekFlashCost({
+    inputTokens: 250,
+    outputTokens: 50,
+    cacheMeasuredInputTokens: 250,
+    cacheMeasuredHitTokens: 25,
+  });
+  const formatEstimatedUsd = (value) =>
+    new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency: "USD",
+      minimumFractionDigits: value < 0.01 ? 5 : value < 1 ? 4 : 2,
+      maximumFractionDigits: value < 0.01 ? 5 : value < 1 ? 4 : 2,
+    }).format(value);
+  assert.ok(
+    reviewerSourceUsageText.includes(formatEstimatedUsd(reviewerFlashEstimate.lowerUsd)) &&
+      reviewerSourceUsageText.includes(formatEstimatedUsd(reviewerFlashEstimate.upperUsd)),
+    "the Agent source row should show its current-price Flash cost range",
+  );
+  assert.match(await sourceCacheBreakdown.innerText(), /连接诊断/);
+  const recentUsageDetails = page.locator(".usage-recent-breakdown");
+  await recentUsageDetails.locator("summary").click();
+  const recentReviewerUsage = recentUsageDetails
+    .locator(".usage-recent-row[role='row']")
+    .filter({ hasText: "代码复核 Agent" });
+  await recentReviewerUsage.waitFor({ state: "visible" });
+  const recentReviewerUsageText = await recentReviewerUsage.innerText();
+  assert.match(recentReviewerUsageText, /250 \/ 50/);
+  assert.match(recentReviewerUsageText, /25 \/ 250/);
+  assert.match(recentReviewerUsageText, /已命中/);
+  assert.match(recentReviewerUsageText, /deepseek-flash/);
+  assert.doesNotMatch(recentReviewerUsageText, /email|prompt|attachment/i);
+  await assertAccessible(page, "recent AI request usage ledger");
+  await page.screenshot({ path: path.join(screenshots, "admin-usage-ledger.png"), fullPage: true });
+  const [usageDownload] = await Promise.all([
+    page.waitForEvent("download"),
+    recentUsageDetails.getByRole("button", { name: "导出最近调用 CSV" }).click(),
+  ]);
+  assert.match(usageDownload.suggestedFilename(), /^vhfxnex-ai-usage-\d{8}\.csv$/);
+  const usageCsvPath = path.join(screenshots, "admin-usage-ledger.csv");
+  await usageDownload.saveAs(usageCsvPath);
+  const usageCsv = fs.readFileSync(usageCsvPath, "utf8");
+  assert.ok(usageCsv.startsWith("\uFEFF"));
+  assert.match(usageCsv, /代码复核 Agent/);
+  assert.match(usageCsv, /250/);
+  assert.match(usageCsv, /25/);
+  assert.doesNotMatch(usageCsv, /userId|email|prompt|attachment/i);
+  check(true, "Download the current AI usage ledger without account identifiers or prompt data");
+  const previousAdminViewport = page.viewportSize();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.waitForFunction(() => window.matchMedia("(max-width: 700px)").matches);
+  await page.evaluate(
+    () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
+  );
+  const sourceMetricsOverflow = await sourceCacheBreakdown
+    .locator(".usage-source-scroll")
+    .evaluate((element) => element.scrollWidth > element.clientWidth + 1);
+  assert.equal(
+    sourceMetricsOverflow,
+    false,
+    "source usage should not overflow at a 390px viewport",
+  );
+  const recentUsageOverflow = await recentUsageDetails
+    .locator(".usage-recent-scroll")
+    .evaluate((element) => element.scrollWidth > element.clientWidth + 1);
+  assert.equal(recentUsageOverflow, false, "recent usage should not overflow at a 390px viewport");
+  const usageExportOverflow = await recentUsageDetails
+    .locator(".usage-export-toolbar")
+    .evaluate((element) => element.scrollWidth > element.clientWidth + 1);
+  assert.equal(usageExportOverflow, false, "the usage CSV action should fit a 390px viewport");
+  assert.equal(await reviewerSourceUsage.locator('[data-label="Flash 费用估值"]').count(), 1);
+  if (previousAdminViewport) await page.setViewportSize(previousAdminViewport);
+  check(
+    true,
+    "Inspect recent per-request token/cache/cost records without prompt content or mobile overflow",
+  );
+  check(true, "Compare request hit rate, token hit rate, and telemetry coverage by agent source");
+  check(true, "Stack source usage metrics on mobile without a horizontal scrollbar");
   assert.match(await usageBreakdown.innerText(), /1 次连接诊断/);
   check(true, "Include minimal provider connectivity probes in aggregate model usage");
   await page.locator(".usage-chart").waitFor();
   const tokenBreakdown = page.locator(".admin-usage-stat small").nth(1);
   await tokenBreakdown.waitFor();
   assert.match(await tokenBreakdown.innerText(), /输入.*供应商报告缓存命中.*已统计输入.*输出/);
+  assert.match(await tokenBreakdown.innerText(), /思考 Token 42（已报告 1\/\d+ 次，包含在输出中）/);
   const costEstimate = page.locator(".admin-cost-estimate");
   await costEstimate.waitFor({ state: "visible" });
   assert.match(await costEstimate.innerText(), /当前价回算估值：\s*\$[\d,.]+\s*–\s*\$[\d,.]+/);
@@ -717,7 +936,7 @@ try {
   );
   database
     .prepare(
-      "UPDATE ai_usage SET cached_input_tokens = 0, cache_measured_input_tokens = 0, cache_measured_hit_tokens = 0 WHERE user_id = ?",
+      "UPDATE ai_usage SET cached_input_tokens = 0, cache_measured_input_tokens = 0, cache_measured_hit_tokens = 0, reasoning_tokens = 0, reasoning_measured_requests = 0 WHERE user_id = ?",
     )
     .run(adminUsageUser.id);
   await page.reload({ waitUntil: "networkidle" });
@@ -726,6 +945,7 @@ try {
   const unmeasuredAdminTokens = page.locator(".admin-usage-stat small").nth(1);
   await unmeasuredAdminTokens.waitFor();
   assert.match(await unmeasuredAdminTokens.innerText(), /输入.*缓存命中暂无统计样本.*输出/);
+  assert.match(await unmeasuredAdminTokens.innerText(), /思考 Token 暂无样本/);
   assert.doesNotMatch(await unmeasuredAdminTokens.innerText(), /缓存命中\s+0(?:\s|$)/);
   assert.match(await page.locator(".usage-breakdown").innerText(), /缓存命中暂无统计样本/);
   check(true, "Report unavailable aggregate cache telemetry without implying zero hits");
@@ -818,8 +1038,52 @@ try {
   const nextPassword = crypto.randomBytes(24).toString("base64url");
   await page.getByLabel("新密码", { exact: true }).fill(nextPassword);
   await page.getByLabel("确认新密码").fill(nextPassword);
-  await page.getByRole("button", { name: "更新密码" }).click();
-  await page.getByRole("status").filter({ hasText: "当前设备保持登录" }).waitFor();
+  let releaseLateExecutionPoll;
+  let markLateExecutionPollStarted;
+  const lateExecutionPollStarted = new Promise((resolve) => {
+    markLateExecutionPollStarted = resolve;
+  });
+  let lateExecutionPollHeld = false;
+  await page.route("**/api/executions", async (route) => {
+    if (route.request().method() === "GET" && !lateExecutionPollHeld) {
+      lateExecutionPollHeld = true;
+      markLateExecutionPollStarted();
+      await new Promise((resolve) => {
+        releaseLateExecutionPoll = resolve;
+      });
+      await route.fulfill({
+        status: 401,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "模拟改密前发出的旧执行状态请求" }),
+      });
+      return;
+    }
+    await route.continue();
+  });
+  try {
+    await lateExecutionPollStarted;
+    const passwordResponsePromise = page.waitForResponse(
+      (response) =>
+        response.url().includes("/api/auth/password") && response.request().method() === "POST",
+    );
+    await page.getByRole("button", { name: "更新密码" }).click();
+    const passwordResponse = await passwordResponsePromise;
+    assert.equal(passwordResponse.status(), 200, "the current browser session should renew");
+    releaseLateExecutionPoll?.();
+    await page.getByRole("status").filter({ hasText: "当前设备保持登录" }).waitFor();
+  } finally {
+    releaseLateExecutionPoll?.();
+    await page.unroute("**/api/executions");
+  }
+  assert.equal(
+    await page.getByRole("heading", { name: "你的空间，由你掌控。" }).isVisible(),
+    true,
+    "a late 401 from an older session poll must not navigate away after the current session renews",
+  );
+  check(
+    true,
+    "Keep the active workspace session after an old status poll returns 401 during password rotation",
+  );
   const accountIdentity = await page.evaluate(async () => {
     const response = await fetch("/api/auth/me");
     return response.json();
@@ -891,6 +1155,7 @@ try {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           prompt: "请规划一个目标执行流程并生成关键任务",
+          workspaceId: crypto.randomUUID(),
           demo: false,
         }),
       });
@@ -1143,38 +1408,67 @@ try {
   });
   assert.equal(persistedAfterRetry.workspaces.length, 1);
   assert.match(persistedAfterRetry.cacheControl || "", /private.*no-store|no-store.*private/i);
+  const activeWorkspaceTitleBeforeReload = await page.locator(".workspace-head h1").innerText();
+  await page.reload({ waitUntil: "networkidle" });
+  await page.locator(".workspace-chat").waitFor();
+  assert.equal(
+    await page.locator(".workspace-head h1").innerText(),
+    activeWorkspaceTitleBeforeReload,
+    "a full page reload must restore the saved active workspace in the same browser tab",
+  );
+  check(
+    true,
+    "Restore the active workspace after a full page reload without losing the current project",
+  );
   if (!liveUiMode) {
-    const usageWorkspaceRow = database
-      .prepare("SELECT body FROM workspaces WHERE id = ?")
-      .get(plannedWorkspaceId);
+    const savedUsageWorkspace = persistedAfterRetry.workspaces.find(
+      (item) => item.id === plannedWorkspaceId,
+    );
     assert.ok(
-      usageWorkspaceRow?.body,
+      savedUsageWorkspace,
       "the saved demo plan must be available for an isolated UI fixture",
     );
-    const originalUsageWorkspaceBody = usageWorkspaceRow.body;
-    const flashUsageFixture = JSON.parse(originalUsageWorkspaceBody);
-    flashUsageFixture.mode = "live";
-    flashUsageFixture.usage = {
-      model: "deepseek-flash",
-      inputTokens: 1_000_000,
-      cachedInputTokens: 300_000,
-      cacheMeasuredInputTokens: 400_000,
-      cacheMeasuredHitTokens: 300_000,
-      outputTokens: 100_000,
-      totalTokens: 1_100_000,
-      latencyMs: 500,
-      requests: 2,
+    const flashUsageFixture = {
+      ...savedUsageWorkspace,
+      mode: "live",
+      usage: {
+        model: "deepseek-flash",
+        inputTokens: 1_000_000,
+        cachedInputTokens: 300_000,
+        cacheMeasuredInputTokens: 400_000,
+        cacheMeasuredHitTokens: 300_000,
+        outputTokens: 100_000,
+        totalTokens: 1_100_000,
+        latencyMs: 500,
+        requests: 2,
+      },
     };
-    database
-      .prepare("UPDATE workspaces SET body = ? WHERE id = ?")
-      .run(JSON.stringify(flashUsageFixture), plannedWorkspaceId);
     const usageCostPage = await context.newPage();
+    let usageFixtureServed = false;
     try {
+      await usageCostPage.route("**/api/workspaces", async (route) => {
+        if (route.request().method() !== "GET") {
+          await route.continue();
+          return;
+        }
+        const response = await route.fetch();
+        const payload = await response.json();
+        const workspaces = payload.workspaces.map((item) =>
+          item.id === plannedWorkspaceId ? flashUsageFixture : item,
+        );
+        usageFixtureServed = workspaces.some((item) => item.id === plannedWorkspaceId);
+        await route.fulfill({ response, body: JSON.stringify({ ...payload, workspaces }) });
+      });
       await usageCostPage.goto(baseUrl.href, { waitUntil: "networkidle" });
       await usageCostPage.getByRole("button", { name: "我的目标" }).click();
       await usageCostPage
         .getByRole("button", { name: `打开工作区：${flashUsageFixture.plan.title}` })
         .click();
+      assert.equal(
+        usageFixtureServed,
+        true,
+        "the isolated UI fixture should come from this tab only",
+      );
       const workspaceCostEstimate = usageCostPage.locator(
         ".plan-usage-brief .workspace-flash-cost-estimate",
       );
@@ -1190,9 +1484,6 @@ try {
       check(true, "Show the current DeepSeek Flash cost range beside the live planning usage");
     } finally {
       await usageCostPage.close();
-      database
-        .prepare("UPDATE workspaces SET body = ? WHERE id = ?")
-        .run(originalUsageWorkspaceBody, plannedWorkspaceId);
     }
   }
   if (!liveUiMode) {
@@ -2669,6 +2960,12 @@ try {
       ? "Execute the live Agent workflow and persist a completed task"
       : "Execute the demo workflow and persist a completed task",
   );
+  if (!liveUiMode) {
+    const completedProgress = page.locator(".workspace-live-progress.completed");
+    await completedProgress.waitFor({ state: "visible" });
+    assert.match(await completedProgress.innerText(), /本轮执行完成/);
+    check(true, "Show the completed demo run status immediately after execution");
+  }
   await page.getByRole("button", { name: "共享工作区", exact: true }).click();
   const shareDialog = page.getByRole("dialog", { name: "邀请成员协作" });
   await shareDialog.waitFor({ state: "visible" });
@@ -2676,13 +2973,73 @@ try {
     (dialog) => getComputedStyle(dialog).opacity === "1",
     await shareDialog.elementHandle(),
   );
+  const initialShareFocus = await page.evaluate(() => {
+    const dialog = document.querySelector(".share-modal");
+    const focusable = [
+      ...(dialog?.querySelectorAll(
+        'button:not(:disabled), input:not(:disabled), select:not(:disabled), a[href], [tabindex]:not([tabindex="-1"])',
+      ) || []),
+    ].filter((element) => element.getClientRects().length > 0);
+    return {
+      count: focusable.length,
+      firstFocused: document.activeElement === focusable[0],
+    };
+  });
+  assert.ok(initialShareFocus.count > 1);
+  assert.equal(initialShareFocus.firstFocused, true, "dialog open should move focus inside");
+  await page.keyboard.press("Shift+Tab");
+  assert.equal(
+    await page.evaluate(() => {
+      const dialog = document.querySelector(".share-modal");
+      const focusable = [
+        ...(dialog?.querySelectorAll(
+          'button:not(:disabled), input:not(:disabled), select:not(:disabled), a[href], [tabindex]:not([tabindex="-1"])',
+        ) || []),
+      ].filter((element) => element.getClientRects().length > 0);
+      return document.activeElement === focusable.at(-1);
+    }),
+    true,
+    "Shift+Tab from the first control should wrap to the last control",
+  );
+  await page.keyboard.press("Tab");
+  assert.equal(
+    await page.evaluate(() => {
+      const dialog = document.querySelector(".share-modal");
+      const focusable = [
+        ...(dialog?.querySelectorAll(
+          'button:not(:disabled), input:not(:disabled), select:not(:disabled), a[href], [tabindex]:not([tabindex="-1"])',
+        ) || []),
+      ].filter((element) => element.getClientRects().length > 0);
+      return document.activeElement === focusable[0];
+    }),
+    true,
+    "Tab from the last control should wrap to the first control",
+  );
+  await page.keyboard.press("Escape");
+  await shareDialog.waitFor({ state: "hidden" });
+  assert.equal(
+    await page
+      .getByRole("button", { name: "共享工作区", exact: true })
+      .evaluate((button) => button === document.activeElement),
+    true,
+    "closing the sharing dialog should restore focus to its trigger",
+  );
+  check(true, "Keep the workspace sharing dialog keyboard operable with focus return");
+  await page.getByRole("button", { name: "共享工作区", exact: true }).click();
+  await shareDialog.waitFor({ state: "visible" });
+  await page.waitForFunction(
+    (dialog) => getComputedStyle(dialog).opacity === "1",
+    await shareDialog.elementHandle(),
+  );
   await assertAccessible(page, "workspace sharing dialog");
   await shareDialog.getByLabel("成员权限").selectOption("viewer");
+  const revokeShareButton = shareDialog.getByRole("button", { name: "撤销邀请链接" });
   await shareDialog.getByRole("button", { name: "生成邀请链接" }).click();
   const generatedShareInput = shareDialog.locator("#generated-share-url");
   await generatedShareInput.waitFor({ state: "visible" });
   const generatedShareUrl = await generatedShareInput.inputValue();
   assert.match(generatedShareUrl, /\/invite\/[A-Za-z0-9_-]+$/);
+  await revokeShareButton.waitFor({ state: "visible" });
   await page.screenshot({ path: path.join(screenshots, "workspace-sharing-dialog.png") });
   const inviteContext = await browser.newContext({
     viewport: { width: 960, height: 760 },
@@ -2701,20 +3058,38 @@ try {
   assert.deepEqual(inviteErrors, []);
   await invitePage.screenshot({ path: path.join(screenshots, "workspace-invite-page.png") });
   await inviteContext.close();
-  const revokeShareButton = page.locator('button[aria-label="撤销邀请链接"]');
+  if (!(await shareDialog.isVisible())) {
+    await shareDialog.waitFor({ state: "hidden" });
+    await page.getByRole("button", { name: "共享工作区", exact: true }).click();
+    await shareDialog.waitFor({ state: "visible" });
+    await page.waitForFunction(
+      (dialog) => getComputedStyle(dialog).opacity === "1",
+      await shareDialog.elementHandle(),
+    );
+  }
   try {
     await revokeShareButton.waitFor({ state: "visible", timeout: 8_000 });
   } catch {
-    const shareDiagnostics = await page.locator('[role="dialog"]').evaluateAll((dialogs) =>
-      dialogs.map((dialog) => ({
-        visible: Boolean(dialog.getClientRects().length),
-        buttons: [...dialog.querySelectorAll("button")].map((button) => ({
-          label: button.getAttribute("aria-label") || "",
-          text: button.innerText,
+    const shareDiagnostics = await page.evaluate(async (workspaceId) => {
+      const response = await fetch(`/api/workspaces/${workspaceId}/sharing`, {
+        cache: "no-store",
+      });
+      const payload = await response.json().catch(() => null);
+      return {
+        status: response.status,
+        payload,
+        dialogs: [...document.querySelectorAll('[role="dialog"]')].map((dialog) => ({
+          visible: Boolean(dialog.getClientRects().length),
+          buttons: [...dialog.querySelectorAll("button")].map((button) => ({
+            label: button.getAttribute("aria-label") || "",
+            text: button.innerText,
+          })),
+          linkRows: dialog.querySelectorAll(".share-list-row").length,
+          error: dialog.querySelector(".share-error")?.textContent || "",
+          loading: Boolean(dialog.querySelector(".share-empty")?.textContent.includes("读取")),
         })),
-        linkRows: dialog.querySelectorAll(".share-list-row").length,
-      })),
-    );
+      };
+    }, plannedWorkspaceId);
     throw new Error(
       "Invite was created but its revoke control was not available: " +
         JSON.stringify(shareDiagnostics),
@@ -2743,13 +3118,6 @@ try {
   );
   await workbenchAuthor.last().waitFor({ state: "visible" });
   assert.equal(await workbenchAuthor.last().innerText(), "工作台 Agent");
-  const completedProgress = page.locator(".workspace-live-progress.completed");
-  await completedProgress.waitFor({ state: "visible" });
-  assert.match(await completedProgress.innerText(), /本轮执行完成/);
-  check(
-    true,
-    "Keep a clear completion status visible and compact progress saved in workspace history",
-  );
   try {
     await page.waitForFunction(
       () => {
@@ -3008,6 +3376,60 @@ try {
   }
   {
     await artifactDialog.getByRole("button", { name: "关闭产物" }).click();
+    if (!liveUiMode) {
+      await page
+        .locator(".chat-artifacts button")
+        .filter({ hasText: "UI Smoke Legacy Plan" })
+        .click();
+      const legacyDialog = page.getByRole("dialog");
+      await legacyDialog.waitFor({ state: "visible" });
+      await legacyDialog
+        .getByText(/旧版 AI 方案[\s\S]*清单已恢复为待办/)
+        .waitFor({ state: "visible" });
+      await legacyDialog.getByRole("button", { name: "编辑方案" }).click();
+      const legacyEditor = legacyDialog.getByRole("textbox", { name: "编辑方案内容" });
+      const legacyContent = await legacyEditor.inputValue();
+      assert.match(legacyContent, /- \[ \] 联系活动场地/);
+      assert.match(legacyContent, /- \[ \] 招募志愿者/);
+      assert.match(legacyContent, /```md\n- \[x\] Markdown 示例\n```/);
+      await legacyDialog.getByRole("button", { name: "取消编辑" }).click();
+      const legacyDownloadPromise = page.waitForEvent("download", { timeout: 10_000 });
+      await legacyDialog.getByRole("button", { name: "下载 Markdown" }).click();
+      const legacyDownload = await legacyDownloadPromise;
+      const legacyMarkdown = fs.readFileSync(await legacyDownload.path(), "utf8");
+      assert.match(legacyMarkdown, /- \[ \] 联系活动场地/);
+      assert.match(legacyMarkdown, /- \[ \] 招募志愿者/);
+      assert.match(legacyMarkdown, /```md\n- \[x\] Markdown 示例\n```/);
+      await legacyDialog.getByRole("button", { name: "编辑方案" }).click();
+      const reviewedContent = legacyContent.replace("- [ ] 联系活动场地", "- [x] 联系活动场地");
+      await legacyDialog.getByRole("textbox", { name: "编辑方案内容" }).fill(reviewedContent);
+      await legacyDialog.getByRole("button", { name: "保存修改" }).click();
+      await legacyDialog.locator(".artifact-editor").waitFor({ state: "detached" });
+      assert.match(
+        await legacyDialog.locator("#artifact-dialog-description").innerText(),
+        /用户已编辑/,
+      );
+      await legacyDialog.getByRole("button", { name: "关闭产物" }).click();
+      await legacyDialog.waitFor({ state: "hidden" });
+      await page
+        .locator(".chat-artifacts button")
+        .filter({ hasText: "UI Smoke Legacy Plan" })
+        .click();
+      await legacyDialog.waitFor({ state: "visible" });
+      assert.equal(await legacyDialog.getByText(/旧版 AI 方案/).count(), 0);
+      await legacyDialog.getByRole("button", { name: "编辑方案" }).click();
+      const savedLegacyContent = await legacyDialog
+        .getByRole("textbox", { name: "编辑方案内容" })
+        .inputValue();
+      assert.match(savedLegacyContent, /- \[x\] 联系活动场地/);
+      assert.match(savedLegacyContent, /- \[ \] 招募志愿者/);
+      await legacyDialog.getByRole("button", { name: "取消编辑" }).click();
+      await legacyDialog.getByRole("button", { name: "关闭产物" }).click();
+      check(
+        true,
+        "Normalize legacy AI plan checkboxes and preserve user-reviewed edits and code examples",
+      );
+    }
     const downloadFixture = async (title, buttonName, extension) => {
       await page.locator(".chat-artifacts button").filter({ hasText: title }).click();
       const dialog = page.getByRole("dialog");
@@ -3831,6 +4253,13 @@ try {
     }
     await route.continue();
   });
+  await page.route("**/api/auth/me", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ user: null, aiConfigured: false }),
+    }),
+  );
   await page.getByRole("button", { name: "打开菜单" }).click();
   const workspaceMenu = page.getByRole("dialog", { name: "导航菜单" });
   await workspaceMenu.getByRole("button", { name: /我的目标/ }).click();
@@ -3870,6 +4299,7 @@ try {
     "the recovered workspace must fit the small-phone viewport",
   );
   await page.unroute("**/api/workspaces");
+  await page.unroute("**/api/auth/me");
   check(true, "Restore the exact unsaved workspace after the same account signs in again");
 
   await page.getByRole("button", { name: "打开菜单" }).click();
@@ -3919,6 +4349,13 @@ try {
     }
     await route.continue();
   });
+  await page.route("**/api/auth/me", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ user: null, aiConfigured: liveAiAvailable }),
+    }),
+  );
   await page.getByRole("button", { name: "开始探索" }).click();
   await page
     .locator(".form-error")
@@ -3934,6 +4371,7 @@ try {
   await page.getByRole("button", { name: "进入空间" }).click();
   const restoredGoalInput = page.getByRole("textbox", { name: "描述你想完成的目标" });
   await restoredGoalInput.waitFor({ state: "visible" });
+  await page.unroute("**/api/auth/me");
   assert.equal(await restoredGoalInput.inputValue(), goalDraft);
   assert.equal(interruptedPlanBody?.prompt, goalDraft);
   assert.equal(interruptedPlanBody?.image || "", expectedDraftImage);
@@ -4066,6 +4504,70 @@ try {
   await attachmentFlowCard.locator(".history-card-open").click();
   await page.locator("#workspace-chat-input").waitFor({ state: "visible" });
   const capturedAttachmentExecuteRequests = [];
+  let simulatedAttachmentHandoff = null;
+  let simulatedAttachmentClaimToken = null;
+  await page.route("**/api/handoffs", async (route) => {
+    const method = route.request().method();
+    if (method === "GET") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          handoffs: simulatedAttachmentHandoff ? [simulatedAttachmentHandoff] : [],
+        }),
+      });
+      return;
+    }
+    const body = route.request().postDataJSON();
+    if (method === "POST") {
+      simulatedAttachmentHandoff = {
+        ...body,
+        id: crypto.randomUUID(),
+        workspaceTitle: attachmentFlowWorkspace.plan.title,
+        createdAt: new Date().toISOString(),
+      };
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          handoff: simulatedAttachmentHandoff,
+          existing: false,
+          completed: false,
+          cancelled: false,
+        }),
+      });
+      return;
+    }
+    if (method === "PATCH" && body.action === "claim" && simulatedAttachmentHandoff) {
+      simulatedAttachmentClaimToken = crypto.randomUUID();
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          status: "claimed",
+          handoff: simulatedAttachmentHandoff,
+          token: simulatedAttachmentClaimToken,
+        }),
+      });
+      return;
+    }
+    if (
+      method === "PATCH" &&
+      body.action === "complete" &&
+      body.token === simulatedAttachmentClaimToken
+    ) {
+      simulatedAttachmentHandoff = null;
+      simulatedAttachmentClaimToken = null;
+      await route.fulfill({ status: 200, contentType: "application/json", body: '{"ok":true}' });
+      return;
+    }
+    if (method === "PATCH" && body.action === "release") {
+      simulatedAttachmentClaimToken = null;
+      await route.fulfill({ status: 200, contentType: "application/json", body: '{"ok":true}' });
+      return;
+    }
+    await route.fulfill({ status: 200, contentType: "application/json", body: '{"ok":true}' });
+  });
   let markFirstAttachmentExecutionSeen;
   const firstAttachmentExecutionSeen = new Promise((resolve) => {
     markFirstAttachmentExecutionSeen = resolve;
@@ -4242,16 +4744,49 @@ try {
     const payload = await response.json();
     return payload.handoffs?.length === 1;
   });
-  // This browser smoke intentionally runs without the server-side worker. Simulate its
-  // retry deadline expiring so a page reload can recover the durable handoff immediately.
-  database
-    .prepare("UPDATE workbench_handoffs SET next_attempt_at = NULL WHERE workspace_id = ?")
-    .run(attachmentFlowWorkspaceId);
+  // Keep the browser recovery simulation out of SQLite: the live background worker
+  // must never see this fixture or make a provider request while the UI smoke runs.
+  assert.equal(
+    database
+      .prepare("SELECT COUNT(*) AS count FROM workbench_handoffs WHERE workspace_id = ?")
+      .get(attachmentFlowWorkspaceId).count,
+    0,
+    "browser-only handoff fixtures must not enter the database observed by the live worker",
+  );
   assert.equal(
     capturedAttachmentChatRequest?.question,
     "请根据附件正文继续完成当前验证，并确认正文已进入执行任务。",
   );
   assert.equal(capturedAttachmentChatRequest?.attachments?.length, 5);
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.reload({ waitUntil: "networkidle" });
+  await page.waitForFunction(
+    async (workspaceId) => {
+      const response = await fetch(`/api/workspaces/${workspaceId}`);
+      if (!response.ok) return false;
+      const payload = await response.json();
+      return payload.workspace?.result?.summary === "回归执行已收到附件正文。";
+    },
+    attachmentFlowWorkspaceId,
+    { timeout: 30_000 },
+  );
+  await page.waitForFunction(async () => {
+    const response = await fetch("/api/handoffs");
+    const payload = await response.json();
+    return payload.handoffs?.length === 0;
+  });
+  assert.equal(
+    database
+      .prepare("SELECT COUNT(*) AS count FROM workbench_handoffs WHERE workspace_id = ?")
+      .get(attachmentFlowWorkspaceId).count,
+    0,
+    "browser recovery must leave no server queue record for the real worker to claim",
+  );
+  await page.unroute("**/api/handoffs");
+
+  // Finish the recovered attachment execution before injecting a second running
+  // status. The top bar intentionally displays the most recently updated run, so
+  // leaving both fixtures active makes this assertion depend on request timing.
   const adminUserId = database.prepare("SELECT id FROM users WHERE email = ?").get(adminEmail).id;
   const statusWorkspaceId = crypto.randomUUID();
   const statusWorkspace = {
@@ -4299,13 +4834,17 @@ try {
       recoveredExecutionTime,
       recoveredExecutionTime,
     );
-  await page.setViewportSize({ width: 1440, height: 1000 });
   await page.reload({ waitUntil: "networkidle" });
   const restoredExecutionChip = page.locator(".topbar-execution-chip.running");
   await restoredExecutionChip.waitFor({ timeout: 4_000 });
   assert.match(await restoredExecutionChip.getAttribute("title"), /后台状态恢复验证/);
   assert.match(await restoredExecutionChip.innerText(), /正在检查附件并恢复工作台执行/);
   assert.match(await restoredExecutionChip.innerText(), /已完成 3 次工具操作/);
+  const expandNavigationForExecutionHistory = page.getByRole("button", {
+    name: "展开导航栏",
+  });
+  if (await expandNavigationForExecutionHistory.count())
+    await expandNavigationForExecutionHistory.click();
   await page.getByRole("button", { name: /我的目标/ }).click();
   const statusWorkspaceCard = page
     .locator(".history-grid article")
@@ -4518,10 +5057,153 @@ try {
     .filter({ hasText: backgroundRecoveryWorkspace.plan.title });
   await backgroundRecoveryCard.locator(".history-card-open").click();
   await page.locator("#workspace-chat-input").waitFor({ state: "visible" });
+  let simulatedBackgroundHandoff = null;
+  let simulatedBackgroundClaimToken = null;
+  let capturedBackgroundChatRequest = null;
+  await page.route("**/api/handoffs", async (route) => {
+    const method = route.request().method();
+    if (method === "GET") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          handoffs: simulatedBackgroundHandoff ? [simulatedBackgroundHandoff] : [],
+        }),
+      });
+      return;
+    }
+    const body = route.request().postDataJSON();
+    if (method === "POST") {
+      simulatedBackgroundHandoff = {
+        ...body,
+        id: crypto.randomUUID(),
+        workspaceTitle: backgroundRecoveryWorkspace.plan.title,
+        createdAt: new Date().toISOString(),
+      };
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          handoff: simulatedBackgroundHandoff,
+          existing: false,
+          completed: false,
+          cancelled: false,
+        }),
+      });
+      return;
+    }
+    if (method === "PATCH" && body.action === "claim" && simulatedBackgroundHandoff) {
+      simulatedBackgroundClaimToken = crypto.randomUUID();
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          status: "claimed",
+          handoff: simulatedBackgroundHandoff,
+          token: simulatedBackgroundClaimToken,
+        }),
+      });
+      return;
+    }
+    if (
+      method === "PATCH" &&
+      body.action === "complete" &&
+      body.token === simulatedBackgroundClaimToken
+    ) {
+      simulatedBackgroundHandoff = null;
+      simulatedBackgroundClaimToken = null;
+      await route.fulfill({ status: 200, contentType: "application/json", body: '{"ok":true}' });
+      return;
+    }
+    if (method === "PATCH" && body.action === "release") {
+      simulatedBackgroundClaimToken = null;
+      await route.fulfill({ status: 200, contentType: "application/json", body: '{"ok":true}' });
+      return;
+    }
+    await route.fulfill({ status: 200, contentType: "application/json", body: '{"ok":true}' });
+  });
+  await page.route("**/api/chat", async (route) => {
+    capturedBackgroundChatRequest = route.request().postDataJSON();
+    assert.equal(capturedBackgroundChatRequest.workspaceId, backgroundRecoveryWorkspaceId);
+    const instruction = "生成完整代码文件；如果浏览器连接断开，继续在后台完成并同步成果。";
+    const userMessageId = crypto.randomUUID();
+    const userMessage = capturedBackgroundChatRequest.question;
+    const acknowledgment = "已收到，我会生成代码交付物，并在连接中断时保留后台进度。";
+    const savedConversation = await page.evaluate(
+      async ({ workspaceId, userMessageId, userMessage, acknowledgment, instruction }) => {
+        const currentResponse = await fetch(`/api/workspaces/${workspaceId}`);
+        const current = await currentResponse.json();
+        current.workspace.conversation = [
+          ...(current.workspace.conversation || []),
+          { id: userMessageId, role: "user", content: userMessage },
+          { id: crypto.randomUUID(), role: "assistant", content: acknowledgment },
+        ].slice(-40);
+        const saveResponse = await fetch("/api/workspaces", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ workspace: current.workspace }),
+        });
+        const saved = await saveResponse.json();
+        if (!saveResponse.ok) return { status: saveResponse.status, payload: saved };
+        const handoffResponse = await fetch("/api/handoffs", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ workspaceId, userMessageId, userMessage, instruction }),
+        });
+        return {
+          status: saveResponse.status,
+          payload: saved,
+          handoffStatus: handoffResponse.status,
+          handoff: await handoffResponse.json(),
+        };
+      },
+      {
+        workspaceId: backgroundRecoveryWorkspaceId,
+        userMessageId,
+        userMessage,
+        acknowledgment,
+        instruction,
+      },
+    );
+    assert.equal(
+      savedConversation.status,
+      200,
+      savedConversation.payload?.error || "Could not save the background recovery chat message.",
+    );
+    assert.equal(
+      savedConversation.handoffStatus,
+      200,
+      savedConversation.handoff?.error || "Could not create the in-memory background handoff.",
+    );
+    const handoff = {
+      handoffId: savedConversation.handoff.handoff.id,
+      instruction,
+      userMessageId,
+      userMessage,
+      acknowledgment,
+      queued: false,
+    };
+    await route.fulfill({
+      status: 200,
+      headers: { "content-type": "text/event-stream; charset=utf-8" },
+      body: [
+        { type: "text", text: acknowledgment },
+        { type: "handoff", ...handoff },
+        { type: "result", data: { kind: "handoff", ...handoff } },
+      ]
+        .map((event) => `data: ${JSON.stringify(event)}\n\n`)
+        .join(""),
+    });
+  });
   let backgroundRecoveryToken;
+  let markBackgroundExecutionSeen;
+  const backgroundExecutionSeen = new Promise((resolve) => {
+    markBackgroundExecutionSeen = resolve;
+  });
   await page.route("**/api/execute", async (route) => {
     const body = route.request().postDataJSON();
     if (body.workspaceId !== backgroundRecoveryWorkspaceId) return route.continue();
+    markBackgroundExecutionSeen();
     const token = crypto.randomUUID();
     const startedAt = new Date().toISOString();
     backgroundRecoveryToken = token;
@@ -4552,6 +5234,15 @@ try {
     .locator("#workspace-chat-input")
     .fill("请生成完整代码文件。连接断开后继续在后台完成。");
   await page.getByRole("button", { name: "发送给 Agent", exact: true }).click();
+  await backgroundExecutionSeen;
+  assert.equal(capturedBackgroundChatRequest?.workspaceId, backgroundRecoveryWorkspaceId);
+  assert.equal(
+    database
+      .prepare("SELECT COUNT(*) AS count FROM workbench_handoffs WHERE workspace_id = ?")
+      .get(backgroundRecoveryWorkspaceId).count,
+    0,
+    "background recovery handoffs must remain browser-local so the server worker cannot call the provider",
+  );
   const backgroundProgress = page.locator(".workspace-live-progress.running");
   await backgroundProgress.waitFor({ state: "visible" });
   await page.waitForFunction(
@@ -4639,8 +5330,346 @@ try {
     "Sync the final workspace artifacts and chat response after background execution completes",
   );
   await page.unroute("**/api/execute");
+  await page.unroute("**/api/chat");
+  await page.unroute("**/api/handoffs");
   await page.reload({ waitUntil: "networkidle" });
-  await page.locator(".home-primary").waitFor({ state: "visible" });
+  await page.locator(".workspace-chat").waitFor({ state: "visible" });
+  assert.equal(
+    await page.locator(".workspace-head h1").innerText(),
+    backgroundRecoveryWorkspace.plan.title,
+    "a full page reload should reopen the active project after background completion",
+  );
+  const queueExecutionToken = crypto.randomUUID();
+  const queueExecutionStartedAt = new Date().toISOString();
+  database
+    .prepare(
+      "INSERT INTO workspace_execution_locks (workspace_id, user_id, token, expires_at) VALUES (?, ?, ?, ?)",
+    )
+    .run(backgroundRecoveryWorkspaceId, adminUserId, queueExecutionToken, Date.now() + 60_000);
+  database
+    .prepare(
+      `INSERT INTO workspace_execution_status
+        (token, workspace_id, user_id, workspace_title, state, activity, completed_tool_calls,
+         message, started_at, updated_at, finished_at)
+       VALUES (?, ?, ?, ?, 'running', ?, 1, NULL, ?, ?, NULL)`,
+    )
+    .run(
+      queueExecutionToken,
+      backgroundRecoveryWorkspaceId,
+      adminUserId,
+      backgroundRecoveryWorkspace.plan.title,
+      "当前工作正在生成第一份交付物",
+      queueExecutionStartedAt,
+      queueExecutionStartedAt,
+    );
+  let queuedUiHandoff = null;
+  let queuedUiHandoffId = null;
+  let queuedUiUserMessageId = null;
+  let queuedUiClaimToken = null;
+  let queueExecutionActive = true;
+  let markQueuedClaimBlocked;
+  let markReloadedQueuedClaimBlocked;
+  let queuedClaimAttempts = 0;
+  const queuedClaimBlocked = new Promise((resolve) => {
+    markQueuedClaimBlocked = resolve;
+  });
+  const reloadedQueuedClaimBlocked = new Promise((resolve) => {
+    markReloadedQueuedClaimBlocked = resolve;
+  });
+  await page.route("**/api/handoffs", async (route) => {
+    const method = route.request().method();
+    if (method === "GET") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ handoffs: queuedUiHandoff ? [queuedUiHandoff] : [] }),
+      });
+      return;
+    }
+    const body = route.request().postDataJSON();
+    if (method === "POST") {
+      queuedUiUserMessageId = body.userMessageId;
+      queuedUiHandoff = {
+        ...body,
+        id: crypto.randomUUID(),
+        workspaceTitle: backgroundRecoveryWorkspace.plan.title,
+        createdAt: new Date().toISOString(),
+      };
+      queuedUiHandoffId = queuedUiHandoff.id;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          handoff: queuedUiHandoff,
+          existing: false,
+          completed: false,
+          cancelled: false,
+        }),
+      });
+      return;
+    }
+    if (method === "PATCH" && body.action === "claim" && queuedUiHandoff) {
+      if (queueExecutionActive) {
+        queuedClaimAttempts += 1;
+        if (queuedClaimAttempts === 1) markQueuedClaimBlocked();
+        if (queuedClaimAttempts >= 2) markReloadedQueuedClaimBlocked();
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ status: "busy" }),
+        });
+        return;
+      }
+      queuedUiClaimToken = crypto.randomUUID();
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          status: "claimed",
+          handoff: queuedUiHandoff,
+          token: queuedUiClaimToken,
+        }),
+      });
+      return;
+    }
+    if (method === "PATCH" && body.action === "complete" && body.token === queuedUiClaimToken) {
+      queuedUiHandoff = null;
+      queuedUiClaimToken = null;
+      await route.fulfill({ status: 200, contentType: "application/json", body: '{"ok":true}' });
+      return;
+    }
+    if (method === "PATCH" && body.action === "release") {
+      queuedUiClaimToken = null;
+      await route.fulfill({ status: 200, contentType: "application/json", body: '{"ok":true}' });
+      return;
+    }
+    await route.fulfill({ status: 200, contentType: "application/json", body: '{"ok":true}' });
+  });
+  let queuedUiChatRequest = null;
+  await page.route("**/api/chat", async (route) => {
+    queuedUiChatRequest = route.request().postDataJSON();
+    const instruction = queuedUiChatRequest.question;
+    const userMessageId = crypto.randomUUID();
+    const userMessage = instruction;
+    const acknowledgment = "收到，第二项工作已排队；当前任务结束后会自动接手。";
+    const workspaceRow = database
+      .prepare("SELECT body FROM workspaces WHERE id = ?")
+      .get(backgroundRecoveryWorkspaceId);
+    assert.ok(workspaceRow, "the running workspace must still be persisted");
+    const workspaceWithConversation = JSON.parse(workspaceRow.body);
+    workspaceWithConversation.conversation = [
+      ...(workspaceWithConversation.conversation || []),
+      { id: userMessageId, role: "user", content: userMessage },
+      {
+        id: crypto.randomUUID(),
+        role: "assistant",
+        agent: "dialogue",
+        content: acknowledgment,
+      },
+    ].slice(-40);
+    database
+      .prepare("UPDATE workspaces SET body = ?, updated_at = ? WHERE id = ?")
+      .run(
+        JSON.stringify(workspaceWithConversation),
+        new Date().toISOString(),
+        backgroundRecoveryWorkspaceId,
+      );
+    const handoffResponse = await page.evaluate(
+      async ({ workspaceId, userMessageId, userMessage, instruction }) => {
+        const response = await fetch("/api/handoffs", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ workspaceId, userMessageId, userMessage, instruction }),
+        });
+        return { status: response.status, payload: await response.json() };
+      },
+      {
+        workspaceId: backgroundRecoveryWorkspaceId,
+        userMessageId,
+        userMessage,
+        instruction,
+      },
+    );
+    assert.equal(
+      handoffResponse.status,
+      200,
+      handoffResponse.payload?.error || "Could not persist the queued UI handoff.",
+    );
+    const handoff = {
+      handoffId: handoffResponse.payload.handoff.id,
+      instruction,
+      userMessageId,
+      userMessage,
+      acknowledgment,
+      queued: true,
+    };
+    await route.fulfill({
+      status: 200,
+      headers: { "content-type": "text/event-stream; charset=utf-8" },
+      body: [
+        { type: "text", text: acknowledgment },
+        { type: "handoff", ...handoff },
+        { type: "result", data: { kind: "handoff", ...handoff } },
+      ]
+        .map((event) => `data: ${JSON.stringify(event)}\n\n`)
+        .join(""),
+    });
+  });
+  let capturedQueuedUiExecuteRequest = null;
+  await page.route("**/api/execute", async (route) => {
+    const body = route.request().postDataJSON();
+    if (body.workspaceId !== backgroundRecoveryWorkspaceId) return route.continue();
+    capturedQueuedUiExecuteRequest = body;
+    await route.fulfill({
+      status: 200,
+      headers: { "content-type": "text/event-stream; charset=utf-8" },
+      body: `data: ${JSON.stringify({
+        type: "result",
+        data: {
+          result: {
+            summary: "排队的第二项工作已自动接手并完成。",
+            tasks: backgroundRecoveryWorkspace.plan.tasks,
+            milestones: [],
+            artifacts: [],
+            events: [],
+          },
+          mode: "demo",
+        },
+      })}\n\n`,
+    });
+  });
+  await page.reload({ waitUntil: "networkidle" });
+  await page.locator(".workspace-chat").waitFor({ state: "visible" });
+  await page
+    .locator(".workspace-live-progress.running")
+    .getByText("当前工作正在生成第一份交付物")
+    .waitFor({ state: "visible" });
+  await page
+    .locator("#workspace-chat-input")
+    .fill("当前工作完成后，继续生成一份代码自测报告并交付。");
+  await page.getByRole("button", { name: /^发送(?:给 Agent)?$/ }).click();
+  await page
+    .locator(".workspace-chat-thread")
+    .getByText("收到，第二项工作已排队；当前任务结束后会自动接手。", { exact: true })
+    .waitFor({ state: "visible" });
+  let queuedClaimTimeout;
+  try {
+    await Promise.race([
+      queuedClaimBlocked,
+      new Promise((_, reject) => {
+        queuedClaimTimeout = setTimeout(
+          () => reject(new Error("The queued handoff was never checked while the run was active.")),
+          10_000,
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(queuedClaimTimeout);
+  }
+  assert.equal(
+    queuedUiChatRequest?.workspaceId,
+    backgroundRecoveryWorkspaceId,
+    "the dialogue Agent should route the new request from the current workspace",
+  );
+  assert.equal(
+    capturedQueuedUiExecuteRequest,
+    null,
+    "a queued task must not start while the earlier execution lock is active",
+  );
+  await page.reload({ waitUntil: "networkidle" });
+  await page
+    .locator(".workspace-live-progress.running")
+    .getByText("当前工作正在生成第一份交付物")
+    .waitFor({ state: "visible" });
+  await page
+    .locator(".workspace-chat-thread")
+    .getByText("收到，第二项工作已排队；当前任务结束后会自动接手。", { exact: true })
+    .waitFor({ state: "visible" });
+  await page
+    .locator(".workspace-chat-composer-footer")
+    .getByText("1 项工作已排队，当前轮完成后自动接手。", { exact: true })
+    .waitFor({ state: "visible" });
+  let reloadedClaimTimeout;
+  try {
+    await Promise.race([
+      reloadedQueuedClaimBlocked,
+      new Promise((_, reject) => {
+        reloadedClaimTimeout = setTimeout(
+          () => reject(new Error("The queued handoff was not recovered after page reload.")),
+          10_000,
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(reloadedClaimTimeout);
+  }
+  assert.equal(
+    capturedQueuedUiExecuteRequest,
+    null,
+    "reloading must not cause a queued task to start while the earlier run remains active",
+  );
+  check(true, "Recover and retain a queued instruction after reloading during an active run");
+  const queueExecutionCompletedAt = new Date(Date.now() + 1_000).toISOString();
+  database
+    .prepare(
+      "UPDATE workspace_execution_status SET state = 'completed', activity = ?, message = ?, updated_at = ?, finished_at = ? WHERE token = ?",
+    )
+    .run(
+      "第一份交付物已完成",
+      "第一份交付物已完成",
+      queueExecutionCompletedAt,
+      queueExecutionCompletedAt,
+      queueExecutionToken,
+    );
+  database
+    .prepare("DELETE FROM workspace_execution_locks WHERE workspace_id = ? AND token = ?")
+    .run(backgroundRecoveryWorkspaceId, queueExecutionToken);
+  queueExecutionActive = false;
+  await page.waitForFunction(
+    (workspaceId) => {
+      const thread = document.querySelector(".workspace-chat-thread")?.textContent || "";
+      return (
+        thread.includes("排队的第二项工作已自动接手并完成。") &&
+        document.querySelector(".workspace-live-progress.completed") &&
+        workspaceId.length > 0
+      );
+    },
+    backgroundRecoveryWorkspaceId,
+    { timeout: 15_000 },
+  );
+  await page.waitForFunction(
+    async () => {
+      const response = await fetch("/api/handoffs");
+      const payload = await response.json();
+      return payload.handoffs?.length === 0;
+    },
+    null,
+    { timeout: 10_000 },
+  );
+  assert.ok(capturedQueuedUiExecuteRequest);
+  assert.equal(capturedQueuedUiExecuteRequest?.handoffJobId, queuedUiHandoffId);
+  assert.equal(
+    capturedQueuedUiExecuteRequest?.instruction,
+    "当前工作完成后，继续生成一份代码自测报告并交付。",
+  );
+  assert.equal(
+    capturedQueuedUiExecuteRequest?.displayMessage,
+    "当前工作完成后，继续生成一份代码自测报告并交付。",
+  );
+  assert.equal(capturedQueuedUiExecuteRequest?.dialogMessageId, queuedUiUserMessageId);
+  assert.equal(queuedUiHandoff, null, "the completed follow-up must leave the pending queue");
+  check(
+    true,
+    "Keep chat open during a run, queue a second instruction, and auto-start it after the first run releases",
+  );
+  await page.unroute("**/api/execute");
+  await page.unroute("**/api/chat");
+  await page.unroute("**/api/handoffs");
+  database
+    .prepare("DELETE FROM workspace_execution_status WHERE token = ?")
+    .run(queueExecutionToken);
+  const expandNavigationForSpeech = page.getByRole("button", { name: "展开导航栏" });
+  if (await expandNavigationForSpeech.count()) await expandNavigationForSpeech.click();
   await page.getByRole("button", { name: /我的目标/ }).click();
   await page.locator(".history-grid").waitFor({ state: "visible" });
   const speechTestWorkspace = page.locator(".history-grid article .history-card-open").first();
@@ -4686,6 +5715,72 @@ try {
     .waitFor();
   assert.equal(await speechButton.getAttribute("aria-pressed"), "false");
   await page.evaluate(() => {
+    class SilentSpeechRecognition {
+      onresult = null;
+      onerror = null;
+      onend = null;
+      start() {
+        window.setTimeout(() => this.onend?.(), 0);
+      }
+      stop() {
+        this.onend?.();
+      }
+    }
+    Object.defineProperty(window, "SpeechRecognition", {
+      configurable: true,
+      value: SilentSpeechRecognition,
+    });
+  });
+  await speechButton.click();
+  await page.getByText("没有识别到语音，请说话后重试或直接输入。", { exact: true }).waitFor();
+  assert.equal(await speechButton.getAttribute("aria-pressed"), "false");
+  await page.evaluate(() => {
+    class NoSpeechErrorRecognition {
+      onresult = null;
+      onerror = null;
+      onend = null;
+      start() {
+        window.setTimeout(() => {
+          this.onerror?.({ error: "no-speech" });
+          this.onend?.();
+        }, 0);
+      }
+      stop() {
+        this.onend?.();
+      }
+    }
+    Object.defineProperty(window, "SpeechRecognition", {
+      configurable: true,
+      value: NoSpeechErrorRecognition,
+    });
+  });
+  await speechButton.click();
+  await page.getByText("没有识别到语音，请说话后重试。", { exact: true }).waitFor();
+  assert.equal(await speechButton.getAttribute("aria-pressed"), "false");
+  await page.evaluate(() => {
+    class DelayedErrorSpeechRecognition {
+      onresult = null;
+      onerror = null;
+      onend = null;
+      start() {
+        window.setTimeout(() => this.onerror?.({ error: "network" }), 0);
+        window.setTimeout(() => {
+          this.onend?.();
+          document.body.dataset.staleSpeechEnded = "yes";
+        }, 300);
+      }
+      stop() {
+        this.onend?.();
+      }
+    }
+    Object.defineProperty(window, "SpeechRecognition", {
+      configurable: true,
+      value: DelayedErrorSpeechRecognition,
+    });
+  });
+  await speechButton.click();
+  await page.getByText("语音识别中断，可以重试或改用文字输入。", { exact: true }).waitFor();
+  await page.evaluate(() => {
     class WorkingSpeechRecognition {
       onresult = null;
       onend = null;
@@ -4713,13 +5808,17 @@ try {
   await page.waitForFunction(() =>
     document.querySelector("#workspace-chat-input")?.value.includes("语音输入回归通过"),
   );
+  await page.waitForFunction(() => document.body.dataset.staleSpeechEnded === "yes");
   assert.equal(await page.locator(".chat-voice-button").getAttribute("aria-pressed"), "true");
   await page.getByRole("button", { name: "停止语音", exact: true }).click();
   await page.waitForFunction(
     () => document.querySelector('.chat-voice-button[aria-pressed="false"]') !== null,
   );
   assert.match(await speechInput.inputValue(), /语音输入回归通过/);
-  check(true, "Handle speech recognition success, permission denial, and unsupported browsers");
+  check(
+    true,
+    "Handle speech success, silence, permission denial, unsupported browsers, and stale sessions",
+  );
 
   mobileAuthContext = await browser.newContext({
     viewport: { width: 390, height: 844 },

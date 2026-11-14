@@ -1,0 +1,12 @@
+{
+  "scenario": "冬日健康守护纸笔互动活动",
+  "participants": 20,
+  "volunteers": 5,
+  "optionalVolunteers": 1,
+  "stations": 4,
+  "groups": 4,
+  "participantsPerGroup": 5,
+  "durationMinutes": 75,
+  "cashBudgetCny": 0,
+  "unconfirmedFacts": ["日期、开始时间", "联办单位名称", "可用时段", "实际可借物料", "健康知识题卡"]
+}

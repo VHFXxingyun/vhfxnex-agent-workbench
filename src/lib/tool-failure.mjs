@@ -30,5 +30,10 @@ export function compactToolFailure(value) {
         : String(current || "工具参数未通过校验"));
   if (/AI_JSONParseError|JSON parsing failed|Unexpected end of JSON input/i.test(message))
     return "工具参数 JSON 不完整或被截断；请缩小本次产物范围后重新生成。";
-  return message.replace(/\s+/g, " ").trim().slice(0, 500) || "工具参数未通过校验";
+  const validationReason = message.match(
+    /Type validation failed(?: for [^:]+)?: Value:[\s\S]*?\nError message:\s*([\s\S]*)$/i,
+  )?.[1];
+  return (
+    (validationReason || message).replace(/\s+/g, " ").trim().slice(0, 500) || "工具参数未通过校验"
+  );
 }

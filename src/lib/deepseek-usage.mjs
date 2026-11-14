@@ -10,6 +10,7 @@ export function parseDeepSeekUsage(payload, latencyMs, fallbackModel = "deepseek
   const totalTokens = readCount(usage.total_tokens) || inputTokens + outputTokens;
   if (!totalTokens) return undefined;
   const cacheReadTokens = getDeepSeekCacheHitTokens(usage, inputTokens);
+  const reasoningTokens = getDeepSeekReasoningTokens(usage, outputTokens);
   return {
     model:
       typeof response.model === "string" && response.model.trim()
@@ -24,10 +25,29 @@ export function parseDeepSeekUsage(payload, latencyMs, fallbackModel = "deepseek
         }
       : {}),
     outputTokens,
+    ...(reasoningTokens !== undefined ? { reasoningTokens, reasoningMeasuredRequests: 1 } : {}),
     totalTokens,
     latencyMs: Math.max(0, Math.round(latencyMs)),
     requests: 1,
   };
+}
+
+/** Read the provider-reported reasoning-token breakdown without exposing reasoning content. */
+export function getDeepSeekReasoningTokens(rawUsage, outputTokens) {
+  if (
+    !rawUsage ||
+    typeof rawUsage !== "object" ||
+    !Number.isSafeInteger(outputTokens) ||
+    outputTokens < 0
+  )
+    return undefined;
+  const reportedReasoningTokens = [
+    rawUsage.completion_tokens_details?.reasoning_tokens,
+    rawUsage.output_tokens_details?.reasoning_tokens,
+    rawUsage.reasoning_tokens,
+  ].find((value) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0);
+  if (reportedReasoningTokens === undefined) return undefined;
+  return Math.min(outputTokens, reportedReasoningTokens);
 }
 
 /** Read cache statistics only when the provider included a cache field in its raw usage. */

@@ -2,13 +2,17 @@ import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import Database from "better-sqlite3";
 import { resolveDatabasePath } from "../src/lib/database-path.mjs";
-import { loadSmokeEnvironment } from "./smoke-environment.mjs";
+import {
+  assertSmokeTargetMatchesDatabaseOrExit,
+  loadSmokeEnvironmentOrExit,
+} from "./smoke-environment.mjs";
 
-loadSmokeEnvironment();
+loadSmokeEnvironmentOrExit();
 const baseUrl = new URL(process.env.NEXORA_BASE_URL || "http://localhost:3000");
 if (!/^(localhost|127\.0\.0\.1|\[::1\])$/.test(baseUrl.hostname)) {
   throw new Error("The search smoke check only runs against a local NEXORA server.");
 }
+await assertSmokeTargetMatchesDatabaseOrExit(baseUrl);
 
 const address = "198.51.100." + crypto.randomInt(1, 255);
 const email = "nexora-search-" + crypto.randomUUID() + "@example.test";

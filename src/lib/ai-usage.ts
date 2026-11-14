@@ -3,7 +3,7 @@ import database from "@/lib/db";
 import type { AiRunUsage } from "@/lib/goal";
 
 export type AiOperation = "plan" | "execute";
-export type AiUsageSource = "planner" | "dialogue" | "workbench" | "healthcheck";
+export type AiUsageSource = "planner" | "dialogue" | "workbench" | "reviewer" | "healthcheck";
 
 export function recordAiUsage(
   userId: string,
@@ -15,7 +15,7 @@ export function recordAiUsage(
   try {
     database
       .prepare(
-        "INSERT INTO ai_usage (id, user_id, workspace_id, source, operation, model, input_tokens, cached_input_tokens, cache_measured_input_tokens, cache_measured_hit_tokens, output_tokens, total_tokens, latency_ms, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO ai_usage (id, user_id, workspace_id, source, operation, model, input_tokens, cached_input_tokens, cache_measured_input_tokens, cache_measured_hit_tokens, reasoning_tokens, reasoning_measured_requests, output_tokens, total_tokens, latency_ms, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       )
       .run(
         crypto.randomUUID(),
@@ -28,6 +28,8 @@ export function recordAiUsage(
         usage.cachedInputTokens ?? 0,
         usage.cacheMeasuredInputTokens ?? 0,
         usage.cacheMeasuredHitTokens ?? 0,
+        usage.reasoningTokens ?? 0,
+        usage.reasoningMeasuredRequests ?? 0,
         usage.outputTokens,
         usage.totalTokens,
         usage.latencyMs,

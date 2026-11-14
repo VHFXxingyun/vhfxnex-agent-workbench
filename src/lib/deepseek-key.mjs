@@ -28,6 +28,8 @@ export function parseEnvValue(contents, name) {
 }
 
 export function getDeepSeekApiKey(directory = process.cwd()) {
+  // Isolated smoke servers must fail closed even when the workspace has .env.local.
+  if (process.env.NEXORA_DISABLE_AI === "1") return "";
   try {
     const envFile = fs.readFileSync(path.join(directory, ".env.local"), "utf8");
     return parseEnvValue(envFile, "DEEPSEEK_API_KEY")?.trim() || "";

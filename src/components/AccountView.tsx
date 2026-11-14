@@ -11,7 +11,7 @@ import {
   ShieldCheck,
   Upload,
 } from "lucide-react";
-import { clientSession } from "@/lib/client-session";
+import { clientSession, reconcileUnauthorizedSession } from "@/lib/client-session";
 import { accountDataLimits } from "@/lib/limits";
 
 type AccountUser = {
@@ -65,11 +65,7 @@ export default function AccountView({
       const data = await response.json();
       if (requestEpoch !== clientSession.epoch) return;
       if (!response.ok) {
-        if (response.status === 401) {
-          window.dispatchEvent(
-            new CustomEvent("nexora:session-expired", { detail: { epoch: requestEpoch } }),
-          );
-        }
+        if (response.status === 401) void reconcileUnauthorizedSession(requestEpoch);
         throw new Error(data.error || "账户备份生成失败。");
       }
       const blob = new Blob([JSON.stringify(data, null, 2)], {
@@ -131,11 +127,7 @@ export default function AccountView({
       const data = await response.json();
       if (requestEpoch !== clientSession.epoch) return;
       if (!response.ok) {
-        if (response.status === 401) {
-          window.dispatchEvent(
-            new CustomEvent("nexora:session-expired", { detail: { epoch: requestEpoch } }),
-          );
-        }
+        if (response.status === 401) void reconcileUnauthorizedSession(requestEpoch);
         throw new Error(data.error || "账户备份导入失败。");
       }
 
@@ -168,11 +160,7 @@ export default function AccountView({
       const data = await response.json();
       if (requestEpoch !== clientSession.epoch) return;
       if (!response.ok) {
-        if (response.status === 401) {
-          window.dispatchEvent(
-            new CustomEvent("nexora:session-expired", { detail: { epoch: requestEpoch } }),
-          );
-        }
+        if (response.status === 401) void reconcileUnauthorizedSession(requestEpoch);
         throw new Error(data.error || "恢复码生成失败。");
       }
       setRecoveryCode(data.recoveryCode);
@@ -225,11 +213,7 @@ export default function AccountView({
       const data = await response.json();
       if (requestEpoch !== clientSession.epoch) return;
       if (!response.ok) {
-        if (response.status === 401) {
-          window.dispatchEvent(
-            new CustomEvent("nexora:session-expired", { detail: { epoch: requestEpoch } }),
-          );
-        }
+        if (response.status === 401) void reconcileUnauthorizedSession(requestEpoch);
         throw new Error(data.error || "资料更新失败，请稍后重试。");
       }
       onUserUpdated(data.user);
@@ -268,11 +252,7 @@ export default function AccountView({
       const data = await response.json();
       if (requestEpoch !== clientSession.epoch) return;
       if (!response.ok) {
-        if (response.status === 401) {
-          window.dispatchEvent(
-            new CustomEvent("nexora:session-expired", { detail: { epoch: requestEpoch } }),
-          );
-        }
+        if (response.status === 401) void reconcileUnauthorizedSession(requestEpoch);
         throw new Error(data.error || "密码更新失败，请稍后重试。");
       }
       setCurrentPassword("");

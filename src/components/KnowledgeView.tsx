@@ -5,7 +5,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowRight, BookOpen, FilePlus2, Search, Trash2, Upload } from "lucide-react";
 import ConfirmDialog, { type ConfirmRequest } from "@/components/ConfirmDialog";
 import { isSupportedChatTextFile, readChatDocument } from "@/lib/attachment-reader";
-import { clientSession } from "@/lib/client-session";
+import { clientSession, reconcileUnauthorizedSession } from "@/lib/client-session";
 
 type Document = { id: string; title: string; content: string; created_at: string };
 type KnowledgeResponse = { documents: Document[] };
@@ -27,15 +27,7 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
     headers: { "Content-Type": "application/json", ...options?.headers },
   });
   const data = await response.json().catch(() => ({}));
-  if (
-    response.status === 401 &&
-    requestEpoch === clientSession.epoch &&
-    typeof window !== "undefined"
-  ) {
-    window.dispatchEvent(
-      new CustomEvent("nexora:session-expired", { detail: { epoch: requestEpoch } }),
-    );
-  }
+  if (response.status === 401) void reconcileUnauthorizedSession(requestEpoch);
   if (!response.ok) throw new KnowledgeApiError(data.error || "请求失败", response.status);
   return data as T;
 }

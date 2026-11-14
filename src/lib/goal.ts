@@ -90,6 +90,10 @@ export type AiRunUsage = {
   cacheMeasuredInputTokens?: number;
   /** Cache-hit tokens from the same measured requests. */
   cacheMeasuredHitTokens?: number;
+  /** Provider-reported reasoning tokens, included in outputTokens. */
+  reasoningTokens?: number;
+  /** Requests where the provider reported the reasoning-token breakdown. */
+  reasoningMeasuredRequests?: number;
   outputTokens: number;
   totalTokens: number;
   latencyMs: number;
@@ -114,6 +118,13 @@ export function combineAiUsage(
             (current.cacheMeasuredInputTokens || 0) + (incoming.cacheMeasuredInputTokens || 0),
           cacheMeasuredHitTokens:
             (current.cacheMeasuredHitTokens || 0) + (incoming.cacheMeasuredHitTokens || 0),
+        }
+      : {}),
+    ...(current.reasoningTokens !== undefined || incoming.reasoningTokens !== undefined
+      ? {
+          reasoningTokens: (current.reasoningTokens || 0) + (incoming.reasoningTokens || 0),
+          reasoningMeasuredRequests:
+            (current.reasoningMeasuredRequests || 0) + (incoming.reasoningMeasuredRequests || 0),
         }
       : {}),
     outputTokens: current.outputTokens + incoming.outputTokens,

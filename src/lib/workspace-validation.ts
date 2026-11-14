@@ -90,6 +90,8 @@ function isAiRunUsage(value: unknown): value is AiRunUsage {
     cachedInputTokens,
     cacheMeasuredInputTokens,
     cacheMeasuredHitTokens,
+    reasoningTokens,
+    reasoningMeasuredRequests,
     outputTokens,
     totalTokens,
     latencyMs,
@@ -114,6 +116,15 @@ function isAiRunUsage(value: unknown): value is AiRunUsage {
         cacheMeasuredHitTokens >= 0 &&
         cacheMeasuredHitTokens <= cacheMeasuredInputTokens &&
         cacheMeasuredInputTokens <= (inputTokens as number))) &&
+    ((reasoningTokens === undefined && reasoningMeasuredRequests === undefined) ||
+      (typeof reasoningTokens === "number" &&
+        Number.isSafeInteger(reasoningTokens) &&
+        reasoningTokens >= 0 &&
+        reasoningTokens <= (outputTokens as number) &&
+        typeof reasoningMeasuredRequests === "number" &&
+        Number.isSafeInteger(reasoningMeasuredRequests) &&
+        reasoningMeasuredRequests >= 0 &&
+        reasoningMeasuredRequests <= (requests as number))) &&
     (inputTokens as number) + (outputTokens as number) <= (totalTokens as number) &&
     (requests as number) <= 10_000
   );
