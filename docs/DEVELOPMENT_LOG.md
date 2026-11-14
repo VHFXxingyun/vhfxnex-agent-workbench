@@ -9,7 +9,7 @@
 ## 2026-11-14｜避免 CPU 部署安装可选 CUDA Provider
 
 - 第 9 次 GitHub Actions 在 Linux `npm ci` 阶段失败：`onnxruntime-node` 默认尝试从 NuGet 下载可选 CUDA 12 Provider，连接超时；本项目知识向量推理使用 CPU。
-- 为 CI 与 Docker 的开发/生产依赖安装设置 `ONNXRUNTIME_NODE_INSTALL=skip`，跳过不需要的 CUDA Provider 下载，保留 npm 包自带 Runtime。远程 CI 复验待完成。
+- 为 CI 与 Docker 的开发/生产依赖安装设置 `ONNXRUNTIME_NODE_INSTALL=skip`，跳过不需要的 CUDA Provider 下载，保留 npm 包自带 Runtime。GitHub Actions 运行 #43586345910 全流程通过：依赖安装、构建、82 项 API smoke、160 项 UI smoke、密钥扫描及生产容器健康检查均成功。
 
 ## 2026-11-14｜补全对话 Markdown 的浏览器覆盖
 
