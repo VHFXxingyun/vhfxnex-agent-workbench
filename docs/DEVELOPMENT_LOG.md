@@ -2,6 +2,13 @@
 
 本记录从项目基线提交后开始，按实际完成时间记录开发、验收与发布情况。未完成的工作会标为“待完成”，不把计划写成已实现内容，也不补造过去的提交历史。
 
+## 2026-11-14｜通过 CI 修复生产容器运行与窄屏产物弹窗
+
+- 首次 GitHub Actions 实建发现 Docker runner 层漏复制 worker 导入的 `src/lib/database-path.mjs`，导致 worker 启动失败、容器健康检查不通过；Dockerfile 已补齐运行模块，静态检查增加对应断言。
+- 后续真实浏览器回归发现 320×720 视口的代码产物弹窗超出屏幕；为代码弹窗建立受视口约束的 grid 行，并将弹窗最大高度约束到容器可用高度。
+- 最终 GitHub Actions 全流程通过：生产构建、82 项 API smoke、157 项浏览器 UI smoke、Docker 镜像构建和容器健康检查；容器运行用户为 `node` 且进程 UID 非 root。`npm run smoke:container` 通过 36 项，ESLint、TypeScript、Prettier 与 diff whitespace 检查通过。
+- 回归没有调用 DeepSeek。`.env.local` 未提交；本地产生的 `output/` PDF 未提交。本地没有 Docker/Podman，镜像验收由隔离的 GitHub Actions runner 完成。
+
 ## 2026-11-14｜补齐执行中连续对话与队列自动接手的浏览器回归
 
 - UI smoke 新增完整浏览器链路：工作区已有服务端运行状态时，用户仍可向对话 Agent 发送第二项明确工作；它先进入队列，当前执行锁存在时不得启动，刷新页面后仍恢复队列并等待，锁释放后自动领取并发送给工作台 Agent，完成结果回到聊天记录，已完成队列项从待处理列表移除。
