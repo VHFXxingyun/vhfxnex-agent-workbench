@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { toolDescriptions } from "../src/lib/agent-tools.mjs";
 import { validateGeneratedProject } from "../src/lib/project-static-validation.mjs";
+import { attachProjectReviewStatus, parseProjectReview } from "../src/lib/project-review.mjs";
 
 const projectWithDeclaredDependencies = [
   {
@@ -254,6 +256,32 @@ const invalidScriptCommand = validateGeneratedProject([
 ]);
 assert.match(invalidScriptCommand.join(" "), /scripts 命令都必须是非空名称和字符串/);
 
+assert.deepEqual(parseProjectReview('{"approved":true,"issues":[]}'), {
+  approved: true,
+  issues: [],
+});
+assert.deepEqual(parseProjectReview('```json\n{"approved":false,"issues":["入口无法启动"]}\n```'), {
+  approved: false,
+  issues: ["入口无法启动"],
+});
+for (const malformedReview of [
+  "不是 JSON",
+  '{"approved":true}',
+  '{"approved":"true","issues":[]}',
+  '{"approved":true,"issues":[1]}',
+]) {
+  assert.throws(() => parseProjectReview(malformedReview));
+}
+const reviewUnavailable = attachProjectReviewStatus(
+  { created: true, files: ["README.md", "index.html"] },
+  "unavailable",
+  "静态检查已通过；独立复核未完成。",
+);
+assert.equal(reviewUnavailable.created, true);
+assert.deepEqual(reviewUnavailable.files, ["README.md", "index.html"]);
+assert.equal(reviewUnavailable.independentReview.status, "unavailable");
+assert.match(toolDescriptions.create_project, /independentReview\.status.*unavailable/);
+
 console.log(
-  "✓ Project validation checks package declarations, source and asset references, Vue files, and manifest structure.",
+  "✓ Project validation checks package declarations, source and asset references, Vue files, manifest structure, and independent-review outcomes.",
 );

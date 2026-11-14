@@ -62,6 +62,7 @@ import {
 import { isSupportedImageDataUrl } from "@/lib/image";
 import { mergeProjectFilePatch } from "@/lib/project-path.mjs";
 import { classifyProjectIntent } from "@/lib/project-intent.mjs";
+import { attachProjectReviewStatus, parseProjectReview } from "@/lib/project-review.mjs";
 import { searchDuckDuckGo } from "@/lib/web-search.mjs";
 import { classifySearchIntent } from "@/lib/search-intent.mjs";
 import { buildExecutionSystemPrompt } from "@/lib/execution-prompt.mjs";
@@ -1620,19 +1621,9 @@ export async function POST(request: NextRequest) {
                                   });
                                   usage = combineAiUsage(usage, reviewUsage);
                                 }
-                                const parsedReview = JSON.parse(
-                                  reviewResult.text
-                                    .trim()
-                                    .replace(/^```(?:json)?\s*/i, "")
-                                    .replace(/\s*```$/, ""),
-                                ) as { approved?: unknown; issues?: unknown };
-                                const reviewIssues = Array.isArray(parsedReview.issues)
-                                  ? parsedReview.issues
-                                      .filter((item): item is string => typeof item === "string")
-                                      .slice(0, 5)
-                                      .map((item) => item.slice(0, 300))
-                                  : [];
-                                if (parsedReview.approved !== true || reviewIssues.length > 0) {
+                                const parsedReview = parseProjectReview(reviewResult.text);
+                                const reviewIssues = parsedReview.issues;
+                                if (!parsedReview.approved || reviewIssues.length > 0) {
                                   if (previousProject) {
                                     state.existingProjectFiles = previousProject.files;
                                     state.existingProjectTitle = previousProject.title;
@@ -1657,6 +1648,11 @@ export async function POST(request: NextRequest) {
                                     detail: reviewIssues.join("；") || "请修复项目入口或关键功能。",
                                   });
                                 } else {
+                                  output = attachProjectReviewStatus(
+                                    output,
+                                    "passed",
+                                    "静态检查与需求阻塞项独立复核通过。",
+                                  );
                                   state.events.push({
                                     id: crypto.randomUUID(),
                                     name: "review_project",
@@ -1677,12 +1673,18 @@ export async function POST(request: NextRequest) {
                               } catch (reviewError) {
                                 if (isAbortError(reviewError) || executionSignal.aborted)
                                   throw reviewError;
+                                const reviewUnavailableDetail =
+                                  "静态检查已通过；独立复核未完成，交付已保留。不能将其表述为独立复核通过。";
+                                output = attachProjectReviewStatus(
+                                  output,
+                                  "unavailable",
+                                  reviewUnavailableDetail,
+                                );
                                 state.events.push({
                                   id: crypto.randomUUID(),
                                   name: "review_project",
-                                  title: "复核服务暂不可用",
-                                  detail:
-                                    "独立复核请求失败；静态语法和本地引用检查已通过，代码仍未在服务器执行。",
+                                  title: "独立复核未完成",
+                                  detail: reviewUnavailableDetail,
                                   status: "done",
                                 });
                                 send({
@@ -1690,8 +1692,8 @@ export async function POST(request: NextRequest) {
                                   id: reviewRunId,
                                   name: "review_project",
                                   status: "done",
-                                  title: "静态检查已完成",
-                                  detail: "独立复核服务暂不可用，已保留静态校验结果。",
+                                  title: "独立复核未完成",
+                                  detail: reviewUnavailableDetail,
                                 });
                               }
                             }
