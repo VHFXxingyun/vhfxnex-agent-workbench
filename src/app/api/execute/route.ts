@@ -71,7 +71,10 @@ import { isAbortError } from "@/lib/errors";
 import { mergeExecutionCheckpoint } from "@/lib/execution-checkpoint.mjs";
 import { validateGeneratedProject } from "@/lib/project-static-validation";
 import { validateExecutionFeasibility } from "@/lib/feasibility-validation.mjs";
-import { requiresExecutionFeasibilityCheck } from "@/lib/feasibility-intent.mjs";
+import {
+  requiresExecutionFeasibilityCheck,
+  shouldReviewExistingExecutionFeasibility,
+} from "@/lib/feasibility-intent.mjs";
 import { markPlanChecklistItemsPending } from "@/lib/plan-markdown.mjs";
 
 export const runtime = "nodejs";
@@ -868,21 +871,39 @@ export async function POST(request: NextRequest) {
       /日程|作息|每天|每日|时间表|时间安排|安排.{0,6}时间|时间.{0,6}安排|安排.{0,6}(?:一天|一周)|行程|旅行|旅游|出行|活动流程|流程表|议程|agenda|itinerary|schedule/i.test(
         isContinuation ? instruction : goal,
       );
-    const feasibilityContext = [
+    const attachedFeasibilityContext = [
       requestedWork,
       ...attachments.filter((attachment) => attachment.kind === "text").map((item) => item.content),
-      ...(!isContinuation
-        ? [
+    ].join("\n");
+    const savedFeasibilityContext = [
+      persistedWorkspace.prompt,
+      plan.title,
+      plan.category,
+      plan.summary,
+      ...plan.tasks.flatMap((task) => [task.title, task.detail]),
+      ...plan.constraints,
+      ...plan.sources.flatMap((source) => [source.title, source.excerpt]),
+      ...currentTasks.flatMap((task) => [task.title, task.detail]),
+      ...currentMilestones.flatMap((milestone) => [milestone.label, milestone.note]),
+      ...(persistedWorkspace.result?.artifacts || [])
+        .filter((artifact) => artifact.type === "document")
+        .slice(-2)
+        .map((artifact) => `${artifact.title}\n${artifact.content}`),
+    ].join("\n");
+    const needsFeasibilityValidation = isContinuation
+      ? requiresExecutionFeasibilityCheck(attachedFeasibilityContext) ||
+        shouldReviewExistingExecutionFeasibility(requestedWork, savedFeasibilityContext)
+      : requiresExecutionFeasibilityCheck(
+          [
+            attachedFeasibilityContext,
             plan.title,
             plan.category,
             plan.summary,
             ...plan.tasks.flatMap((task) => [task.title, task.detail]),
             ...plan.constraints,
             ...plan.sources.flatMap((source) => [source.title, source.excerpt]),
-          ]
-        : []),
-    ].join("\n");
-    const needsFeasibilityValidation = requiresExecutionFeasibilityCheck(feasibilityContext);
+          ].join("\n"),
+        );
     const thinkingMode = body.thinkingMode === "deep" ? "deep" : "fast";
     const searchIntent = classifySearchIntent(requestedWork);
     const needsSearch = searchIntent.requiresSearch;
@@ -1166,6 +1187,19 @@ export async function POST(request: NextRequest) {
           const relevantImages = sourceTool
             ? attachments.filter((attachment) => attachment.kind === "image")
             : [];
+          const currentDocumentArtifacts = state.artifacts
+            .filter((artifact) => artifact.type === "document")
+            .map((artifact) => ({
+              title: artifact.title,
+              content: artifact.content.slice(0, 8_000),
+            }));
+          const savedDocumentArtifacts = (persistedWorkspace.result?.artifacts || [])
+            .filter((artifact) => artifact.type === "document")
+            .slice(-2)
+            .map((artifact) => ({
+              title: artifact.title,
+              content: artifact.content.slice(0, 8_000),
+            }));
           const documentArtifacts =
             requiredTool === "draft_document" ||
             requiredTool === "create_project" ||
@@ -1180,6 +1214,10 @@ export async function POST(request: NextRequest) {
                     content: artifact.content.slice(0, 8_000),
                   }))
               : [];
+          const feasibilityDocuments =
+            requiredTool === "validate_feasibility" && currentDocumentArtifacts.length === 0
+              ? savedDocumentArtifacts
+              : documentArtifacts;
           const projectFiles = requiredTool === "create_project" ? existingProjectFiles : [];
           const checkpoint = {
             checkpoint: true,
@@ -1222,7 +1260,7 @@ export async function POST(request: NextRequest) {
                 : {}),
             })),
             recentToolFailures: state.toolFailures.slice(-4),
-            documentArtifacts,
+            documentArtifacts: feasibilityDocuments,
             existingProject:
               requiredTool === "create_project" && existingCodeProject
                 ? {

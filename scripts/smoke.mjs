@@ -63,7 +63,10 @@ import {
   timeRangesOverlap,
 } from "../src/lib/schedule-validation.mjs";
 import { validateExecutionFeasibility } from "../src/lib/feasibility-validation.mjs";
-import { requiresExecutionFeasibilityCheck } from "../src/lib/feasibility-intent.mjs";
+import {
+  requiresExecutionFeasibilityCheck,
+  shouldReviewExistingExecutionFeasibility,
+} from "../src/lib/feasibility-intent.mjs";
 import {
   buildWorkspaceProgressAnswer,
   isWorkspaceProgressQuestion,
@@ -1544,6 +1547,25 @@ try {
     requiresExecutionFeasibilityCheck("开发一个 4 页面 Web 项目，包含 3 个按钮"),
     false,
     "ordinary software UI counts must not trigger event feasibility checks",
+  );
+  const savedEventFacts = "冬日活动：20 名参与者、5 名志愿者、4 个站点，每站 20 张卡片";
+  assert.equal(
+    shouldReviewExistingExecutionFeasibility("细化活动物料清单", savedEventFacts),
+    true,
+    "a continuation that revises an event plan must recheck its saved operational facts",
+  );
+  assert.equal(
+    shouldReviewExistingExecutionFeasibility("到哪里了？", savedEventFacts),
+    false,
+    "a pure progress question must not trigger another feasibility review",
+  );
+  assert.equal(
+    shouldReviewExistingExecutionFeasibility(
+      "修改 Web 项目的按钮样式",
+      "Web 项目含 4 页面和 3 个按钮",
+    ),
+    false,
+    "an unrelated software edit must not trigger an event feasibility review",
   );
   const feasibleBlocks = [
     {
