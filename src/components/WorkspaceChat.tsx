@@ -26,6 +26,7 @@ import type {
   RouteOption,
   Workspace,
 } from "@/lib/goal";
+import { MarkdownContent } from "@/components/ArtifactPreview";
 import { agentToolCatalog } from "@/lib/agent-tool-catalog.mjs";
 
 type SpeechRecognitionResult = ArrayLike<{ isFinal: boolean; 0: { transcript: string } }>;
@@ -394,7 +395,11 @@ export default function WorkspaceChat({
                         : "Agent"}
                 </span>
               )}
-              <p>{message.content}</p>
+              <MarkdownContent
+                content={message.content}
+                className="chat-markdown"
+                ariaLabel="Agent 回复内容"
+              />
               {message.role === "assistant" &&
                 message.toolEvents?.some((event) => event.sources?.length) && (
                   <p className="chat-source-line">
@@ -557,9 +562,11 @@ export default function WorkspaceChat({
             </span>
             <div className="chat-message-body">
               <span className="chat-message-author">对话 Agent · 正在理解</span>
-              <p className="chat-live-text">
-                {questionStreamText || "正在结合你的上下文决定如何回应…"}
-              </p>
+              <MarkdownContent
+                className="chat-markdown chat-live-text"
+                content={questionStreamText || "正在结合你的上下文决定如何回应…"}
+                ariaLabel="对话 Agent 正在回复"
+              />
             </div>
           </article>
         )}
@@ -570,7 +577,13 @@ export default function WorkspaceChat({
               <LoaderCircle size={14} className="chat-spinner" />
             </span>
             <div className="chat-message-body">
-              {streamedText && <p className="chat-live-text">{streamedText}</p>}
+              {streamedText && (
+                <MarkdownContent
+                  className="chat-markdown chat-live-text"
+                  content={streamedText}
+                  ariaLabel="工作台 Agent 正在回复"
+                />
+              )}
             </div>
           </article>
         )}

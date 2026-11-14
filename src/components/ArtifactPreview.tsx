@@ -67,7 +67,15 @@ function isBlockStart(lines: string[], index: number) {
   );
 }
 
-function DocumentPreview({ content }: { content: string }) {
+export function MarkdownContent({
+  content,
+  className = "artifact-document-preview",
+  ariaLabel = "方案预览",
+}: {
+  content: string;
+  className?: string;
+  ariaLabel?: string;
+}) {
   const lines = content.replace(/\r\n?/g, "\n").split("\n");
   const blocks: ReactNode[] = [];
   let index = 0;
@@ -207,7 +215,7 @@ function DocumentPreview({ content }: { content: string }) {
   }
 
   return (
-    <article className="artifact-document-preview" aria-label="方案预览">
+    <article className={className} aria-label={ariaLabel}>
       {blocks}
     </article>
   );
@@ -358,6 +366,6 @@ export default function ArtifactPreview({ artifact }: { artifact: Artifact }) {
     );
   }
   if (artifact.type === "document" || artifact.type === "pdf")
-    return <DocumentPreview content={artifact.content} />;
+    return <MarkdownContent content={artifact.content} />;
   return <pre>{artifact.content}</pre>;
 }

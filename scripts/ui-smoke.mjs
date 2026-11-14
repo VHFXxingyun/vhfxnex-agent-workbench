@@ -5034,6 +5034,23 @@ try {
         agent: "planner",
         content: "计划已准备；接下来生成可交付成果。",
       },
+      {
+        id: crypto.randomUUID(),
+        role: "assistant",
+        agent: "dialogue",
+        content: [
+          "**Markdown 回复检查**",
+          "",
+          "- 列表项",
+          "- `行内代码`",
+          "",
+          "```ts",
+          "const ready = true;",
+          "```",
+          "",
+          "<script>alert('不应执行')</script>",
+        ].join("\n"),
+      },
     ],
   };
   const backgroundRecoverySave = await page.evaluate(async (value) => {
@@ -5057,6 +5074,15 @@ try {
     .filter({ hasText: backgroundRecoveryWorkspace.plan.title });
   await backgroundRecoveryCard.locator(".history-card-open").click();
   await page.locator("#workspace-chat-input").waitFor({ state: "visible" });
+  const markdownReply = page
+    .locator(".workspace-chat-thread .chat-markdown")
+    .filter({ hasText: "Markdown 回复检查" });
+  await markdownReply.locator("strong").filter({ hasText: "Markdown 回复检查" }).waitFor();
+  await markdownReply.locator("ul li").filter({ hasText: "列表项" }).waitFor();
+  await markdownReply.locator("ul code").filter({ hasText: "行内代码" }).waitFor();
+  await markdownReply.locator("pre code").filter({ hasText: "const ready = true;" }).waitFor();
+  assert.equal(await markdownReply.locator("script").count(), 0);
+  check(true, "Render formatted Markdown in chat without executing embedded HTML");
   let simulatedBackgroundHandoff = null;
   let simulatedBackgroundClaimToken = null;
   let capturedBackgroundChatRequest = null;
