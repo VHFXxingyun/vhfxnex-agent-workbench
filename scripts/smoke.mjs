@@ -68,6 +68,10 @@ import {
   shouldReviewExistingExecutionFeasibility,
 } from "../src/lib/feasibility-intent.mjs";
 import {
+  latestDraftDocumentEventIndex,
+  nextExecutionFeasibilityTool,
+} from "../src/lib/execution-feasibility-gate.mjs";
+import {
   buildWorkspaceProgressAnswer,
   isWorkspaceProgressQuestion,
 } from "../src/lib/workspace-progress-answer.mjs";
@@ -1566,6 +1570,48 @@ try {
     ),
     false,
     "an unrelated software edit must not trigger an event feasibility review",
+  );
+  const feasibilityEventsBeforeReview = [
+    { name: "draft_document" },
+    { name: "validate_feasibility" },
+  ];
+  const reviewIndex = feasibilityEventsBeforeReview.length - 1;
+  assert.equal(
+    nextExecutionFeasibilityTool({
+      required: true,
+      review: { valid: true, eventIndex: reviewIndex },
+      latestDocumentIndex: latestDraftDocumentEventIndex(feasibilityEventsBeforeReview),
+    }),
+    null,
+    "a valid review after the latest document revision completes the feasibility gate",
+  );
+  assert.equal(
+    nextExecutionFeasibilityTool({
+      required: true,
+      review: { valid: true, eventIndex: 0 },
+      latestDocumentIndex: 1,
+    }),
+    "validate_feasibility",
+    "a later document revision invalidates an earlier feasibility review",
+  );
+  assert.equal(
+    nextExecutionFeasibilityTool({
+      required: true,
+      review: { valid: false, eventIndex: reviewIndex },
+      latestDocumentIndex: latestDraftDocumentEventIndex(feasibilityEventsBeforeReview),
+    }),
+    "draft_document",
+    "a conflict requires document repair before another review",
+  );
+  assert.equal(
+    nextExecutionFeasibilityTool({ required: true, review: null, latestDocumentIndex: -1 }),
+    "validate_feasibility",
+    "a required feasibility gate cannot be skipped when no review exists",
+  );
+  assert.equal(
+    nextExecutionFeasibilityTool({ required: false, review: null, latestDocumentIndex: -1 }),
+    null,
+    "the feasibility gate remains dormant for unrelated goals",
   );
   const feasibleBlocks = [
     {

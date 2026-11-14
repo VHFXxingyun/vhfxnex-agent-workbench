@@ -72,6 +72,10 @@ import { mergeExecutionCheckpoint } from "@/lib/execution-checkpoint.mjs";
 import { validateGeneratedProject } from "@/lib/project-static-validation";
 import { validateExecutionFeasibility } from "@/lib/feasibility-validation.mjs";
 import {
+  latestDraftDocumentEventIndex,
+  nextExecutionFeasibilityTool,
+} from "@/lib/execution-feasibility-gate.mjs";
+import {
   requiresExecutionFeasibilityCheck,
   shouldReviewExistingExecutionFeasibility,
 } from "@/lib/feasibility-intent.mjs";
@@ -1069,16 +1073,12 @@ export async function POST(request: NextRequest) {
           const hasSpreadsheet = state.artifacts.some((item) => item.type === "spreadsheet");
           const hasPresentation = state.artifacts.some((item) => item.type === "presentation");
           const hasPdf = state.artifacts.some((item) => item.type === "pdf");
-          const latestDocumentIndex = state.events.reduce(
-            (latest, event, index) => (event.name === "draft_document" ? index : latest),
-            -1,
-          );
           const hasCurrentFeasibilityReview =
-            !needsFeasibilityValidation ||
-            Boolean(
-              state.feasibilityReview?.valid &&
-              state.feasibilityReview.eventIndex > latestDocumentIndex,
-            );
+            nextExecutionFeasibilityTool({
+              required: needsFeasibilityValidation,
+              review: state.feasibilityReview,
+              latestDocumentIndex: latestDraftDocumentEventIndex(state.events),
+            }) === null;
           return (
             hasCore &&
             (!needsSearch || hasSearch) &&
@@ -1092,6 +1092,12 @@ export async function POST(request: NextRequest) {
             hasCurrentFeasibilityReview
           );
         };
+        const requiredFeasibilityTool = () =>
+          nextExecutionFeasibilityTool({
+            required: needsFeasibilityValidation,
+            review: state.feasibilityReview,
+            latestDocumentIndex: latestDraftDocumentEventIndex(state.events),
+          });
         const requiredToolForNextStep = () => {
           if (needsSearch && !state.events.some((event) => event.name === "search_web"))
             return "search_web";
@@ -1112,19 +1118,8 @@ export async function POST(request: NextRequest) {
               return "generate_presentation";
             if (needsPdf && !state.artifacts.some((item) => item.type === "pdf"))
               return "generate_pdf";
-            if (needsFeasibilityValidation && state.feasibilityReview?.valid !== true) {
-              const latestDocumentIndex = state.events.reduce(
-                (latest, event, index) => (event.name === "draft_document" ? index : latest),
-                -1,
-              );
-              if (
-                state.feasibilityReview &&
-                !state.feasibilityReview.valid &&
-                state.feasibilityReview.eventIndex > latestDocumentIndex
-              )
-                return "draft_document";
-              return "validate_feasibility";
-            }
+            const feasibilityTool = requiredFeasibilityTool();
+            if (feasibilityTool) return feasibilityTool;
             return null;
           }
           if (!state.tasks.length) return "create_tasks";
@@ -1140,19 +1135,8 @@ export async function POST(request: NextRequest) {
             return "generate_presentation";
           if (needsPdf && !state.artifacts.some((item) => item.type === "pdf"))
             return "generate_pdf";
-          if (needsFeasibilityValidation && state.feasibilityReview?.valid !== true) {
-            const latestDocumentIndex = state.events.reduce(
-              (latest, event, index) => (event.name === "draft_document" ? index : latest),
-              -1,
-            );
-            if (
-              state.feasibilityReview &&
-              !state.feasibilityReview.valid &&
-              state.feasibilityReview.eventIndex > latestDocumentIndex
-            )
-              return "draft_document";
-            return "validate_feasibility";
-          }
+          const feasibilityTool = requiredFeasibilityTool();
+          if (feasibilityTool) return feasibilityTool;
           return null;
         };
         const buildCompactStepMessages = (requiredTool: string | null): ModelMessage[] => {
@@ -1956,19 +1940,10 @@ export async function POST(request: NextRequest) {
                   );
                 }
               }
-              if (needsFeasibilityValidation) {
-                const latestDocumentIndex = state.events.reduce(
-                  (latest, event, index) => (event.name === "draft_document" ? index : latest),
-                  -1,
+              if (requiredFeasibilityTool())
+                throw new Error(
+                  "可行性复核仍未通过；冲突或未复核部分已保留为待处理，没有将方案标为完成。",
                 );
-                if (
-                  !state.feasibilityReview?.valid ||
-                  state.feasibilityReview.eventIndex <= latestDocumentIndex
-                )
-                  throw new Error(
-                    "可行性复核仍未通过；冲突或未复核部分已保留为待处理，没有将方案标为完成。",
-                  );
-              }
               if (mustAddTask && state.tasks.length === currentTaskCount) {
                 throw new Error(
                   "Agent 未能新增你指定的任务，请修改描述后重试；现有工作区未被更改。",
