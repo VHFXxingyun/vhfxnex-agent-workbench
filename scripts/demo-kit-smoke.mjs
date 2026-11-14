@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import { requiresExecutionFeasibilityCheck } from "../src/lib/feasibility-intent.mjs";
 
 const root = process.cwd();
 const demoDirectory = path.join(root, "deliverables", "demo-inputs");
@@ -57,6 +58,11 @@ for (const fact of constraints.unconfirmedFacts) {
 }
 
 const docs = [brief, gameReference, acceptance, videoOutline];
+assert.equal(
+  requiresExecutionFeasibilityCheck(docs.join("\n")),
+  true,
+  "the main event demo kit must trigger the execution feasibility gate",
+);
 assert.ok(
   docs.every((document) => !/^\s*[-*]\s*\[[xX]\]/m.test(document)),
   "演示输入和验收资料不得把规划任务写成已完成清单",

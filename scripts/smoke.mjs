@@ -63,6 +63,7 @@ import {
   timeRangesOverlap,
 } from "../src/lib/schedule-validation.mjs";
 import { validateExecutionFeasibility } from "../src/lib/feasibility-validation.mjs";
+import { requiresExecutionFeasibilityCheck } from "../src/lib/feasibility-intent.mjs";
 import {
   buildWorkspaceProgressAnswer,
   isWorkspaceProgressQuestion,
@@ -981,6 +982,8 @@ try {
     /创建任务或方案不代表已对外联系、预订、招募或线下执行/,
   );
   assert.match(EXECUTION_PROMPT_STABLE_PREFIX, /必须调用 validate_feasibility 检查/);
+  assert.match(EXECUTION_PROMPT_STABLE_PREFIX, /纳入交付完成条件/);
+  assert.match(EXECUTION_PROMPT_STABLE_PREFIX, /最后一次检查必须发生在最后一次方案文档修改之后/);
   assert.match(EXECUTION_PROMPT_STABLE_PREFIX, /不新增没收手机、禁止设备等强制限制/);
   check(
     true,
@@ -1522,6 +1525,26 @@ try {
   assert.equal(timeRangesOverlap("09:00-10:00", "09:30–10:30"), true);
   assert.equal(timeRangesOverlap("09:00-10:00", "10:00至11:00"), false);
   assert.equal(normalizeScheduleDay("第 1 天"), normalizeScheduleDay("第1天"));
+  assert.equal(
+    requiresExecutionFeasibilityCheck("策划冬日活动：20 名参与者、5 名志愿者、4 个站点同时开放"),
+    true,
+    "an event with explicit attendance, staffing, and parallel stations must require a server-side feasibility review",
+  );
+  assert.equal(
+    requiresExecutionFeasibilityCheck("策划一场冬日活动，时长 75 分钟"),
+    false,
+    "duration alone is not staffing, venue, or inventory evidence",
+  );
+  assert.equal(
+    requiresExecutionFeasibilityCheck("策划冬日活动，之后再招募志愿者"),
+    false,
+    "an unquantified staffing mention alone must not add a pointless review step",
+  );
+  assert.equal(
+    requiresExecutionFeasibilityCheck("开发一个 4 页面 Web 项目，包含 3 个按钮"),
+    false,
+    "ordinary software UI counts must not trigger event feasibility checks",
+  );
   const feasibleBlocks = [
     {
       date: "第 1 天",

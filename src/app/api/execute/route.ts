@@ -71,6 +71,7 @@ import { isAbortError } from "@/lib/errors";
 import { mergeExecutionCheckpoint } from "@/lib/execution-checkpoint.mjs";
 import { validateGeneratedProject } from "@/lib/project-static-validation";
 import { validateExecutionFeasibility } from "@/lib/feasibility-validation.mjs";
+import { requiresExecutionFeasibilityCheck } from "@/lib/feasibility-intent.mjs";
 import { markPlanChecklistItemsPending } from "@/lib/plan-markdown.mjs";
 
 export const runtime = "nodejs";
@@ -269,7 +270,9 @@ function applyTool(
       id: crypto.randomUUID(),
       name,
       title: report.valid ? "执行约束已核对" : "可行性检查发现冲突",
-      detail: report.summary,
+      detail: [report.summary, ...report.issues.slice(0, 4).map((issue) => issue.message)]
+        .join("；")
+        .slice(0, 1000),
       status: "done",
     });
     return JSON.stringify(report);
@@ -280,6 +283,7 @@ function applyTool(
     typeof args.content === "string"
   ) {
     const title = args.title.slice(0, 100);
+    state.artifacts = state.artifacts.filter((artifact) => artifact.type !== "document");
     state.artifacts.push({
       id: crypto.randomUUID(),
       type: "document",
@@ -830,6 +834,7 @@ export async function POST(request: NextRequest) {
       existingProjectFiles: ProjectFile[];
       existingProjectTitle: string;
       existingProjectDescription: string;
+      feasibilityReview: { valid: boolean; eventIndex: number } | null;
     } = {
       tasks: currentTasks,
       milestones: currentMilestones,
@@ -847,6 +852,7 @@ export async function POST(request: NextRequest) {
       existingProjectFiles,
       existingProjectTitle: existingCodeProject?.title || "",
       existingProjectDescription,
+      feasibilityReview: null,
       taskLimit: mustAddTask
         ? Math.min(WORKSPACE_LIMITS.executionTasks, currentTasks.length + 1)
         : WORKSPACE_LIMITS.executionTasks,
@@ -862,6 +868,21 @@ export async function POST(request: NextRequest) {
       /日程|作息|每天|每日|时间表|时间安排|安排.{0,6}时间|时间.{0,6}安排|安排.{0,6}(?:一天|一周)|行程|旅行|旅游|出行|活动流程|流程表|议程|agenda|itinerary|schedule/i.test(
         isContinuation ? instruction : goal,
       );
+    const feasibilityContext = [
+      requestedWork,
+      ...attachments.filter((attachment) => attachment.kind === "text").map((item) => item.content),
+      ...(!isContinuation
+        ? [
+            plan.title,
+            plan.category,
+            plan.summary,
+            ...plan.tasks.flatMap((task) => [task.title, task.detail]),
+            ...plan.constraints,
+            ...plan.sources.flatMap((source) => [source.title, source.excerpt]),
+          ]
+        : []),
+    ].join("\n");
+    const needsFeasibilityValidation = requiresExecutionFeasibilityCheck(feasibilityContext);
     const thinkingMode = body.thinkingMode === "deep" ? "deep" : "fast";
     const searchIntent = classifySearchIntent(requestedWork);
     const needsSearch = searchIntent.requiresSearch;
@@ -1027,6 +1048,16 @@ export async function POST(request: NextRequest) {
           const hasSpreadsheet = state.artifacts.some((item) => item.type === "spreadsheet");
           const hasPresentation = state.artifacts.some((item) => item.type === "presentation");
           const hasPdf = state.artifacts.some((item) => item.type === "pdf");
+          const latestDocumentIndex = state.events.reduce(
+            (latest, event, index) => (event.name === "draft_document" ? index : latest),
+            -1,
+          );
+          const hasCurrentFeasibilityReview =
+            !needsFeasibilityValidation ||
+            Boolean(
+              state.feasibilityReview?.valid &&
+              state.feasibilityReview.eventIndex > latestDocumentIndex,
+            );
           return (
             hasCore &&
             (!needsSearch || hasSearch) &&
@@ -1036,7 +1067,8 @@ export async function POST(request: NextRequest) {
             (!needsProject || hasProject) &&
             (!needsSpreadsheet || hasSpreadsheet) &&
             (!needsPresentation || hasPresentation) &&
-            (!needsPdf || hasPdf)
+            (!needsPdf || hasPdf) &&
+            hasCurrentFeasibilityReview
           );
         };
         const requiredToolForNextStep = () => {
@@ -1059,6 +1091,19 @@ export async function POST(request: NextRequest) {
               return "generate_presentation";
             if (needsPdf && !state.artifacts.some((item) => item.type === "pdf"))
               return "generate_pdf";
+            if (needsFeasibilityValidation && state.feasibilityReview?.valid !== true) {
+              const latestDocumentIndex = state.events.reduce(
+                (latest, event, index) => (event.name === "draft_document" ? index : latest),
+                -1,
+              );
+              if (
+                state.feasibilityReview &&
+                !state.feasibilityReview.valid &&
+                state.feasibilityReview.eventIndex > latestDocumentIndex
+              )
+                return "draft_document";
+              return "validate_feasibility";
+            }
             return null;
           }
           if (!state.tasks.length) return "create_tasks";
@@ -1074,6 +1119,19 @@ export async function POST(request: NextRequest) {
             return "generate_presentation";
           if (needsPdf && !state.artifacts.some((item) => item.type === "pdf"))
             return "generate_pdf";
+          if (needsFeasibilityValidation && state.feasibilityReview?.valid !== true) {
+            const latestDocumentIndex = state.events.reduce(
+              (latest, event, index) => (event.name === "draft_document" ? index : latest),
+              -1,
+            );
+            if (
+              state.feasibilityReview &&
+              !state.feasibilityReview.valid &&
+              state.feasibilityReview.eventIndex > latestDocumentIndex
+            )
+              return "draft_document";
+            return "validate_feasibility";
+          }
           return null;
         };
         const buildCompactStepMessages = (requiredTool: string | null): ModelMessage[] => {
@@ -1083,6 +1141,7 @@ export async function POST(request: NextRequest) {
             requiredTool === "generate_spreadsheet" ||
             requiredTool === "generate_presentation" ||
             requiredTool === "generate_pdf";
+          const feasibilityTool = requiredTool === "validate_feasibility";
           const scheduleOrTaskTool =
             isContinuation &&
             (requiredTool === "create_tasks" ||
@@ -1093,13 +1152,24 @@ export async function POST(request: NextRequest) {
             .map(({ name, mimeType, content }) => ({
               name,
               mimeType,
-              content: content.slice(0, sourceTool ? 120_000 : scheduleOrTaskTool ? 8_000 : 2_000),
+              content: content.slice(
+                0,
+                sourceTool
+                  ? 120_000
+                  : feasibilityTool
+                    ? 16_000
+                    : scheduleOrTaskTool
+                      ? 8_000
+                      : 2_000,
+              ),
             }));
           const relevantImages = sourceTool
             ? attachments.filter((attachment) => attachment.kind === "image")
             : [];
           const documentArtifacts =
+            requiredTool === "draft_document" ||
             requiredTool === "create_project" ||
+            requiredTool === "validate_feasibility" ||
             requiredTool === "generate_spreadsheet" ||
             requiredTool === "generate_presentation" ||
             requiredTool === "generate_pdf"
@@ -1370,6 +1440,46 @@ export async function POST(request: NextRequest) {
                                 string,
                                 unknown
                               >;
+                              if (
+                                name === "validate_feasibility" &&
+                                typeof output.valid === "boolean"
+                              ) {
+                                const eventIndex = state.events.reduce(
+                                  (latest, event, index) =>
+                                    event.name === "validate_feasibility" ? index : latest,
+                                  -1,
+                                );
+                                state.feasibilityReview = {
+                                  valid: output.valid,
+                                  eventIndex,
+                                };
+                                if (output.valid) {
+                                  state.toolFailures = state.toolFailures.filter(
+                                    (failure) => failure.name !== "validate_feasibility",
+                                  );
+                                } else {
+                                  const issueDetails = Array.isArray(output.issues)
+                                    ? output.issues
+                                        .slice(0, 4)
+                                        .map((issue) =>
+                                          issue &&
+                                          typeof issue === "object" &&
+                                          "message" in issue &&
+                                          typeof issue.message === "string"
+                                            ? issue.message
+                                            : "",
+                                        )
+                                        .filter(Boolean)
+                                        .join("；")
+                                    : "";
+                                  state.toolFailures.push({
+                                    name: "validate_feasibility",
+                                    detail:
+                                      issueDetails || "可行性检查仍发现冲突，请修订方案后重试。",
+                                  });
+                                  if (state.toolFailures.length > 8) state.toolFailures.shift();
+                                }
+                              }
                             }
                             if (
                               name === "create_project" &&
@@ -1783,7 +1893,9 @@ export async function POST(request: NextRequest) {
                             content: JSON.stringify({
                               recovery: true,
                               instruction:
-                                "前一轮没有完成所有必需产物。现在只调用指定的必需工具完成这一项，不要输出解释，不要重复已经完成的工具操作。",
+                                requiredTool === "draft_document"
+                                  ? "可行性复核发现了具体冲突。根据 recentToolFailures 中列出的冲突修订方案文档，保留未知事实为待确认；只调用 draft_document，不要重复其他已完成工具。修订后系统会再次自动核验。"
+                                  : "前一轮没有完成所有必需产物。现在只调用指定的必需工具完成这一项，不要输出解释，不要重复已经完成的工具操作。",
                               requiredTool,
                               currentTasks: state.tasks,
                               currentMilestones: state.milestones,
@@ -1805,6 +1917,19 @@ export async function POST(request: NextRequest) {
                       ),
                   );
                 }
+              }
+              if (needsFeasibilityValidation) {
+                const latestDocumentIndex = state.events.reduce(
+                  (latest, event, index) => (event.name === "draft_document" ? index : latest),
+                  -1,
+                );
+                if (
+                  !state.feasibilityReview?.valid ||
+                  state.feasibilityReview.eventIndex <= latestDocumentIndex
+                )
+                  throw new Error(
+                    "可行性复核仍未通过；冲突或未复核部分已保留为待处理，没有将方案标为完成。",
+                  );
               }
               if (mustAddTask && state.tasks.length === currentTaskCount) {
                 throw new Error(
