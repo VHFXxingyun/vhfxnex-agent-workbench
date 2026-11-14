@@ -8,8 +8,8 @@ export type AiUsageSource = "planner" | "dialogue" | "workbench" | "reviewer" | 
 export function recordAiUsage(
   userId: string,
   operation: AiOperation,
-  usage?: AiRunUsage,
-  context?: { workspaceId?: string; source?: AiUsageSource },
+  usage: AiRunUsage | undefined,
+  context: { workspaceId?: string; source: AiUsageSource },
 ) {
   if (!usage || usage.totalTokens <= 0) return;
   try {
@@ -20,8 +20,8 @@ export function recordAiUsage(
       .run(
         crypto.randomUUID(),
         userId,
-        context?.workspaceId ?? null,
-        context?.source ?? (operation === "plan" ? "planner" : "unknown"),
+        context.workspaceId ?? null,
+        context.source,
         operation,
         usage.model,
         usage.inputTokens,
