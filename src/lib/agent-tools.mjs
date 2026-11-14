@@ -64,7 +64,9 @@ export const toolSchemas = Object.freeze({
             .min(0)
             .max(100_000)
             .optional()
-            .describe("不在参与者人数和 staff 名单中的其他现场人员人数，例如未分配岗位的组织者"),
+            .describe(
+              "不在参与者人数和 staff 名单中的其他现场人员人数，例如未分配岗位的组织者；若没有请明确填 0",
+            ),
           venueCapacity: z
             .number()
             .int()
@@ -80,7 +82,8 @@ export const toolSchemas = Object.freeze({
               }),
             )
             .max(40)
-            .optional(),
+            .optional()
+            .describe("现场工作人员与志愿者岗位名单；若没有现场工作人员，请明确提供空数组"),
           resources: z
             .array(
               z.object({
@@ -90,7 +93,8 @@ export const toolSchemas = Object.freeze({
               }),
             )
             .max(30)
-            .optional(),
+            .optional()
+            .describe("该时段要核对的物资及库存；若无物资需要核对，请明确提供空数组"),
         }),
       )
       .min(1)
@@ -365,7 +369,7 @@ export const toolDescriptions = Object.freeze({
   build_schedule:
     "当目标明确需要日程表、旅行行程、学习时间表或活动现场议程时，创建带具体时间段的安排。只填用户已提供或可合理推算的日期；未给日期时使用第 1 天等相对日期。不要调用外部日历或声称已预订。",
   validate_feasibility:
-    "当计划包含并行活动、岗位排班、场地容量或共享物料时，在交付前核对可执行性。attendeeCount 只填参与者人数，不含工作人员和志愿者；容量核算必须把 staff 名单中的不同人员，以及不在参与者和 staff 名单中的其他现场人员 unlistedOnsiteCount 一并计入。按参与者 + 去重后的 staff 人数 + 其他现场人员计算总占用人数，再与场地容量比较。提供每个时段的人员/岗位、场地与容量、物料需求及已知可用量；根据报告修正冲突后再交付。它只核对明确提供的数据，不会推断未知人数或库存。",
+    "当计划包含并行活动、岗位排班、场地容量或共享物料时，在交付前核对可执行性。attendeeCount 只填参与者人数，不含工作人员和志愿者；容量核算必须把 staff 名单中的不同人员，以及不在参与者和 staff 名单中的其他现场人员 unlistedOnsiteCount 一并计入。按参与者 + 去重后的 staff 人数 + 其他现场人员计算总占用人数，再与场地容量比较。尽量为每个时段明确提供 venue、attendeeCount、unlistedOnsiteCount、venueCapacity、staff 和 resources；没有人员或物料时明确传空数组，其他现场人员没有时填 0。报告的 coverage.complete=false 表示仍有数据缺口：照常完成安全可交付的工作，并在最终答复中列出 coverage.pending，不能称为完整核验通过；coverage.complete=true 才能称全部约束已核验。根据 issues 修正冲突后再交付。工具只核对明确提供的数据，不推断未知人数、场地或库存。",
   draft_document: "生成一份简短、可编辑的行动方案。",
   generate_pdf:
     "用户明确要求 PDF 文件时调用。交付中文可读、分页完整、保留标题/列表/表格/代码块层级的真实 PDF 文件；优先使用当前方案内容，不要只给 Markdown 文本。最多 12000 字。",

@@ -14,6 +14,7 @@ import { missingInitialAgentOutputs } from "../src/lib/agent-validation.mjs";
 import {
   parseToolArguments,
   projectFileRequirements,
+  toolDescriptions,
   toolSchemas,
 } from "../src/lib/agent-tools.mjs";
 import { agentToolCatalog } from "../src/lib/agent-tool-catalog.mjs";
@@ -989,6 +990,9 @@ try {
     /创建任务或方案不代表已对外联系、预订、招募或线下执行/,
   );
   assert.match(EXECUTION_PROMPT_STABLE_PREFIX, /必须调用 validate_feasibility 检查/);
+  assert.match(EXECUTION_PROMPT_STABLE_PREFIX, /coverage\.complete 才表示所需数据完整/);
+  assert.match(EXECUTION_PROMPT_STABLE_PREFIX, /coverage\.pending 中的待确认项/);
+  assert.match(toolDescriptions.validate_feasibility, /coverage\.complete=false/);
   assert.match(EXECUTION_PROMPT_STABLE_PREFIX, /attendeeCount 只计参与者/);
   assert.match(
     EXECUTION_PROMPT_STABLE_PREFIX,
@@ -1655,6 +1659,7 @@ try {
       activity: "健康知识站",
       venue: "活动室左区",
       attendeeCount: 8,
+      unlistedOnsiteCount: 0,
       venueCapacity: 10,
       staff: [{ name: "小林", role: "讲解" }],
       resources: [{ name: "题卡", required: 5, available: 10 }],
@@ -1665,12 +1670,17 @@ try {
       activity: "暖身互动站",
       venue: "活动室右区",
       attendeeCount: 9,
+      unlistedOnsiteCount: 0,
       venueCapacity: 12,
       staff: [{ name: "小周", role: "主持" }],
       resources: [{ name: "题卡", required: 5, available: 10 }],
     },
   ];
-  assert.equal(validateExecutionFeasibility({ blocks: feasibleBlocks }).valid, true);
+  const completeFeasibility = validateExecutionFeasibility({ blocks: feasibleBlocks });
+  assert.equal(completeFeasibility.valid, true);
+  assert.equal(completeFeasibility.coverage.complete, true);
+  assert.deepEqual(completeFeasibility.coverage.pending, []);
+  assert.equal(completeFeasibility.checked.venueCapacityChecks, 2);
   const volunteerCapacityConflict = validateExecutionFeasibility({
     blocks: [
       {
@@ -1744,12 +1754,12 @@ try {
     new Set(infeasible.issues.map((issue) => issue.type)),
     new Set(["venue_capacity", "staff_overlap", "venue_overlap", "resource_capacity"]),
   );
-  assert.equal(
-    validateExecutionFeasibility({
-      blocks: [{ date: "第 1 天", time: "下午", activity: "晚会" }],
-    }).issues[0]?.type,
-    "invalid_block",
-  );
+  const invalidFeasibility = validateExecutionFeasibility({
+    blocks: [{ date: "第 1 天", time: "下午", activity: "晚会" }],
+  });
+  assert.equal(invalidFeasibility.issues[0]?.type, "invalid_block");
+  assert.equal(invalidFeasibility.coverage.complete, false);
+  assert.deepEqual(invalidFeasibility.coverage.pending[0]?.checks, ["有效日期、时段或活动名称"]);
   assert.equal(
     validateExecutionFeasibility({
       blocks: [
@@ -1766,13 +1776,24 @@ try {
     }).issues[0]?.type,
     "duplicate_role",
   );
+  const incompleteFeasibility = validateExecutionFeasibility({
+    blocks: [{ date: "第 1 天", time: "09:00-10:00", activity: "签到" }],
+  });
   assert.equal(
-    validateExecutionFeasibility({
-      blocks: [{ date: "第 1 天", time: "09:00-10:00", activity: "签到" }],
-    }).valid,
+    incompleteFeasibility.valid,
     true,
     "unknown people, capacity, and inventory data must not be guessed",
   );
+  assert.equal(incompleteFeasibility.coverage.complete, false);
+  assert.deepEqual(incompleteFeasibility.coverage.pending[0]?.checks, [
+    "场地名称",
+    "参与者人数",
+    "其他现场人员人数",
+    "场地容量",
+    "岗位名单",
+    "物料清单",
+  ]);
+  assert.match(incompleteFeasibility.summary, /尚未完成完整核验/);
   assert.deepEqual(
     findScheduleConflict(
       [{ day: "第 1 天", time: "09:00-10:00" }],

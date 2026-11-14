@@ -23,6 +23,7 @@ function normalizeName(value) {
 export function validateExecutionFeasibility(input) {
   const blocks = Array.isArray(input?.blocks) ? input.blocks : [];
   const issues = [];
+  const pendingByBlock = [];
   const parsedBlocks = blocks.map((block, index) => {
     const time = toMinutes(block?.time);
     const date = typeof block?.date === "string" ? block.date.trim() : "";
@@ -45,8 +46,33 @@ export function validateExecutionFeasibility(input) {
   });
 
   for (const current of parsedBlocks) {
-    if (!current.valid) continue;
+    if (!current.valid) {
+      const activity =
+        typeof current.block?.activity === "string" && current.block.activity.trim()
+          ? current.block.activity.trim()
+          : `第 ${current.index + 1} 项活动`;
+      pendingByBlock.push({
+        block: current.index + 1,
+        activity,
+        checks: ["有效日期、时段或活动名称"],
+      });
+      continue;
+    }
     const block = current.block;
+    const missing = [];
+    if (!normalizeName(block.venue)) missing.push("场地名称");
+    if (typeof block.attendeeCount !== "number") missing.push("参与者人数");
+    if (typeof block.unlistedOnsiteCount !== "number") missing.push("其他现场人员人数");
+    if (typeof block.venueCapacity !== "number") missing.push("场地容量");
+    if (!Array.isArray(block.staff)) missing.push("岗位名单");
+    if (!Array.isArray(block.resources)) missing.push("物料清单");
+    if (missing.length) {
+      pendingByBlock.push({
+        block: current.index + 1,
+        activity: block.activity,
+        checks: missing,
+      });
+    }
     const attendance = block.attendeeCount;
     const assignedStaffCount = new Set(
       (Array.isArray(block.staff) ? block.staff : [])
@@ -173,26 +199,39 @@ export function validateExecutionFeasibility(input) {
   ];
   const checked = {
     timeSlots: parsedBlocks.filter((block) => block.valid).length,
-    staffAssignments: blocks.reduce(
-      (total, block) => total + (Array.isArray(block?.staff) ? block.staff.length : 0),
+    staffAssignments: parsedBlocks.reduce(
+      (total, item) =>
+        total + (item.valid && Array.isArray(item.block?.staff) ? item.block.staff.length : 0),
       0,
     ),
-    venueCapacityChecks: blocks.filter(
-      (block) =>
-        typeof block?.attendeeCount === "number" && typeof block?.venueCapacity === "number",
+    venueCapacityChecks: parsedBlocks.filter(
+      ({ block, valid }) =>
+        valid &&
+        typeof block?.attendeeCount === "number" &&
+        typeof block?.unlistedOnsiteCount === "number" &&
+        typeof block?.venueCapacity === "number" &&
+        Array.isArray(block?.staff),
     ).length,
-    resourceEntries: blocks.reduce(
-      (total, block) => total + (Array.isArray(block?.resources) ? block.resources.length : 0),
+    resourceEntries: parsedBlocks.reduce(
+      (total, item) =>
+        total +
+        (item.valid && Array.isArray(item.block?.resources) ? item.block.resources.length : 0),
       0,
     ),
   };
+  const coverageComplete = pendingByBlock.length === 0;
+  const pendingCheckCount = pendingByBlock.reduce((total, item) => total + item.checks.length, 0);
+  const summary = uniqueIssues.length
+    ? `检查了 ${checked.timeSlots}/${blocks.length} 个有效时段，发现 ${uniqueIssues.length} 项需要处理的冲突；${coverageComplete ? "所需数据完整" : `另有 ${pendingCheckCount} 项数据待确认，尚未完成完整核验`}。`
+    : coverageComplete
+      ? `完整检查了 ${checked.timeSlots} 个时段，未发现人员、场地容量和物资数据中的冲突。`
+      : `检查了 ${checked.timeSlots} 个时段，已提供数据未发现冲突；另有 ${pendingCheckCount} 项数据待确认，尚未完成完整核验。`;
 
   return {
     valid: uniqueIssues.length === 0,
-    summary: uniqueIssues.length
-      ? `检查了 ${checked.timeSlots}/${blocks.length} 个有效时段，发现 ${uniqueIssues.length} 项需要处理的冲突。`
-      : `检查了 ${checked.timeSlots} 个时段，未发现所提供人员、场地容量和物资数据中的冲突。`,
+    summary,
     checked,
+    coverage: { complete: coverageComplete, pending: pendingByBlock },
     issues: uniqueIssues,
   };
 }

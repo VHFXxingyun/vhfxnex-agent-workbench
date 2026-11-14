@@ -276,8 +276,20 @@ function applyTool(
     state.events.push({
       id: crypto.randomUUID(),
       name,
-      title: report.valid ? "执行约束已核对" : "可行性检查发现冲突",
-      detail: [report.summary, ...report.issues.slice(0, 4).map((issue) => issue.message)]
+      title: !report.valid
+        ? "可行性检查发现冲突"
+        : report.coverage.complete
+          ? "执行约束已核对"
+          : "部分约束待确认",
+      detail: [
+        report.summary,
+        ...report.issues.slice(0, 4).map((issue) => issue.message),
+        ...report.coverage.pending
+          .slice(0, 4)
+          .map(
+            (item) => `第 ${item.block} 项「${item.activity}」待补充：${item.checks.join("、")}`,
+          ),
+      ]
         .join("；")
         .slice(0, 1000),
       status: "done",

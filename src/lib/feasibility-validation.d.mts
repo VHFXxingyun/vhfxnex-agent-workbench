@@ -22,6 +22,12 @@ export interface FeasibilityIssue {
   message: string;
 }
 
+export interface FeasibilityPendingCheck {
+  block: number;
+  activity: string;
+  checks: string[];
+}
+
 export function validateExecutionFeasibility(input: { blocks: FeasibilityBlock[] }): {
   valid: boolean;
   summary: string;
@@ -30,6 +36,10 @@ export function validateExecutionFeasibility(input: { blocks: FeasibilityBlock[]
     staffAssignments: number;
     venueCapacityChecks: number;
     resourceEntries: number;
+  };
+  coverage: {
+    complete: boolean;
+    pending: FeasibilityPendingCheck[];
   };
   issues: FeasibilityIssue[];
 };
