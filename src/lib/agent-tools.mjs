@@ -227,6 +227,11 @@ export const toolSchemas = Object.freeze({
           message: "未完成的代码批次至少要包含一个文件",
         });
       }
+      if (mode === "full" && complete) {
+        for (const requirement of projectFileRequirements(project.files)) {
+          context.addIssue({ code: "custom", path: ["files"], message: requirement });
+        }
+      }
     }),
   generate_spreadsheet: z
     .object({
