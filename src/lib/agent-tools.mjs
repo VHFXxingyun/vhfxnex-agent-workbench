@@ -51,8 +51,27 @@ export const toolSchemas = Object.freeze({
           time: z.string().trim().min(1).max(40),
           activity: z.string().trim().min(1).max(100),
           venue: z.string().trim().max(100).optional(),
-          attendeeCount: z.number().int().min(0).max(100_000).optional(),
-          venueCapacity: z.number().int().min(0).max(100_000).optional(),
+          attendeeCount: z
+            .number()
+            .int()
+            .min(0)
+            .max(100_000)
+            .optional()
+            .describe("该时段参加活动的参与者人数，不含工作人员和志愿者"),
+          unlistedOnsiteCount: z
+            .number()
+            .int()
+            .min(0)
+            .max(100_000)
+            .optional()
+            .describe("不在参与者人数和 staff 名单中的其他现场人员人数，例如未分配岗位的组织者"),
+          venueCapacity: z
+            .number()
+            .int()
+            .min(0)
+            .max(100_000)
+            .optional()
+            .describe("该时段该场地或区域实际可容纳的总人数，容量核算需包含参与者和所有现场人员"),
           staff: z
             .array(
               z.object({
@@ -346,7 +365,7 @@ export const toolDescriptions = Object.freeze({
   build_schedule:
     "当目标明确需要日程表、旅行行程、学习时间表或活动现场议程时，创建带具体时间段的安排。只填用户已提供或可合理推算的日期；未给日期时使用第 1 天等相对日期。不要调用外部日历或声称已预订。",
   validate_feasibility:
-    "当计划包含并行活动、岗位排班、场地容量或共享物料时，在交付前核对可执行性。提供每个时段的人员/岗位、场地与容量、物料需求及已知可用量；根据报告修正冲突后再交付。它只核对明确提供的数据，不会推断未知人数或库存。",
+    "当计划包含并行活动、岗位排班、场地容量或共享物料时，在交付前核对可执行性。attendeeCount 只填参与者人数，不含工作人员和志愿者；容量核算必须把 staff 名单中的不同人员，以及不在参与者和 staff 名单中的其他现场人员 unlistedOnsiteCount 一并计入。按参与者 + 去重后的 staff 人数 + 其他现场人员计算总占用人数，再与场地容量比较。提供每个时段的人员/岗位、场地与容量、物料需求及已知可用量；根据报告修正冲突后再交付。它只核对明确提供的数据，不会推断未知人数或库存。",
   draft_document: "生成一份简短、可编辑的行动方案。",
   generate_pdf:
     "用户明确要求 PDF 文件时调用。交付中文可读、分页完整、保留标题/列表/表格/代码块层级的真实 PDF 文件；优先使用当前方案内容，不要只给 Markdown 文本。最多 12000 字。",

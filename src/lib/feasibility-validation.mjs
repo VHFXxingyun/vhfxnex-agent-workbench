@@ -48,12 +48,22 @@ export function validateExecutionFeasibility(input) {
     if (!current.valid) continue;
     const block = current.block;
     const attendance = block.attendeeCount;
+    const assignedStaffCount = new Set(
+      (Array.isArray(block.staff) ? block.staff : [])
+        .map((assignment) => normalizeName(assignment?.name))
+        .filter(Boolean),
+    ).size;
+    const unlistedOnsiteCount =
+      typeof block.unlistedOnsiteCount === "number" ? block.unlistedOnsiteCount : 0;
     const capacity = block.venueCapacity;
-    if (typeof attendance === "number" && typeof capacity === "number" && attendance > capacity) {
+    const totalOccupancy =
+      typeof attendance === "number" ? attendance + assignedStaffCount + unlistedOnsiteCount : null;
+    if (totalOccupancy !== null && typeof capacity === "number" && totalOccupancy > capacity) {
+      const onsiteSupport = assignedStaffCount + unlistedOnsiteCount;
       issues.push({
         type: "venue_capacity",
         blocks: [current.index + 1],
-        message: `「${block.activity}」预计 ${attendance} 人，超过场地容量 ${capacity} 人。`,
+        message: `「${block.activity}」预计参与者 ${attendance} 人、现场支持人员 ${onsiteSupport} 人，共 ${totalOccupancy} 人，超过场地容量 ${capacity} 人。`,
       });
     }
 

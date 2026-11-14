@@ -989,6 +989,11 @@ try {
     /创建任务或方案不代表已对外联系、预订、招募或线下执行/,
   );
   assert.match(EXECUTION_PROMPT_STABLE_PREFIX, /必须调用 validate_feasibility 检查/);
+  assert.match(EXECUTION_PROMPT_STABLE_PREFIX, /attendeeCount 只计参与者/);
+  assert.match(
+    EXECUTION_PROMPT_STABLE_PREFIX,
+    /不在参与者和 staff 名单中的其他在场人员填入 unlistedOnsiteCount/,
+  );
   assert.match(EXECUTION_PROMPT_STABLE_PREFIX, /纳入交付完成条件/);
   assert.match(EXECUTION_PROMPT_STABLE_PREFIX, /最后一次检查必须发生在最后一次方案文档修改之后/);
   assert.match(EXECUTION_PROMPT_STABLE_PREFIX, /不新增没收手机、禁止设备等强制限制/);
@@ -1666,6 +1671,65 @@ try {
     },
   ];
   assert.equal(validateExecutionFeasibility({ blocks: feasibleBlocks }).valid, true);
+  const volunteerCapacityConflict = validateExecutionFeasibility({
+    blocks: [
+      {
+        date: "活动当天",
+        time: "09:00-10:00",
+        activity: "冬日健康闯关",
+        attendeeCount: 20,
+        venueCapacity: 24,
+        staff: Array.from({ length: 5 }, (_, index) => ({
+          name: `志愿者${index + 1}`,
+          role: "活动引导",
+        })),
+      },
+    ],
+  });
+  assert.equal(volunteerCapacityConflict.valid, false);
+  assert.match(
+    volunteerCapacityConflict.issues[0]?.message || "",
+    /参与者 20 人、现场支持人员 5 人，共 25 人，超过场地容量 24 人/,
+  );
+  assert.equal(
+    validateExecutionFeasibility({
+      blocks: [
+        {
+          date: "活动当天",
+          time: "09:00-10:00",
+          activity: "冬日健康闯关",
+          attendeeCount: 20,
+          unlistedOnsiteCount: 2,
+          venueCapacity: 26,
+          staff: Array.from({ length: 4 }, (_, index) => ({
+            name: `志愿者${index + 1}`,
+            role: "活动引导",
+          })),
+        },
+      ],
+    }).valid,
+    true,
+    "venue capacity must count participants, assigned staff, and other explicitly listed onsite people",
+  );
+  assert.equal(
+    validateExecutionFeasibility({
+      blocks: [
+        {
+          date: "活动当天",
+          time: "09:00-10:00",
+          activity: "冬日健康闯关",
+          attendeeCount: 20,
+          venueCapacity: 25,
+          staff: Array.from({ length: 5 }, (_, index) => ({
+            name: `志愿者${index + 1}`,
+            role: "活动引导",
+          })),
+        },
+      ],
+    }).valid,
+    true,
+    "a venue with enough capacity for participants plus all assigned volunteers must pass",
+  );
   const infeasible = validateExecutionFeasibility({
     blocks: feasibleBlocks.map((block, index) => ({
       ...block,

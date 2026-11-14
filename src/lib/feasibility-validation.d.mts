@@ -4,6 +4,7 @@ export interface FeasibilityBlock {
   activity: string;
   venue?: string;
   attendeeCount?: number;
+  unlistedOnsiteCount?: number;
   venueCapacity?: number;
   staff?: { name: string; role: string }[];
   resources?: { name: string; required: number; available: number }[];
