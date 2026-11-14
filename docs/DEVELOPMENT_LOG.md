@@ -1,5 +1,10 @@
 # VHFXNEX 开发记录
 
+## 2026-11-14｜补全对话 Markdown 的浏览器覆盖
+
+- 浏览器夹具现在覆盖标题、列表、表格、引用、安全 HTTP(S) 链接、行内/块代码，并确认 `javascript:` 链接不会生成可点击锚点、原始脚本标签不会执行。
+- 使用独立端口 3465、临时 SQLite 与 `NEXORA_DISABLE_AI=1` 运行生产 UI smoke，160 项全部通过；没有调用 DeepSeek。
+
 ## 2026-11-14｜对话 Markdown 提交通过远程 CI
 
 - GitHub Actions 运行 #43582996078 对提交 166ad04 全流程通过：ESLint、TypeScript、worker 与项目回归、生产构建、密钥扫描、82 项 API smoke、158 项 UI smoke，以及 Docker 镜像构建与容器健康检查。

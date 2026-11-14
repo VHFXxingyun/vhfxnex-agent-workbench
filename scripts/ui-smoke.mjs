@@ -5039,10 +5039,18 @@ try {
         role: "assistant",
         agent: "dialogue",
         content: [
-          "**Markdown 回复检查**",
+          "## Markdown 回复检查",
           "",
           "- 列表项",
           "- `行内代码`",
+          "- [安全链接](https://example.com/docs)",
+          "- [危险链接](javascript:alert(1))",
+          "",
+          "> 引用内容应使用引用块呈现。",
+          "",
+          "| 类型 | 状态 |",
+          "| --- | --- |",
+          "| Markdown 表格 | 可读 |",
           "",
           "```ts",
           "const ready = true;",
@@ -5077,12 +5085,22 @@ try {
   const markdownReply = page
     .locator(".workspace-chat-thread .chat-markdown")
     .filter({ hasText: "Markdown 回复检查" });
-  await markdownReply.locator("strong").filter({ hasText: "Markdown 回复检查" }).waitFor();
+  await markdownReply.locator("h2").filter({ hasText: "Markdown 回复检查" }).waitFor();
   await markdownReply.locator("ul li").filter({ hasText: "列表项" }).waitFor();
   await markdownReply.locator("ul code").filter({ hasText: "行内代码" }).waitFor();
   await markdownReply.locator("pre code").filter({ hasText: "const ready = true;" }).waitFor();
+  await markdownReply.locator("blockquote").filter({ hasText: "引用内容" }).waitFor();
+  await markdownReply.locator("table tbody td").filter({ hasText: "Markdown 表格" }).waitFor();
+  const markdownLinks = await markdownReply
+    .locator("a")
+    .evaluateAll((links) =>
+      links.map((link) => ({ href: link.getAttribute("href"), text: link.textContent })),
+    );
+  assert.deepEqual(markdownLinks, [{ href: "https://example.com/docs", text: "安全链接" }]);
+  check(true, "Render Markdown headings, lists, tables, blockquotes, and safe links in chat");
+  check(true, "Render only HTTP(S) Markdown links as clickable anchors");
   assert.equal(await markdownReply.locator("script").count(), 0);
-  check(true, "Render formatted Markdown in chat without executing embedded HTML");
+  check(true, "Keep embedded HTML inert in formatted chat replies");
   let simulatedBackgroundHandoff = null;
   let simulatedBackgroundClaimToken = null;
   let capturedBackgroundChatRequest = null;
