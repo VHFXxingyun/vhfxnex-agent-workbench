@@ -949,3 +949,4 @@ Google Calendar 与 GitHub 集成继续按用户要求暂缓；本次未创建�
 - `create_project` 新增 `full`、`patch`、`append` 批次语义：每批最多 20 个文件/45,000 字符，最终项目最多 60 个文件、100,000 个字符及 100,000 UTF-8 字节。完整入口/README 和静态引用、依赖校验在合并最终批次后执行，未完成草稿通过工作区检查点保存，可在中断后续写；代码项目 ZIP 与持久化校验同步扩容。
 - 补充批次合并、补丁覆盖/删除、项目总量与 UTF-8 限制、工具参数，以及执行检查点保留和清除草稿的 smoke 用例。`npm run smoke:project`、ESLint、TypeScript、Prettier、`git diff --check` 均通过；首次 smoke 揭露的“完整草稿空删除列表误判”已修复并通过复跑。
 - 首次推送的 CI 生产构建、静态检查通过；API smoke 在旧断言处失败，原因是首批生成所需的宽松校验误影响了一次性完整项目。已将提前校验限定为 `full + complete`，保留不完整批次的合并后校验；项目 smoke、参数回归、ESLint、TypeScript 和 Prettier 已通过。修复后的完整 CI 待重跑确认。没有调用 DeepSeek，也未触碰未跟踪的 `output/`。
+- 修复提交 `16fabbf` 的 GitHub Actions 运行 #43602412503 全流程成功：生产构建、客户端密钥扫描、82 项 API smoke、160 项 UI smoke 和 Docker 镜像健康检查通过；项目分批静态回归及其他工作流检查也通过。CI 使用临时数据库并禁用 AI，没有消耗 DeepSeek 配额。
