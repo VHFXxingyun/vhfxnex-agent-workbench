@@ -950,3 +950,9 @@ Google Calendar 与 GitHub 集成继续按用户要求暂缓；本次未创建�
 - 补充批次合并、补丁覆盖/删除、项目总量与 UTF-8 限制、工具参数，以及执行检查点保留和清除草稿的 smoke 用例。`npm run smoke:project`、ESLint、TypeScript、Prettier、`git diff --check` 均通过；首次 smoke 揭露的“完整草稿空删除列表误判”已修复并通过复跑。
 - 首次推送的 CI 生产构建、静态检查通过；API smoke 在旧断言处失败，原因是首批生成所需的宽松校验误影响了一次性完整项目。已将提前校验限定为 `full + complete`，保留不完整批次的合并后校验；项目 smoke、参数回归、ESLint、TypeScript 和 Prettier 已通过。修复后的完整 CI 待重跑确认。没有调用 DeepSeek，也未触碰未跟踪的 `output/`。
 - 修复提交 `16fabbf` 的 GitHub Actions 运行 #43602412503 全流程成功：生产构建、客户端密钥扫描、82 项 API smoke、160 项 UI smoke 和 Docker 镜像健康检查通过；项目分批静态回归及其他工作流检查也通过。CI 使用临时数据库并禁用 AI，没有消耗 DeepSeek 配额。
+
+## 2026-11-14｜补齐分批代码交付失败恢复回归
+
+- 将代码批次合并、入口/README 要求和静态校验抽到纯投递函数，执行接口与回归检查共用同一实现；最终批次校验失败时会保留草稿，允许 Agent 通过后续 append 修复。
+- 新增一条端到端批次逻辑回归：保存首批 README 与源码，模拟缺少入口的最终批次并确认拒绝，经过执行检查点恢复草稿，再追加 `index.html`，确认完整项目和本地引用检查通过。
+- `npm run smoke:project`、隔离 API `npm run smoke`（82 项，`NEXORA_DISABLE_AI=1`）、全量 ESLint、TypeScript、生产构建、改动源码 Prettier 与 `git diff --check` 均通过；未调用 DeepSeek。隔离服务已停止，未触碰未跟踪的 `output/`。

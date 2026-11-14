@@ -35,12 +35,7 @@ import { getDeepSeekApiKey } from "@/lib/deepseek-key.mjs";
 import { consumeAiRateLimits, rateLimitedResponse } from "@/lib/auth-rate-limit";
 import { recordAiUsage } from "@/lib/ai-usage";
 import { withAiSpan } from "@/lib/telemetry";
-import {
-  parseToolArguments,
-  projectFileRequirements,
-  toolDescriptions,
-  toolSchemas,
-} from "@/lib/agent-tools.mjs";
+import { parseToolArguments, toolDescriptions, toolSchemas } from "@/lib/agent-tools.mjs";
 import {
   acquireWorkspaceExecutionLease,
   addWorkspaceUsageForUser,
@@ -61,7 +56,7 @@ import {
   updateExistingWorkspaceForUser,
 } from "@/lib/workspace-store";
 import { isSupportedImageDataUrl } from "@/lib/image";
-import { mergeProjectBatch } from "@/lib/project-batch.mjs";
+import { prepareProjectDeliveryBatch } from "@/lib/project-delivery.mjs";
 import { classifyProjectIntent } from "@/lib/project-intent.mjs";
 import {
   attachProjectReviewStatus,
@@ -75,7 +70,6 @@ import { prependSharedAgentPromptPrefix } from "@/lib/agent-prompt-prefix.mjs";
 import { compactToolFailure } from "@/lib/tool-failure.mjs";
 import { isAbortError } from "@/lib/errors";
 import { mergeExecutionCheckpoint } from "@/lib/execution-checkpoint.mjs";
-import { validateGeneratedProject } from "@/lib/project-static-validation";
 import { validateExecutionFeasibility } from "@/lib/feasibility-validation.mjs";
 import {
   latestDraftDocumentEventIndex,
@@ -394,82 +388,47 @@ function applyTool(
     if (state.artifacts.length >= WORKSPACE_LIMITS.artifacts) {
       return JSON.stringify({ error: "工作区产物已达上限，请先整理现有产物。" });
     }
-    const updatedFiles = args.files.flatMap((raw): ProjectFile[] => {
-      if (!raw || typeof raw !== "object") return [];
-      const file = raw as Record<string, unknown>;
-      if (typeof file.path !== "string" || typeof file.content !== "string") return [];
-      return [{ path: file.path, content: file.content }];
-    });
-    const removedPaths = Array.isArray(args.deleteFiles) ? args.deleteFiles : [];
-    const batch = mergeProjectBatch({
-      mode: typeof args.mode === "string" ? args.mode : "full",
-      complete: args.complete !== false,
+    const project = prepareProjectDeliveryBatch({
+      args: {
+        name: args.name,
+        description: args.description,
+        mode: typeof args.mode === "string" ? args.mode : undefined,
+        complete: args.complete !== false,
+        files: args.files,
+        deleteFiles: Array.isArray(args.deleteFiles) ? args.deleteFiles : undefined,
+      },
       draft: state.projectDraft,
       existingFiles: state.existingProjectFiles,
-      files: updatedFiles,
-      deleteFiles: removedPaths,
-      name: args.mode === "patch" ? state.existingProjectTitle || args.name : args.name,
-      description:
-        args.mode === "patch"
-          ? state.existingProjectDescription || args.description
-          : args.description,
+      existingTitle: state.existingProjectTitle,
+      existingDescription: state.existingProjectDescription,
     });
-    if ("error" in batch) return JSON.stringify({ error: batch.error });
-    const { files } = batch;
-    const projectMode = batch.mode;
-    const title = (batch.title || args.name).trim().slice(0, 80);
-    const description = (batch.description || args.description).trim().slice(0, 400);
-    if (!batch.complete) {
-      state.projectDraft = {
-        mode: projectMode,
-        title,
-        description,
-        files: batch.draftFiles,
-        ...(batch.deleteFiles.length ? { deleteFiles: batch.deleteFiles } : {}),
-      };
+    if (project.status === "error") return JSON.stringify({ error: project.error });
+    if (project.status === "staged") {
+      state.projectDraft = project.draft;
       state.events.push({
         id: crypto.randomUUID(),
         name,
         title: "代码项目批次已保存",
         detail:
-          projectMode === "patch"
-            ? `已暂存 ${batch.draftFiles.length} 个文件改动；旧项目文件保留，最终批次会合并后统一校验。`
-            : `已暂存 ${files.length} 个文件，累计 ${files.reduce((total, file) => total + file.content.length, 0).toLocaleString("zh-CN")} 个字符；等待后续批次与最终校验。`,
+          project.mode === "patch"
+            ? `已暂存 ${project.draft.files.length} 个文件改动；旧项目文件保留，最终批次会合并后统一校验。`
+            : `已暂存 ${project.files.length} 个文件，累计 ${project.totalCharacters.toLocaleString("zh-CN")} 个字符；等待后续批次与最终校验。`,
         status: "done",
       });
       return JSON.stringify({
         inProgress: true,
         nextMode: "append",
-        batchFiles: updatedFiles.map((file) => file.path),
-        totalFiles: files.length,
-        totalCharacters: files.reduce((total, file) => total + file.content.length, 0),
+        batchFiles: project.changedFiles,
+        totalFiles: project.files.length,
+        totalCharacters: project.totalCharacters,
       });
     }
-    const projectRequirements = projectFileRequirements(files);
-    if (projectRequirements.length > 0) {
-      state.projectDraft = {
-        mode: projectMode,
-        title,
-        description,
-        files: batch.draftFiles,
-        ...(batch.deleteFiles.length ? { deleteFiles: batch.deleteFiles } : {}),
-      };
-      return JSON.stringify({ error: projectRequirements.join(" ") });
+    if (project.status === "rejected") {
+      state.projectDraft = project.draft;
+      return JSON.stringify({ error: project.error });
     }
-    const staticIssues = validateGeneratedProject(files);
-    if (staticIssues.length > 0) {
-      state.projectDraft = {
-        mode: projectMode,
-        title,
-        description,
-        files: batch.draftFiles,
-        ...(batch.deleteFiles.length ? { deleteFiles: batch.deleteFiles } : {}),
-      };
-      return JSON.stringify({
-        error: `生成代码未通过静态检查，请修复后重新提交：${staticIssues.join("；")}`,
-      });
-    }
-    const patchMode = projectMode === "patch";
+    const { files, title, description, changedFiles, removedFiles } = project;
+    const patchMode = project.mode === "patch";
     state.projectDraft = null;
     state.existingProjectFiles = files;
     state.existingProjectTitle = title;
@@ -488,7 +447,7 @@ function applyTool(
       name,
       title: patchMode ? "代码项目已更新" : "代码项目已生成",
       detail: patchMode
-        ? `${title}：修改 ${updatedFiles.length} 个文件，删除 ${removedPaths.length} 个文件，保留其他项目文件`
+        ? `${title}：修改 ${changedFiles.length} 个文件，删除 ${removedFiles.length} 个文件，保留其他项目文件`
         : `${title}：${files.length} 个文件，已打包为可下载项目`,
       status: "done",
     });
@@ -497,8 +456,8 @@ function applyTool(
       updated: patchMode,
       completed: true,
       name: title,
-      changedFiles: updatedFiles.map((file) => file.path),
-      removedFiles: removedPaths,
+      changedFiles,
+      removedFiles,
       files: files.map((file) => file.path),
     });
   }

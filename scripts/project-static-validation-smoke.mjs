@@ -10,6 +10,8 @@ import {
   mergeProjectBatch,
   PROJECT_BATCH_LIMITS,
 } from "../src/lib/project-batch.mjs";
+import { prepareProjectDeliveryBatch } from "../src/lib/project-delivery.mjs";
+import { mergeExecutionCheckpoint } from "../src/lib/execution-checkpoint.mjs";
 import {
   attachProjectReviewStatus,
   finalizeExecutionSummary,
@@ -77,6 +79,86 @@ assert.deepEqual(
   ["README.md", "index.html"],
 );
 assert.deepEqual(projectFileRequirements(completedProjectBatch.files), []);
+
+let resumableDraft = null;
+const stagedReadme = prepareProjectDeliveryBatch({
+  args: {
+    name: "可恢复项目",
+    description: "验证分批交付恢复",
+    mode: "full",
+    complete: false,
+    files: [{ path: "README.md", content: "# 可恢复项目\n\n直接打开 index.html。" }],
+  },
+  draft: resumableDraft,
+  existingFiles: [],
+});
+assert.equal(stagedReadme.status, "staged");
+resumableDraft = stagedReadme.draft;
+const stagedSource = prepareProjectDeliveryBatch({
+  args: {
+    name: "后续批次不应改名",
+    description: "后续说明不覆盖原项目",
+    mode: "append",
+    complete: false,
+    files: [{ path: "src/main.js", content: 'document.querySelector("#app");' }],
+  },
+  draft: resumableDraft,
+  existingFiles: [],
+});
+assert.equal(stagedSource.status, "staged");
+resumableDraft = stagedSource.draft;
+const rejectedFinalBatch = prepareProjectDeliveryBatch({
+  args: {
+    name: "后续批次不应改名",
+    description: "后续说明不覆盖原项目",
+    mode: "append",
+    complete: true,
+    files: [{ path: "src/theme.css", content: "body { color: #222; }" }],
+  },
+  draft: resumableDraft,
+  existingFiles: [],
+});
+assert.equal(rejectedFinalBatch.status, "rejected");
+assert.match(rejectedFinalBatch.error, /可运行入口/);
+resumableDraft = rejectedFinalBatch.draft;
+const resumedCheckpoint = mergeExecutionCheckpoint(
+  null,
+  {
+    summary: "分批项目仍在生成。",
+    tasks: [],
+    milestones: [],
+    artifacts: [],
+    events: [{ name: "create_project", title: "代码项目批次已保存" }],
+    projectDraft: resumableDraft,
+  },
+  "分批项目仍在生成。",
+);
+assert.deepEqual(resumedCheckpoint.projectDraft, resumableDraft);
+const completedAfterResume = prepareProjectDeliveryBatch({
+  args: {
+    name: "后续批次不应改名",
+    description: "后续说明不覆盖原项目",
+    mode: "append",
+    complete: true,
+    files: [
+      {
+        path: "index.html",
+        content:
+          '<!doctype html><main id="app"></main><script type="module" src="./src/main.js"></script>',
+      },
+    ],
+  },
+  draft: resumedCheckpoint.projectDraft,
+  existingFiles: [],
+});
+assert.equal(completedAfterResume.status, "complete");
+assert.equal(completedAfterResume.title, "可恢复项目");
+assert.deepEqual(
+  completedAfterResume.files.map((file) => file.path),
+  ["README.md", "src/main.js", "src/theme.css", "index.html"],
+);
+assert.deepEqual(validateGeneratedProject(completedAfterResume.files), []);
+
 const patchDraft = mergeProjectBatch({
   mode: "patch",
   complete: false,
