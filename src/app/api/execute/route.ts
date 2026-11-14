@@ -62,7 +62,11 @@ import {
 import { isSupportedImageDataUrl } from "@/lib/image";
 import { mergeProjectFilePatch } from "@/lib/project-path.mjs";
 import { classifyProjectIntent } from "@/lib/project-intent.mjs";
-import { attachProjectReviewStatus, parseProjectReview } from "@/lib/project-review.mjs";
+import {
+  attachProjectReviewStatus,
+  ensureProjectReviewDisclosure,
+  parseProjectReview,
+} from "@/lib/project-review.mjs";
 import { searchDuckDuckGo } from "@/lib/web-search.mjs";
 import { classifySearchIntent } from "@/lib/search-intent.mjs";
 import { buildExecutionSystemPrompt } from "@/lib/execution-prompt.mjs";
@@ -2026,10 +2030,14 @@ export async function POST(request: NextRequest) {
                 budget: state.budget,
               };
               const previous = persistedWorkspace.result;
-              const finalSummary =
+              const finalSummaryWithoutReviewDisclosure =
                 previous && instruction.trim() && execution.events.length
                   ? `已根据补充指示完成 ${execution.events.length} 次工具操作，并更新相关成果。`
                   : execution.summary;
+              const finalSummary = ensureProjectReviewDisclosure(
+                finalSummaryWithoutReviewDisclosure,
+                execution.events,
+              );
               const checkpointResult = mergeExecutionCheckpoint(
                 previous,
                 execution,

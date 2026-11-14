@@ -10,3 +10,8 @@ export function attachProjectReviewStatus<T extends Record<string, unknown>>(
   status: ProjectReviewStatus,
   detail: string,
 ): T & { independentReview: { status: ProjectReviewStatus; detail: string } };
+
+export function ensureProjectReviewDisclosure(
+  summary: string,
+  events: Array<{ name?: string; title?: string }>,
+): string;

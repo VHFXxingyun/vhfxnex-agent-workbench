@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { toolDescriptions } from "../src/lib/agent-tools.mjs";
 import { validateGeneratedProject } from "../src/lib/project-static-validation.mjs";
-import { attachProjectReviewStatus, parseProjectReview } from "../src/lib/project-review.mjs";
+import {
+  attachProjectReviewStatus,
+  ensureProjectReviewDisclosure,
+  parseProjectReview,
+} from "../src/lib/project-review.mjs";
 
 const projectWithDeclaredDependencies = [
   {
@@ -280,6 +284,22 @@ const reviewUnavailable = attachProjectReviewStatus(
 assert.equal(reviewUnavailable.created, true);
 assert.deepEqual(reviewUnavailable.files, ["README.md", "index.html"]);
 assert.equal(reviewUnavailable.independentReview.status, "unavailable");
+const reviewWarning = ensureProjectReviewDisclosure("代码项目已交付。", [
+  { name: "review_project", title: "独立复核未完成" },
+]);
+assert.match(reviewWarning, /独立复核未完成/);
+assert.equal(
+  ensureProjectReviewDisclosure(reviewWarning, [
+    { name: "review_project", title: "独立复核未完成" },
+  ]),
+  reviewWarning,
+);
+assert.equal(
+  ensureProjectReviewDisclosure("代码项目已交付。", [
+    { name: "review_project", title: "独立代码复核通过" },
+  ]),
+  "代码项目已交付。",
+);
 assert.match(toolDescriptions.create_project, /independentReview\.status.*unavailable/);
 
 console.log(

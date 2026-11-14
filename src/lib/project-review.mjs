@@ -25,3 +25,12 @@ export function attachProjectReviewStatus(output, status, detail) {
     independentReview: { status, detail },
   };
 }
+
+export function ensureProjectReviewDisclosure(summary, events) {
+  const reviewUnavailable = events?.some(
+    (event) => event?.name === "review_project" && event?.title === "独立复核未完成",
+  );
+  const disclosure = "独立复核未完成（复核服务暂不可用）；项目已通过静态检查，代码未在服务器执行。";
+  if (!reviewUnavailable || summary.includes("独立复核未完成")) return summary;
+  return `${summary.trim()}\n\n${disclosure}`;
+}
