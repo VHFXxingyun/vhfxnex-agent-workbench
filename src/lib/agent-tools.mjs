@@ -130,7 +130,11 @@ export const toolSchemas = Object.freeze({
     .object({
       name: z.string().trim().min(1).max(80),
       description: z.string().trim().min(1).max(400),
-      mode: z.enum(["full", "patch"]).optional(),
+      mode: z.enum(["full", "patch", "append"]).optional(),
+      complete: z
+        .boolean()
+        .optional()
+        .describe("只有本批已写完全部文件时才为 true；分批项目的最后一批设为 true"),
       files: z
         .array(
           z.object({
@@ -142,7 +146,8 @@ export const toolSchemas = Object.freeze({
       deleteFiles: z.array(z.string().min(1).max(120)).max(20).optional(),
     })
     .superRefine((project, context) => {
-      const isPatch = project.mode === "patch";
+      const mode = project.mode || "full";
+      const complete = project.complete !== false;
       const removedPaths = project.deleteFiles || [];
       const paths = new Set();
       let total = 0;
@@ -187,24 +192,40 @@ export const toolSchemas = Object.freeze({
       if (total > 45_000) {
         context.addIssue({ code: "custom", path: ["files"], message: "项目源文件不能超过 45 KB" });
       }
-      if (isPatch && project.files.length === 0 && removedPaths.length === 0) {
+      if (mode === "patch" && project.files.length === 0 && removedPaths.length === 0) {
         context.addIssue({
           code: "custom",
           path: ["files"],
           message: "代码补丁至少要修改或删除一个文件",
         });
       }
-      if (!isPatch && removedPaths.length > 0) {
+      if (mode === "full" && project.files.length === 0) {
+        context.addIssue({
+          code: "custom",
+          path: ["files"],
+          message: "完整项目至少要提交一个文件",
+        });
+      }
+      if (mode === "full" && removedPaths.length > 0) {
         context.addIssue({
           code: "custom",
           path: ["deleteFiles"],
           message: "完整项目不能包含删除文件列表",
         });
       }
-      if (!isPatch) {
-        for (const requirement of projectFileRequirements(project.files)) {
-          context.addIssue({ code: "custom", path: ["files"], message: requirement });
-        }
+      if (mode === "append" && removedPaths.length > 0) {
+        context.addIssue({
+          code: "custom",
+          path: ["deleteFiles"],
+          message: "append 批次不能删除文件",
+        });
+      }
+      if (!complete && project.files.length === 0) {
+        context.addIssue({
+          code: "custom",
+          path: ["files"],
+          message: "未完成的代码批次至少要包含一个文件",
+        });
       }
     }),
   generate_spreadsheet: z
@@ -375,7 +396,7 @@ export const toolDescriptions = Object.freeze({
     "用户明确要求 PDF 文件时调用。交付中文可读、分页完整、保留标题/列表/表格/代码块层级的真实 PDF 文件；优先使用当前方案内容，不要只给 Markdown 文本。最多 12000 字。",
   calculate_budget: "当目标涉及费用或预算时计算项目和总额；没有数据则不要调用。",
   create_project:
-    "当用户明确要你写代码、开发网站/应用/程序、制作原型或可运行桌宠时，必须调用此工具交付真实源文件，不可只写计划。新项目使用 mode='full'（或省略 mode），交付完整文件集，必须含非空根目录 README.md 和可运行入口。修改已有项目时使用 mode='patch'，只返回需修改或新增的文件；要删除文件时使用 deleteFiles。服务端会自动保留未提及的已有文件，不要重复输出它们。保留原有页面与功能，只实现本轮明确要求。纯静态项目提供非空 index.html；Node 项目提供有效 package.json（含 dev 或 start 脚本）和源码；Python、PHP、Java、Go、Rust 项目提供对应可运行入口及必要配置。单页演示优先用少量文件做成自包含、响应式且有真实交互的网页，不依赖外部网络资源；只有用户明确需要时才增加后端、数据库或框架。不要执行代码，只将安全相对路径与源内容保存为可下载项目。最多 20 个文件、总计 45 KB。工具成功返回后，若 `independentReview.status` 为 `unavailable`，必须告知用户独立复核未完成，只能说明静态检查已通过，不得声称独立复核通过。",
+    "当用户明确要你写代码、开发网站/应用/程序、制作原型或可运行桌宠时，必须调用此工具交付真实源文件，不可只写计划。小项目一次交付：mode='full'、complete=true，必须含非空根目录 README.md 和可运行入口。较大项目可分批：首批 mode='full'、complete=false；中间批 mode='append'、complete=false；最后批 mode='append'、complete=true。每批最多 20 个文件、45 KB 字符；总项目最多 60 个文件、100 KB 字符和 100 KB UTF-8。append 只提交新增或需要修正的文件，不要重复全部文件；服务端会保留已暂存文件。修改已有项目时首批 mode='patch'，complete=true（小改动）或 false（分批），只返回需修改或新增的文件；要删除文件时在首批 patch 填 deleteFiles；后续批次使用 append。分批期间可用 append 修正先前文件。最终交付必须含非空根目录 README.md 和可运行入口；纯静态项目提供非空 index.html；Node 项目提供有效 package.json（含 dev 或 start 脚本）和源码；Python、PHP、Java、Go、Rust 项目提供对应可运行入口及必要配置。单页演示优先用少量文件做成自包含、响应式且有真实交互的网页，不依赖外部网络资源；只有用户明确需要时才增加后端、数据库或框架。不要执行代码，只将安全相对路径与源内容保存为可下载项目。最终工具成功后，若 `independentReview.status` 为 `unavailable`，必须告知用户独立复核未完成，只能说明静态检查已通过，不得声称独立复核通过。",
   generate_spreadsheet:
     "用户明确要 Excel/电子表格/工作簿时调用。提供有列名、规范行数据的实际表格；不编造数据，缺失项用空值。最多 8 个工作表、每表 80 行、16 列，总计 1200 个单元格。",
   generate_presentation:

@@ -58,6 +58,13 @@ export type ProjectFile = {
   path: string;
   content: string;
 };
+export type ProjectDraft = {
+  mode: "full" | "patch";
+  title: string;
+  description: string;
+  files: ProjectFile[];
+  deleteFiles?: string[];
+};
 export type ChatAttachment = {
   id: string;
   name: string;
@@ -168,6 +175,7 @@ export type ExecutionResult = {
   milestones: Milestone[];
   artifacts: Artifact[];
   events: ToolEvent[];
+  projectDraft?: ProjectDraft | null;
   usage?: AiRunUsage;
   budget?: {
     limit: number | null;

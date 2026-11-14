@@ -25,6 +25,11 @@ export function mergeExecutionCheckpoint(
 
   return {
     summary: summary.slice(0, 3000),
+    ...(current.projectDraft !== undefined
+      ? { projectDraft: current.projectDraft }
+      : previous?.projectDraft !== undefined
+        ? { projectDraft: previous.projectDraft }
+        : {}),
     tasks: current.tasks,
     milestones: current.milestones.length ? current.milestones : previous?.milestones || [],
     artifacts: [

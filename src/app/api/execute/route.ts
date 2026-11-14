@@ -9,6 +9,7 @@ import {
   type ChatAttachment,
   type ExecutionResult,
   type Milestone,
+  type ProjectDraft,
   type ProjectFile,
   type Task,
   type ToolEvent,
@@ -60,11 +61,11 @@ import {
   updateExistingWorkspaceForUser,
 } from "@/lib/workspace-store";
 import { isSupportedImageDataUrl } from "@/lib/image";
-import { mergeProjectFilePatch } from "@/lib/project-path.mjs";
+import { mergeProjectBatch } from "@/lib/project-batch.mjs";
 import { classifyProjectIntent } from "@/lib/project-intent.mjs";
 import {
   attachProjectReviewStatus,
-  ensureProjectReviewDisclosure,
+  finalizeExecutionSummary,
   parseProjectReview,
 } from "@/lib/project-review.mjs";
 import { searchDuckDuckGo } from "@/lib/web-search.mjs";
@@ -111,6 +112,7 @@ function applyTool(
     existingProjectFiles: ProjectFile[];
     existingProjectTitle: string;
     existingProjectDescription: string;
+    projectDraft: ProjectDraft | null;
   },
 ): string {
   const name = call.function.name;
@@ -392,10 +394,6 @@ function applyTool(
     if (state.artifacts.length >= WORKSPACE_LIMITS.artifacts) {
       return JSON.stringify({ error: "工作区产物已达上限，请先整理现有产物。" });
     }
-    const patchMode = args.mode === "patch";
-    if (patchMode && state.existingProjectFiles.length === 0) {
-      return JSON.stringify({ error: "找不到可修改的现有项目，请先生成代码项目。" });
-    }
     const updatedFiles = args.files.flatMap((raw): ProjectFile[] => {
       if (!raw || typeof raw !== "object") return [];
       const file = raw as Record<string, unknown>;
@@ -403,29 +401,76 @@ function applyTool(
       return [{ path: file.path, content: file.content }];
     });
     const removedPaths = Array.isArray(args.deleteFiles) ? args.deleteFiles : [];
-    const files = patchMode
-      ? mergeProjectFilePatch(state.existingProjectFiles, updatedFiles, removedPaths)
-      : updatedFiles;
-    if (files.length > 20) {
-      return JSON.stringify({ error: "合并后的项目最多保留 20 个文件，请删减或合并文件。" });
-    }
-    if (files.reduce((total, file) => total + file.content.length, 0) > 45_000) {
-      return JSON.stringify({ error: "合并后的项目源文件不能超过 45 KB，请缩减代码或资源。" });
+    const batch = mergeProjectBatch({
+      mode: typeof args.mode === "string" ? args.mode : "full",
+      complete: args.complete !== false,
+      draft: state.projectDraft,
+      existingFiles: state.existingProjectFiles,
+      files: updatedFiles,
+      deleteFiles: removedPaths,
+      name: args.mode === "patch" ? state.existingProjectTitle || args.name : args.name,
+      description:
+        args.mode === "patch"
+          ? state.existingProjectDescription || args.description
+          : args.description,
+    });
+    if ("error" in batch) return JSON.stringify({ error: batch.error });
+    const { files } = batch;
+    const projectMode = batch.mode;
+    const title = (batch.title || args.name).trim().slice(0, 80);
+    const description = (batch.description || args.description).trim().slice(0, 400);
+    if (!batch.complete) {
+      state.projectDraft = {
+        mode: projectMode,
+        title,
+        description,
+        files: batch.draftFiles,
+        ...(batch.deleteFiles.length ? { deleteFiles: batch.deleteFiles } : {}),
+      };
+      state.events.push({
+        id: crypto.randomUUID(),
+        name,
+        title: "代码项目批次已保存",
+        detail:
+          projectMode === "patch"
+            ? `已暂存 ${batch.draftFiles.length} 个文件改动；旧项目文件保留，最终批次会合并后统一校验。`
+            : `已暂存 ${files.length} 个文件，累计 ${files.reduce((total, file) => total + file.content.length, 0).toLocaleString("zh-CN")} 个字符；等待后续批次与最终校验。`,
+        status: "done",
+      });
+      return JSON.stringify({
+        inProgress: true,
+        nextMode: "append",
+        batchFiles: updatedFiles.map((file) => file.path),
+        totalFiles: files.length,
+        totalCharacters: files.reduce((total, file) => total + file.content.length, 0),
+      });
     }
     const projectRequirements = projectFileRequirements(files);
     if (projectRequirements.length > 0) {
+      state.projectDraft = {
+        mode: projectMode,
+        title,
+        description,
+        files: batch.draftFiles,
+        ...(batch.deleteFiles.length ? { deleteFiles: batch.deleteFiles } : {}),
+      };
       return JSON.stringify({ error: projectRequirements.join(" ") });
     }
     const staticIssues = validateGeneratedProject(files);
     if (staticIssues.length > 0) {
+      state.projectDraft = {
+        mode: projectMode,
+        title,
+        description,
+        files: batch.draftFiles,
+        ...(batch.deleteFiles.length ? { deleteFiles: batch.deleteFiles } : {}),
+      };
       return JSON.stringify({
         error: `生成代码未通过静态检查，请修复后重新提交：${staticIssues.join("；")}`,
       });
     }
-    const title = (patchMode ? state.existingProjectTitle : args.name).trim().slice(0, 80);
-    const description = (patchMode ? state.existingProjectDescription : args.description)
-      .trim()
-      .slice(0, 400);
+    const patchMode = projectMode === "patch";
+    state.projectDraft = null;
     state.existingProjectFiles = files;
     state.existingProjectTitle = title;
     state.existingProjectDescription = description;
@@ -450,6 +495,7 @@ function applyTool(
     return JSON.stringify({
       created: !patchMode,
       updated: patchMode,
+      completed: true,
       name: title,
       changedFiles: updatedFiles.map((file) => file.path),
       removedFiles: removedPaths,
@@ -722,6 +768,7 @@ export async function POST(request: NextRequest) {
     const existingCodeProject = persistedWorkspace.result?.artifacts.find(
       (artifact) => artifact.type === "code",
     );
+    const persistedProjectDraft = persistedWorkspace.result?.projectDraft || null;
     const existingProjectFiles = Array.isArray(existingCodeProject?.files)
       ? existingCodeProject.files
       : [];
@@ -737,7 +784,7 @@ export async function POST(request: NextRequest) {
           prompt,
         ),
     });
-    const needsProject = projectIntent !== null;
+    const needsProject = projectIntent !== null || persistedProjectDraft !== null;
 
     const leaseToken = crypto.randomUUID();
     const lease = acquireWorkspaceExecutionLease(user.id, persistedWorkspace.id, leaseToken);
@@ -858,6 +905,7 @@ export async function POST(request: NextRequest) {
       existingProjectFiles: ProjectFile[];
       existingProjectTitle: string;
       existingProjectDescription: string;
+      projectDraft: ProjectDraft | null;
       feasibilityReview: { valid: boolean; eventIndex: number } | null;
     } = {
       tasks: currentTasks,
@@ -876,6 +924,7 @@ export async function POST(request: NextRequest) {
       existingProjectFiles,
       existingProjectTitle: existingCodeProject?.title || "",
       existingProjectDescription,
+      projectDraft: persistedProjectDraft,
       feasibilityReview: null,
       taskLimit: mustAddTask
         ? Math.min(WORKSPACE_LIMITS.executionTasks, currentTasks.length + 1)
@@ -938,11 +987,12 @@ export async function POST(request: NextRequest) {
       .filter(({ role }) => role === "user")
       .slice(-6)
       .map(({ role, content }) => ({ role, content: content.slice(0, 1600) }));
-    const projectInstructions =
-      projectIntent === "update"
+    const projectInstructions = state.projectDraft
+      ? "工作区里已有未完成的代码项目批次。必须调用 create_project 的 mode='append' 继续，只提交新增或要修正的文件，不要重复未修改的文件；未结束时 complete=false，全部文件齐备且通过检查时 complete=true。最终项目仍需包含 README.md 和可运行入口。"
+      : projectIntent === "update"
         ? "用户要求修改已有代码项目：必须调用 create_project，设置 mode='patch'，只返回本轮确需修改或新增的文件；删除文件时填写 deleteFiles。服务端会保留其他文件，因此不要重复输出未修改文件。未被要求修改的页面、功能和项目名都要保留。"
         : needsProject
-          ? "用户明确要求代码产物：必须调用 create_project，使用 mode='full' 交付完整文件集，包含 README 和可运行入口；只给计划或伪代码不算完成。"
+          ? "用户明确要求代码产物：必须调用 create_project 交付完整代码。能一次完成时用 mode='full', complete=true；较大项目可按工具说明分批，第一批 mode='full', complete=false，后续 mode='append'，最后 complete=true。完整交付必须包含 README 和可运行入口；只给计划或伪代码不算完成。"
           : "";
     const messages: Record<string, unknown>[] = [
       {
@@ -1219,7 +1269,12 @@ export async function POST(request: NextRequest) {
             requiredTool === "validate_feasibility" && currentDocumentArtifacts.length === 0
               ? savedDocumentArtifacts
               : documentArtifacts;
-          const projectFiles = requiredTool === "create_project" ? existingProjectFiles : [];
+          const projectFiles =
+            requiredTool === "create_project"
+              ? state.projectDraft?.mode === "full"
+                ? state.projectDraft.files
+                : state.existingProjectFiles
+              : [];
           const checkpoint = {
             checkpoint: true,
             requiredTool,
@@ -1263,13 +1318,18 @@ export async function POST(request: NextRequest) {
             recentToolFailures: state.toolFailures.slice(-4),
             documentArtifacts: feasibilityDocuments,
             existingProject:
-              requiredTool === "create_project" && existingCodeProject
+              requiredTool === "create_project" && (state.projectDraft || existingCodeProject)
                 ? {
-                    name: existingCodeProject.title,
-                    description: existingCodeProject.description,
+                    name: state.projectDraft?.title || existingCodeProject?.title || "",
+                    description:
+                      state.projectDraft?.description || existingCodeProject?.description || "",
                   }
                 : null,
             existingProjectFiles: projectFiles,
+            stagedProjectFiles:
+              requiredTool === "create_project" ? state.projectDraft?.files || [] : [],
+            stagedProjectDeletes:
+              requiredTool === "create_project" ? state.projectDraft?.deleteFiles || [] : [],
             userProvidedMaterials: relevantTextAttachments,
             userProvidedImages: relevantImages.map(({ name, mimeType }) => ({ name, mimeType })),
           };
@@ -1324,6 +1384,7 @@ export async function POST(request: NextRequest) {
                 milestones: state.milestones,
                 artifacts: state.artifacts,
                 events: state.events,
+                projectDraft: state.projectDraft,
                 ...(usage ? { usage } : {}),
                 budget: state.budget,
               };
@@ -1523,6 +1584,7 @@ export async function POST(request: NextRequest) {
                             if (
                               name === "create_project" &&
                               !("error" in output) &&
+                              output.completed === true &&
                               codeReviewCount < 2
                             ) {
                               codeReviewCount += 1;
@@ -2026,22 +2088,16 @@ export async function POST(request: NextRequest) {
                 milestones: state.milestones,
                 artifacts: state.artifacts,
                 events: state.events,
+                projectDraft: state.projectDraft,
                 ...(usage ? { usage } : {}),
                 budget: state.budget,
               };
               const previous = persistedWorkspace.result;
-              const finalSummaryWithoutReviewDisclosure =
-                previous && instruction.trim() && execution.events.length
-                  ? `已根据补充指示完成 ${execution.events.length} 次工具操作，并更新相关成果。`
-                  : execution.summary;
-              const finalSummary = ensureProjectReviewDisclosure(
-                finalSummaryWithoutReviewDisclosure,
-                execution.events,
-              );
-              execution.summary = finalSummary;
+              const finalExecution = finalizeExecutionSummary(execution, previous, instruction);
+              const finalSummary = finalExecution.summary;
               const checkpointResult = mergeExecutionCheckpoint(
                 previous,
-                execution,
+                finalExecution,
                 finalSummary,
                 WORKSPACE_LIMITS.events,
                 WORKSPACE_LIMITS.artifacts,
@@ -2082,7 +2138,7 @@ export async function POST(request: NextRequest) {
               finishWorkspaceExecutionStatus(user.id, persistedWorkspace.id, lease.token, {
                 state: "completed",
                 activity: "本轮执行已完成",
-                message: execution.summary,
+                message: finalExecution.summary,
                 completedToolCalls,
               });
               if (
@@ -2097,7 +2153,10 @@ export async function POST(request: NextRequest) {
               heldHandoffClaim = null;
               releaseWorkspaceExecutionLease(user.id, persistedWorkspace.id, lease.token);
               runSpan.setAttribute("goalflow.outcome", "success");
-              send({ type: "result", data: { result: execution, mode: "live", persisted: true } });
+              send({
+                type: "result",
+                data: { result: finalExecution, mode: "live", persisted: true },
+              });
             } catch (error) {
               let message = "执行失败，请重试。";
               cancelled = executionSignal.aborted || isAbortError(error);

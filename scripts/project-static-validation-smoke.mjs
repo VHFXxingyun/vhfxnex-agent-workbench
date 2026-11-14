@@ -1,9 +1,18 @@
 import assert from "node:assert/strict";
-import { toolDescriptions } from "../src/lib/agent-tools.mjs";
+import {
+  parseToolArguments,
+  projectFileRequirements,
+  toolDescriptions,
+} from "../src/lib/agent-tools.mjs";
 import { validateGeneratedProject } from "../src/lib/project-static-validation.mjs";
 import {
+  isValidProjectDraft,
+  mergeProjectBatch,
+  PROJECT_BATCH_LIMITS,
+} from "../src/lib/project-batch.mjs";
+import {
   attachProjectReviewStatus,
-  ensureProjectReviewDisclosure,
+  finalizeExecutionSummary,
   parseProjectReview,
 } from "../src/lib/project-review.mjs";
 
@@ -39,6 +48,165 @@ const projectWithDeclaredDependencies = [
 ];
 
 assert.deepEqual(validateGeneratedProject(projectWithDeclaredDependencies), []);
+
+const firstProjectBatch = mergeProjectBatch({
+  mode: "full",
+  complete: false,
+  draft: null,
+  existingFiles: [],
+  files: [{ path: "README.md", content: "启动：直接打开 index.html。" }],
+  name: "批量项目",
+  description: "项目说明",
+});
+assert.equal(firstProjectBatch.complete, false);
+assert.equal(firstProjectBatch.files.length, 1);
+assert.equal(isValidProjectDraft(firstProjectBatch), true);
+const completedProjectBatch = mergeProjectBatch({
+  mode: "append",
+  complete: true,
+  draft: firstProjectBatch,
+  existingFiles: [],
+  files: [{ path: "index.html", content: "<!doctype html><h1>Ready</h1>" }],
+  name: "批次标题不覆盖草稿标题",
+  description: "批次说明",
+});
+assert.equal(completedProjectBatch.complete, true);
+assert.equal(completedProjectBatch.title, "批量项目");
+assert.deepEqual(
+  completedProjectBatch.files.map((file) => file.path),
+  ["README.md", "index.html"],
+);
+assert.deepEqual(projectFileRequirements(completedProjectBatch.files), []);
+const patchDraft = mergeProjectBatch({
+  mode: "patch",
+  complete: false,
+  draft: null,
+  existingFiles: completedProjectBatch.files,
+  files: [{ path: "new-feature.js", content: "export const ready = true;" }],
+  deleteFiles: ["index.html"],
+  name: "覆盖后的标题",
+  description: "覆盖后的说明",
+});
+assert.deepEqual(
+  patchDraft.files.map((file) => file.path),
+  ["new-feature.js"],
+);
+assert.deepEqual(patchDraft.deleteFiles, ["index.html"]);
+assert.equal(isValidProjectDraft(patchDraft), true);
+assert.equal(
+  isValidProjectDraft({
+    ...patchDraft,
+    deleteFiles: ["new-feature.js"],
+  }),
+  false,
+);
+const completedPatch = mergeProjectBatch({
+  mode: "append",
+  complete: true,
+  draft: patchDraft,
+  existingFiles: completedProjectBatch.files,
+  files: [{ path: "index.html", content: "<!doctype html><h1>Updated</h1>" }],
+  name: "后续批次标题",
+  description: "后续批次说明",
+});
+assert.deepEqual(
+  completedPatch.files.map((file) => file.path),
+  ["README.md", "new-feature.js", "index.html"],
+);
+assert.deepEqual(projectFileRequirements(completedPatch.files), []);
+assert.match(
+  mergeProjectBatch({
+    mode: "append",
+    draft: null,
+    existingFiles: [],
+    files: [],
+    name: "空批次",
+    description: "说明",
+  }).error,
+  /没有待续写/,
+);
+let oversizedFileDraft = mergeProjectBatch({
+  mode: "full",
+  complete: false,
+  draft: null,
+  existingFiles: [],
+  files: Array.from({ length: PROJECT_BATCH_LIMITS.batchFiles }, (_, index) => ({
+    path: `src/file-${index}.js`,
+    content: "export {};",
+  })),
+  name: "文件超限",
+  description: "说明",
+});
+for (let index = PROJECT_BATCH_LIMITS.batchFiles; index < PROJECT_BATCH_LIMITS.files; index += 20) {
+  oversizedFileDraft = mergeProjectBatch({
+    mode: "append",
+    complete: false,
+    draft: oversizedFileDraft,
+    existingFiles: [],
+    files: Array.from({ length: 20 }, (_, offset) => ({
+      path: `src/file-${index + offset}.js`,
+      content: "export {};",
+    })),
+    name: "追加批次",
+    description: "说明",
+  });
+}
+const tooManyProjectFiles = mergeProjectBatch({
+  mode: "append",
+  complete: true,
+  draft: oversizedFileDraft,
+  existingFiles: [],
+  files: [{ path: "src/file-60.js", content: "export {};" }],
+  name: "文件超限",
+  description: "说明",
+});
+assert.match(tooManyProjectFiles.error, /最多保留 60 个文件/);
+const oversizedProject = mergeProjectBatch({
+  mode: "full",
+  complete: true,
+  draft: null,
+  existingFiles: [],
+  files: [{ path: "index.html", content: "x".repeat(100_001) }],
+  name: "超限项目",
+  description: "说明",
+});
+assert.match(oversizedProject.error, /单批源码不能超过/);
+const oversizedUtf8Project = mergeProjectBatch({
+  mode: "full",
+  complete: true,
+  draft: null,
+  existingFiles: [],
+  files: [{ path: "README.md", content: "中".repeat(34_000) }],
+  name: "UTF-8 超限项目",
+  description: "说明",
+});
+assert.match(oversizedUtf8Project.error, /UTF-8 大小不能超过/);
+assert.equal(
+  parseToolArguments(
+    "create_project",
+    JSON.stringify({
+      name: "分批项目",
+      description: "草稿首批",
+      mode: "full",
+      complete: false,
+      files: [{ path: "README.md", content: "临时说明" }],
+    }),
+  ).ok,
+  true,
+);
+assert.equal(
+  parseToolArguments(
+    "create_project",
+    JSON.stringify({
+      name: "分批项目",
+      description: "最终批次",
+      mode: "append",
+      complete: true,
+      files: [],
+    }),
+  ).ok,
+  true,
+);
 
 const validPathAlias = validateGeneratedProject([
   {
@@ -284,21 +452,40 @@ const reviewUnavailable = attachProjectReviewStatus(
 assert.equal(reviewUnavailable.created, true);
 assert.deepEqual(reviewUnavailable.files, ["README.md", "index.html"]);
 assert.equal(reviewUnavailable.independentReview.status, "unavailable");
-const reviewWarning = ensureProjectReviewDisclosure("代码项目已交付。", [
-  { name: "review_project", title: "独立复核未完成" },
-]);
-assert.match(reviewWarning, /独立复核未完成/);
+const unreviewedExecution = {
+  summary: "代码项目已交付。",
+  events: [{ name: "review_project", title: "独立复核未完成" }],
+  artifacts: [{ type: "code", title: "示例项目" }],
+};
+const finalizedUnreviewedExecution = finalizeExecutionSummary(unreviewedExecution, null, "");
+assert.match(finalizedUnreviewedExecution.summary, /独立复核未完成/);
+assert.equal(finalizedUnreviewedExecution.events, unreviewedExecution.events);
+assert.equal(finalizedUnreviewedExecution.artifacts, unreviewedExecution.artifacts);
 assert.equal(
-  ensureProjectReviewDisclosure(reviewWarning, [
-    { name: "review_project", title: "独立复核未完成" },
-  ]),
-  reviewWarning,
+  finalizeExecutionSummary(finalizedUnreviewedExecution, null, "").summary,
+  finalizedUnreviewedExecution.summary,
 );
 assert.equal(
-  ensureProjectReviewDisclosure("代码项目已交付。", [
-    { name: "review_project", title: "独立代码复核通过" },
-  ]),
+  finalizeExecutionSummary(
+    {
+      summary: "代码项目已交付。",
+      events: [{ name: "review_project", title: "独立代码复核通过" }],
+    },
+    null,
+    "",
+  ).summary,
   "代码项目已交付。",
+);
+assert.equal(
+  finalizeExecutionSummary(
+    {
+      summary: "模型的详细回复。",
+      events: [{ name: "review_project", title: "独立复核未完成" }],
+    },
+    { summary: "旧摘要" },
+    "补充工作区内容",
+  ).summary,
+  "已根据补充指示完成 1 次工具操作，并更新相关成果。\n\n独立复核未完成（复核服务暂不可用）；项目已通过静态检查，代码未在服务器执行。",
 );
 assert.match(toolDescriptions.create_project, /independentReview\.status.*unavailable/);
 

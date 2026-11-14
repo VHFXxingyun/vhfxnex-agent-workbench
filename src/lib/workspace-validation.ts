@@ -1,5 +1,6 @@
 import type { AiRunUsage, ConversationMessage, GoalPlan, RouteOption, Workspace } from "@/lib/goal";
 import { normalizeProjectPath, projectPathKey } from "@/lib/project-path.mjs";
+import { isValidProjectDraft } from "@/lib/project-batch.mjs";
 
 export const WORKSPACE_LIMITS = {
   planTasks: 40,
@@ -232,9 +233,13 @@ function isExecutionResult(value: unknown): boolean {
         (artifact.type === "code"
           ? Array.isArray(artifact.files) &&
             artifact.files.length > 0 &&
-            artifact.files.length <= 20 &&
+            artifact.files.length <= 60 &&
             artifact.files.every(isProjectFile) &&
-            artifact.files.reduce((total, file) => total + file.content.length, 0) <= 45_000 &&
+            artifact.files.reduce((total, file) => total + file.content.length, 0) <= 100_000 &&
+            artifact.files.reduce(
+              (total, file) => total + new TextEncoder().encode(file.content).byteLength,
+              0,
+            ) <= 100_000 &&
             new Set(artifact.files.map((file) => projectPathKey(file.path))).size ===
               artifact.files.length
           : artifact.content.length <= 50000),
@@ -267,6 +272,10 @@ function isExecutionResult(value: unknown): boolean {
     return false;
 
   if (value.usage !== undefined && !isAiRunUsage(value.usage)) return false;
+
+  if (value.projectDraft !== undefined && value.projectDraft !== null) {
+    if (!isValidProjectDraft(value.projectDraft)) return false;
+  }
 
   if (value.budget === undefined) return true;
   if (!isRecord(value.budget)) return false;

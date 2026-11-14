@@ -23,7 +23,7 @@ function write32(view: DataView, offset: number, value: number) {
 }
 
 export function createProjectZip(files: ProjectFile[]): Uint8Array {
-  if (!files.length || files.length > 20) throw new Error("项目文件数量无效。");
+  if (!files.length || files.length > 60) throw new Error("项目文件数量无效。");
   const paths = new Set<string>();
   const localRecords: Uint8Array[] = [];
   const centralRecords: Uint8Array[] = [];
@@ -42,7 +42,7 @@ export function createProjectZip(files: ProjectFile[]): Uint8Array {
     const filename = encoder.encode(safePath);
     const content = encoder.encode(file.content);
     totalBytes += content.byteLength;
-    if (totalBytes > 45_000) throw new Error("项目文件超过安全大小上限。");
+    if (totalBytes > 100_000) throw new Error("项目文件超过安全大小上限。");
     const checksum = crc32(content);
     const local = new Uint8Array(30 + filename.length + content.length);
     const localView = new DataView(local.buffer);

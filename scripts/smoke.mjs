@@ -1925,6 +1925,12 @@ try {
 
   const priorExecution = {
     summary: "前一个执行结果",
+    projectDraft: {
+      mode: "full",
+      title: "待续写项目",
+      description: "分批代码",
+      files: [{ path: "README.md", content: "启动说明" }],
+    },
     tasks: [],
     milestones: [{ label: "阶段", date: "待定", note: "保留原节点" }],
     artifacts: [
@@ -1959,6 +1965,7 @@ try {
     "执行中：阶段成果已保存",
   );
   assert.equal(checkpoint.summary, "执行中：阶段成果已保存");
+  assert.deepEqual(checkpoint.projectDraft, priorExecution.projectDraft);
   assert.deepEqual(
     checkpoint.tasks.map(({ id }) => id),
     ["task-1"],
@@ -1972,6 +1979,12 @@ try {
     checkpoint.events.map(({ id }) => id),
     ["event-1", "event-2"],
   );
+  const completedProjectCheckpoint = mergeExecutionCheckpoint(
+    checkpoint,
+    { ...checkpoint, projectDraft: null },
+    "项目已完整交付",
+  );
+  assert.equal(completedProjectCheckpoint.projectDraft, null);
   check(
     true,
     "Checkpoint tool results without duplicating events or dropping earlier artifacts and milestones",

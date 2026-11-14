@@ -34,3 +34,14 @@ export function ensureProjectReviewDisclosure(summary, events) {
   if (!reviewUnavailable || summary.includes("独立复核未完成")) return summary;
   return `${summary.trim()}\n\n${disclosure}`;
 }
+
+export function finalizeExecutionSummary(execution, previousResult, instruction) {
+  const summary =
+    previousResult && instruction.trim() && execution.events.length
+      ? `已根据补充指示完成 ${execution.events.length} 次工具操作，并更新相关成果。`
+      : execution.summary;
+  return {
+    ...execution,
+    summary: ensureProjectReviewDisclosure(summary, execution.events),
+  };
+}

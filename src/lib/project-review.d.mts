@@ -15,3 +15,7 @@ export function ensureProjectReviewDisclosure(
   summary: string,
   events: Array<{ name?: string; title?: string }>,
 ): string;
+
+export function finalizeExecutionSummary<
+  T extends { summary: string; events: Array<{ name?: string; title?: string }> },
+>(execution: T, previousResult: unknown, instruction: string): T;
