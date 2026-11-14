@@ -1754,6 +1754,77 @@ try {
     new Set(infeasible.issues.map((issue) => issue.type)),
     new Set(["venue_capacity", "staff_overlap", "venue_overlap", "resource_capacity"]),
   );
+  const sequentialConsumableShortage = validateExecutionFeasibility({
+    blocks: [
+      {
+        date: "活动当天",
+        time: "09:00-10:00",
+        activity: "签到",
+        resources: [{ name: "签到卡", required: 6, available: 10 }],
+      },
+      {
+        date: "活动当天",
+        time: "10:00-11:00",
+        activity: "闯关",
+        resources: [{ name: "签到卡", required: 6, available: 10 }],
+      },
+    ],
+  });
+  assert.equal(sequentialConsumableShortage.valid, false);
+  assert.match(sequentialConsumableShortage.issues[0]?.message || "", /共需消耗「签到卡」12 件/);
+  const sequentialReusablePass = validateExecutionFeasibility({
+    blocks: [
+      {
+        date: "活动当天",
+        time: "09:00-10:00",
+        activity: "签到",
+        resources: [{ name: "记号笔", required: 6, available: 10, reusable: true }],
+      },
+      {
+        date: "活动当天",
+        time: "10:00-11:00",
+        activity: "闯关",
+        resources: [{ name: "记号笔", required: 6, available: 10, reusable: true }],
+      },
+    ],
+  });
+  assert.equal(sequentialReusablePass.valid, true);
+  const concurrentReusableShortage = validateExecutionFeasibility({
+    blocks: [
+      {
+        date: "活动当天",
+        time: "09:00-10:00",
+        activity: "左区",
+        resources: [{ name: "剪刀", required: 6, available: 10, reusable: true }],
+      },
+      {
+        date: "活动当天",
+        time: "09:30-10:30",
+        activity: "右区",
+        resources: [{ name: "剪刀", required: 6, available: 10, reusable: true }],
+      },
+    ],
+  });
+  assert.equal(concurrentReusableShortage.valid, false);
+  assert.equal(concurrentReusableShortage.issues[0]?.type, "resource_capacity");
+  const mixedResourceMode = validateExecutionFeasibility({
+    blocks: [
+      {
+        date: "活动当天",
+        time: "09:00-10:00",
+        activity: "签到",
+        resources: [{ name: "剪刀", required: 1, available: 1 }],
+      },
+      {
+        date: "活动当天",
+        time: "10:00-11:00",
+        activity: "闯关",
+        resources: [{ name: "剪刀", required: 1, available: 1, reusable: true }],
+      },
+    ],
+  });
+  assert.equal(mixedResourceMode.valid, false);
+  assert.equal(mixedResourceMode.issues[0]?.type, "resource_mode_conflict");
   const invalidFeasibility = validateExecutionFeasibility({
     blocks: [{ date: "第 1 天", time: "下午", activity: "晚会" }],
   });

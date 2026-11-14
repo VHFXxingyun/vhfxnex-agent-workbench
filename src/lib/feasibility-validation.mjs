@@ -167,12 +167,36 @@ export function validateExecutionFeasibility(input) {
         end: item.end,
         required: resource.required,
         available: resource.available,
+        reusable: resource.reusable === true,
         name,
       });
     }
   }
 
   for (const entries of inventory.values()) {
+    const reusableModes = new Set(entries.map((entry) => entry.reusable));
+    if (reusableModes.size > 1) {
+      issues.push({
+        type: "resource_mode_conflict",
+        blocks: entries.map((entry) => entry.index + 1),
+        message: `「${entries[0].name}」在同一天被同时标记为消耗品和可重复使用器材，请统一物资类型后重新核验。`,
+      });
+      continue;
+    }
+
+    if (!entries[0].reusable) {
+      const required = entries.reduce((total, entry) => total + entry.required, 0);
+      const available = Math.min(...entries.map((entry) => entry.available));
+      if (required > available) {
+        issues.push({
+          type: "resource_capacity",
+          blocks: entries.map((entry) => entry.index + 1),
+          message: `当天各时段共需消耗「${entries[0].name}」${required} 件，可用量只有 ${available} 件。`,
+        });
+      }
+      continue;
+    }
+
     const boundaries = [...new Set(entries.flatMap((entry) => [entry.start, entry.end]))].sort(
       (a, b) => a - b,
     );

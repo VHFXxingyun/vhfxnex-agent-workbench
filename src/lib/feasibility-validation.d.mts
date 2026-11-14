@@ -7,7 +7,7 @@ export interface FeasibilityBlock {
   unlistedOnsiteCount?: number;
   venueCapacity?: number;
   staff?: { name: string; role: string }[];
-  resources?: { name: string; required: number; available: number }[];
+  resources?: { name: string; required: number; available: number; reusable?: boolean }[];
 }
 
 export interface FeasibilityIssue {
@@ -17,7 +17,8 @@ export interface FeasibilityIssue {
     | "duplicate_role"
     | "staff_overlap"
     | "venue_overlap"
-    | "resource_capacity";
+    | "resource_capacity"
+    | "resource_mode_conflict";
   blocks: number[];
   message: string;
 }

@@ -90,11 +90,17 @@ export const toolSchemas = Object.freeze({
                 name: z.string().trim().min(1).max(60),
                 required: z.number().int().min(0).max(100_000),
                 available: z.number().int().min(0).max(100_000),
+                reusable: z
+                  .boolean()
+                  .optional()
+                  .describe("是否为可重复使用的器材；未提供时按消耗品累计当天总需求"),
               }),
             )
             .max(30)
             .optional()
-            .describe("该时段要核对的物资及库存；若无物资需要核对，请明确提供空数组"),
+            .describe(
+              "该时段要核对的物资及库存；消耗品按当天总需求核算，可重复使用的器材标 reusable=true 并按并发占用峰值核算；若无物资需要核对，请明确提供空数组",
+            ),
         }),
       )
       .min(1)
@@ -395,7 +401,7 @@ export const toolDescriptions = Object.freeze({
   build_schedule:
     "当目标明确需要日程表、旅行行程、学习时间表或活动现场议程时，创建带具体时间段的安排。只填用户已提供或可合理推算的日期；未给日期时使用第 1 天等相对日期。不要调用外部日历或声称已预订。",
   validate_feasibility:
-    "当计划包含并行活动、岗位排班、场地容量或共享物料时，在交付前核对可执行性。attendeeCount 只填参与者人数，不含工作人员和志愿者；容量核算必须把 staff 名单中的不同人员，以及不在参与者和 staff 名单中的其他现场人员 unlistedOnsiteCount 一并计入。按参与者 + 去重后的 staff 人数 + 其他现场人员计算总占用人数，再与场地容量比较。尽量为每个时段明确提供 venue、attendeeCount、unlistedOnsiteCount、venueCapacity、staff 和 resources；没有人员或物料时明确传空数组，其他现场人员没有时填 0。报告的 coverage.complete=false 表示仍有数据缺口：照常完成安全可交付的工作，并在最终答复中列出 coverage.pending，不能称为完整核验通过；coverage.complete=true 才能称全部约束已核验。根据 issues 修正冲突后再交付。工具只核对明确提供的数据，不推断未知人数、场地或库存。",
+    "当计划包含并行活动、岗位排班、场地容量或共享物料时，在交付前核对可执行性。attendeeCount 只填参与者人数，不含工作人员和志愿者；容量核算必须把 staff 名单中的不同人员，以及不在参与者和 staff 名单中的其他现场人员 unlistedOnsiteCount 一并计入。按参与者 + 去重后的 staff 人数 + 其他现场人员计算总占用人数，再与场地容量比较。物资按名称和日期汇总：消耗品核算当天所有时段的总需求；可重复使用器材用 reusable=true 标记，核算并发时段的最大占用量；同一物品类型标记不一致时必须报告并统一后重检。尽量为每个时段明确提供 venue、attendeeCount、unlistedOnsiteCount、venueCapacity、staff 和 resources；没有人员或物料时明确传空数组，其他现场人员没有时填 0。报告的 coverage.complete=false 表示仍有数据缺口：照常完成安全可交付的工作，并在最终答复中列出 coverage.pending，不能称为完整核验通过；coverage.complete=true 才能称全部约束已核验。根据 issues 修正冲突后再交付。工具只核对明确提供的数据，不推断未知人数、场地或库存。",
   draft_document: "生成一份简短、可编辑的行动方案。",
   generate_pdf:
     "用户明确要求 PDF 文件时调用。交付中文可读、分页完整、保留标题/列表/表格/代码块层级的真实 PDF 文件；优先使用当前方案内容，不要只给 Markdown 文本。最多 12000 字。",
