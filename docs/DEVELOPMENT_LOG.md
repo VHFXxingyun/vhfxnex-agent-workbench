@@ -5,7 +5,7 @@
 - 修复活动可行性检查的口径缺口：工具此前只比较参与者人数与场地容量，可能漏掉志愿者。现在 `attendeeCount` 明确表示参与者人数；校验会额外计入 `staff` 名单中的去重人员及 `unlistedOnsiteCount`，再和容量比较。
 - 更新工具参数说明与执行 Agent 规则，要求计划按“参与者 + 具名现场支持人员 + 其他现场人员”核算；未提供的事实仍不作猜测。
 - 新增回归覆盖 20 名参与者加 5 名志愿者超过 24 人容量、容量 25 人可通过，以及未列名现场人员计入总人数。
-- 验收：定向人数回归、ESLint、TypeScript、Prettier、`npm run smoke:demo-kit` 与 `npm run smoke:project` 通过；`git diff --check` 通过。未调用 DeepSeek；完整 API/UI smoke 将由推送后的 CI 验收。
+- 验收：定向人数回归、ESLint、TypeScript、Prettier、`npm run smoke:demo-kit` 与 `npm run smoke:project` 通过；`git diff --check` 通过。GitHub Actions #43594185993 对提交 `70f4953` 全流程通过，包含 API smoke、160 项 UI smoke、生产构建、前端密钥扫描和容器健康检查。未调用 DeepSeek。
 
 ## 2026-11-14｜将活动可行性复核纳入交付门槛
 
