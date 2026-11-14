@@ -5648,7 +5648,7 @@ export default function Home() {
       <AnimatePresence>
         {artifact && (
           <motion.div
-            className="modal-layer"
+            className={`modal-layer ${artifact.type === "code" ? "modal-layer-code" : ""}`}
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}

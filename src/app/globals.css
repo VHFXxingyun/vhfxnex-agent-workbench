@@ -5153,6 +5153,9 @@ textarea:focus-visible {
   place-items: center;
   padding: 20px;
 }
+.modal-layer-code {
+  grid-template-rows: minmax(0, 1fr);
+}
 .artifact-modal {
   width: min(700px, 100%);
   max-height: 85vh;
@@ -5167,8 +5170,7 @@ textarea:focus-visible {
   display: flex;
   height: min(90vh, 900px);
   height: min(90dvh, 900px);
-  max-height: calc(100vh - 40px);
-  max-height: calc(100dvh - 40px);
+  max-height: 100%;
   flex-direction: column;
   overflow: hidden;
 }
