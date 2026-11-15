@@ -5,6 +5,7 @@ export interface ProjectIntentContext {
   hasExistingProject?: boolean;
   mustAddTask?: boolean;
   isSoftwareWorkspace?: boolean;
+  existingProjectContext?: string;
 }
 
 export function classifyProjectIntent(input: string, context?: ProjectIntentContext): ProjectIntent;

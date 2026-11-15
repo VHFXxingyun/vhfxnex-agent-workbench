@@ -98,8 +98,9 @@ if (process.env.NEXT_PHASE !== "phase-production-build") {
     instruction TEXT NOT NULL,
     user_message_id TEXT NOT NULL,
     user_message TEXT NOT NULL,
+    origin_scope TEXT NOT NULL DEFAULT 'workspace',
     attachments_json TEXT NOT NULL,
-    status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'completed', 'cancelled')),
+    status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'completed', 'cancelled', 'failed')),
     claim_token TEXT,
     claim_expires_at INTEGER,
     attempt_count INTEGER NOT NULL DEFAULT 0,
@@ -114,6 +115,12 @@ if (process.env.NEXT_PHASE !== "phase-production-build") {
     ON workbench_handoffs(user_id, user_message_id);
   CREATE INDEX IF NOT EXISTS idx_workbench_handoffs_queue
     ON workbench_handoffs(user_id, status, created_at);
+  CREATE TABLE IF NOT EXISTS supervisor_conversations (
+    user_id TEXT PRIMARY KEY,
+    body TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  );
   CREATE TABLE IF NOT EXISTS service_heartbeats (
     service TEXT PRIMARY KEY,
     instance_id TEXT NOT NULL,
@@ -227,6 +234,85 @@ if (process.env.NEXT_PHASE !== "phase-production-build") {
   }
   if (!handoffColumns.some((column) => column.name === "last_error")) {
     database.exec("ALTER TABLE workbench_handoffs ADD COLUMN last_error TEXT");
+  }
+  if (!handoffColumns.some((column) => column.name === "origin_scope")) {
+    database.exec(
+      "ALTER TABLE workbench_handoffs ADD COLUMN origin_scope TEXT NOT NULL DEFAULT 'workspace'",
+    );
+    const legacyGlobalHandoffs = database
+      .prepare(
+        `SELECT h.id, h.user_message_id, s.body FROM workbench_handoffs h
+           JOIN supervisor_conversations s ON s.user_id = h.user_id
+           WHERE h.status IN ('pending', 'running')`,
+      )
+      .all() as Array<{ id: string; user_message_id: string; body: string }>;
+    const markLegacyGlobalHandoff = database.prepare(
+      "UPDATE workbench_handoffs SET origin_scope = 'global' WHERE id = ?",
+    );
+    for (const handoff of legacyGlobalHandoffs) {
+      try {
+        const messages: unknown = JSON.parse(handoff.body);
+        if (
+          Array.isArray(messages) &&
+          messages.some(
+            (message) =>
+              message &&
+              typeof message === "object" &&
+              message.id === handoff.user_message_id &&
+              message.role === "user",
+          )
+        )
+          markLegacyGlobalHandoff.run(handoff.id);
+      } catch {
+        // Leave malformed legacy history classified as a workspace handoff.
+      }
+    }
+  }
+  const handoffTable = database
+    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'workbench_handoffs'")
+    .get() as { sql: string } | undefined;
+  if (handoffTable && !handoffTable.sql.includes("'failed'")) {
+    database
+      .transaction(() => {
+        database.exec(`
+          CREATE TABLE workbench_handoffs_with_failure (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            instruction TEXT NOT NULL,
+            user_message_id TEXT NOT NULL,
+            user_message TEXT NOT NULL,
+            origin_scope TEXT NOT NULL DEFAULT 'workspace',
+            attachments_json TEXT NOT NULL,
+            status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'completed', 'cancelled', 'failed')),
+            claim_token TEXT,
+            claim_expires_at INTEGER,
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            next_attempt_at TEXT,
+            last_error TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+          );
+          INSERT INTO workbench_handoffs_with_failure (
+            id, user_id, workspace_id, instruction, user_message_id, user_message,
+            origin_scope, attachments_json, status, claim_token, claim_expires_at,
+            attempt_count, next_attempt_at, last_error, created_at, updated_at
+          ) SELECT
+            id, user_id, workspace_id, instruction, user_message_id, user_message,
+            origin_scope, attachments_json, status, claim_token, claim_expires_at,
+            attempt_count, next_attempt_at, last_error, created_at, updated_at
+          FROM workbench_handoffs;
+          DROP TABLE workbench_handoffs;
+          ALTER TABLE workbench_handoffs_with_failure RENAME TO workbench_handoffs;
+          CREATE UNIQUE INDEX idx_workbench_handoffs_user_message
+            ON workbench_handoffs(user_id, user_message_id);
+          CREATE INDEX idx_workbench_handoffs_queue
+            ON workbench_handoffs(user_id, status, created_at);
+        `);
+      })
+      .immediate();
   }
 }
 

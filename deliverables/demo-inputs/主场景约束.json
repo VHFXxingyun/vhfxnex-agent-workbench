@@ -6,7 +6,29 @@
   "stations": 4,
   "groups": 4,
   "participantsPerGroup": 5,
+  "stationNames": ["冬日穿搭卡片排序", "健康说法核验卡", "温暖行动卡排序", "冬日温暖词接龙"],
+  "stationRotation": [
+    [1, 2, 3, 4],
+    [2, 3, 4, 1],
+    [3, 4, 1, 2],
+    [4, 1, 2, 3]
+  ],
+  "timeBudget": {
+    "checkInMinutes": 8,
+    "briefingMinutes": 7,
+    "stationRoundMinutes": 8,
+    "transitionMinutes": 2,
+    "breakMinutes": 10,
+    "closingMinutes": 12
+  },
   "durationMinutes": 75,
   "cashBudgetCny": 0,
-  "unconfirmedFacts": ["日期、开始时间", "联办单位名称", "可用时段", "实际可借物料", "健康知识题卡"]
+  "unconfirmedFacts": [
+    "日期、开始时间",
+    "联办单位名称",
+    "可用时段",
+    "实际可借物料",
+    "健康知识判断卡最终采用版本",
+    "主持人复核和复核日期"
+  ]
 }

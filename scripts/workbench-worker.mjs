@@ -3,6 +3,7 @@ import Database from "better-sqlite3";
 import { SignJWT } from "jose";
 import crypto from "node:crypto";
 import { resolveDatabasePath } from "../src/lib/database-path.mjs";
+import { classifyWorkbenchFailure, WORKBENCH_MAX_ATTEMPTS } from "../src/lib/workbench-retry.mjs";
 
 const { loadEnvConfig } = nextEnv;
 loadEnvConfig(process.cwd(), process.argv.includes("--dev"));
@@ -90,15 +91,54 @@ async function api(cookie, route, options = {}) {
   });
 }
 
-async function release(cookie, handoffId, token) {
+async function release(cookie, handoffId, token, options = {}) {
   try {
-    await api(cookie, "/api/handoffs", {
+    const response = await api(cookie, "/api/handoffs", {
       method: "PATCH",
-      body: JSON.stringify({ action: "release", id: handoffId, token }),
+      body: JSON.stringify({
+        action: "release",
+        id: handoffId,
+        token,
+        retryable: options.retryable,
+        retryAfterMs: options.retryAfterMs,
+        maxAttempts: options.maxAttempts,
+        lastError: options.lastError,
+      }),
     });
+    const payload = await response.json().catch(() => null);
+    if (response.ok && payload?.ok) return;
   } catch {
-    // The claim expires and is recovered by the next worker pass if the server is unavailable.
+    // The local queue database remains available while the web service restarts.
   }
+
+  const row = database
+    .prepare(
+      `SELECT attempt_count FROM workbench_handoffs
+       WHERE id = ? AND status = 'running' AND claim_token = ?`,
+    )
+    .get(handoffId, token);
+  if (!row) return;
+  const maxAttempts = Number.isInteger(options.maxAttempts)
+    ? Math.max(1, Math.min(WORKBENCH_MAX_ATTEMPTS, options.maxAttempts))
+    : WORKBENCH_MAX_ATTEMPTS;
+  const failed = options.retryable === false || row.attempt_count >= maxAttempts;
+  const now = Date.now();
+  const delay = Math.max(1_000, Math.min(10 * 60_000, options.retryAfterMs || 15_000));
+  database
+    .prepare(
+      `UPDATE workbench_handoffs SET status = ?, claim_token = NULL, claim_expires_at = NULL,
+         next_attempt_at = ?, last_error = ?, attachments_json = CASE WHEN ? = 1 THEN '[]' ELSE attachments_json END,
+         updated_at = ? WHERE id = ? AND status = 'running' AND claim_token = ?`,
+    )
+    .run(
+      failed ? "failed" : "pending",
+      failed ? null : new Date(now + delay).toISOString(),
+      (options.lastError || "后台连接暂时中断。请在工作区查看状态。").slice(0, 500),
+      failed ? 1 : 0,
+      new Date(now).toISOString(),
+      handoffId,
+      token,
+    );
 }
 
 async function readTerminalEvent(response) {
@@ -131,6 +171,12 @@ async function readTerminalEvent(response) {
                 type: "error",
                 message:
                   typeof parsed.error === "string" ? parsed.error.slice(0, 300) : "执行失败。",
+                retryable: parsed.retryable === true,
+                retryAfterMs:
+                  typeof parsed.retryAfterMs === "number" ? parsed.retryAfterMs : 15_000,
+                ...(typeof parsed.maxAttempts === "number"
+                  ? { maxAttempts: parsed.maxAttempts }
+                  : {}),
               };
           } catch {
             // Ignore malformed progress events; the terminal event is validated separately.
@@ -210,7 +256,24 @@ async function processNext() {
         }),
       });
       if (!executeResponse.ok) {
-        throw new Error(`执行服务返回 HTTP ${executeResponse.status}。`);
+        const payload = await executeResponse.json().catch(() => null);
+        const errorMessage =
+          payload && typeof payload.error === "string"
+            ? payload.error.slice(0, 300)
+            : `执行服务返回 HTTP ${executeResponse.status}。`;
+        const failurePolicy =
+          payload && typeof payload.retryable === "boolean"
+            ? {
+                retryable: payload.retryable,
+                retryAfterMs:
+                  typeof payload.retryAfterMs === "number"
+                    ? payload.retryAfterMs
+                    : classifyWorkbenchFailure({ status: executeResponse.status }).retryAfterMs,
+              }
+            : classifyWorkbenchFailure({ status: executeResponse.status, error: errorMessage });
+        const error = new Error(errorMessage);
+        Object.assign(error, failurePolicy);
+        throw error;
       }
       const terminal = await readTerminalEvent(executeResponse);
       if (terminal.type === "result") {
@@ -220,16 +283,25 @@ async function processNext() {
         });
         console.info(`后台任务完成：${row.id}`);
       } else {
-        await release(cookie, row.id, claimToken);
-        console.error(`后台任务稍后重试：${row.id} · ${terminal.message || "执行失败"}`);
+        const state = terminal.retryable ? "已安排自动重试" : "已停止自动重试";
+        console.error(`后台任务暂未完成：${row.id} · ${state} · ${terminal.message || "执行失败"}`);
       }
     } catch (error) {
-      if (claimToken) await release(cookie, row.id, claimToken);
-      const message =
-        error instanceof Error && /HTTP \d{3}/.test(error.message)
-          ? error.message
-          : "连接中断或执行失败";
-      console.error(`后台任务暂未完成：${row.id} · ${message}`);
+      const failurePolicy =
+        error && typeof error === "object" && typeof error.retryable === "boolean"
+          ? error
+          : classifyWorkbenchFailure({ error });
+      if (claimToken)
+        await release(cookie, row.id, claimToken, {
+          retryable: failurePolicy.retryable,
+          retryAfterMs: failurePolicy.retryAfterMs,
+          maxAttempts: failurePolicy.maxAttempts,
+          lastError: error instanceof Error ? error.message.slice(0, 500) : "连接中断或执行失败",
+        });
+      const message = error instanceof Error ? error.message : "连接中断或执行失败";
+      console.error(
+        `后台任务暂未完成：${row.id} · ${failurePolicy.retryable ? "已安排自动重试" : "已停止自动重试"} · ${message}`,
+      );
     }
   }
 }

@@ -29,6 +29,11 @@ type DialogueWorkspace = {
   } | null;
 };
 
+export function buildDialogueHistoryContext(
+  conversation: Array<{ role: "user" | "assistant"; content: string }>,
+  options?: { excludeMessageId?: string },
+): Array<{ role: "user" | "assistant"; content: string }>;
+
 export function buildDialogueWorkspaceContext(workspace: DialogueWorkspace): {
   goal: string;
   goalTruncated: boolean;

@@ -17,6 +17,8 @@
 /.next/
 /.next-dev/
 /.next-dev-webpack/
+/.next-smoke-*/
+/.next-*/
 /out/
 
 # production
@@ -52,3 +54,6 @@ venv/
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Isolated UI smoke build output
+.next-ui-smoke-bridge-3478/

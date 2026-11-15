@@ -1,7 +1,9 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  distDir: process.env.NODE_ENV === "development" ? ".next-dev-webpack" : ".next",
+  distDir:
+    process.env.NEXORA_NEXT_DIST_DIR ||
+    (process.env.NODE_ENV === "development" ? ".next-dev-webpack" : ".next"),
   devIndicators: false,
   allowedDevOrigins: ["127.0.0.1"],
   serverExternalPackages: ["pptxgenjs", "@huggingface/transformers"],

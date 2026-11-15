@@ -59,6 +59,15 @@ jobs:
       - name: Check shared AI prompt prefix
         run: npm run smoke:agent-prefix
 
+      - name: Check supervisor model tool routing without API calls
+        run: npm run smoke:supervisor-model
+
+      - name: Check supervisor chat API with a local mock model
+        run: npm run smoke:supervisor-api
+
+      - name: Check DeepSeek connectivity probe without generation usage
+        run: npm run smoke:deepseek-connectivity
+
       - name: Verify desktop timer deliverable
         run: npm run smoke:desktop-timer
 

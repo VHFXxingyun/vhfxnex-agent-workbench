@@ -3,11 +3,13 @@ import type { ChatAttachment } from "@/lib/goal";
 import { getUser } from "@/lib/auth";
 import { readJsonObject } from "@/lib/request";
 import { isSupportedImageDataUrl } from "@/lib/image";
+import { appendWorkbenchCompletionForUser } from "@/lib/supervisor-store";
 import {
   cancelWorkbenchHandoffForUser,
   claimWorkbenchHandoffForUser,
   completeWorkbenchHandoffForUser,
   enqueueWorkbenchHandoffForUser,
+  getWorkspaceForUser,
   listPendingWorkbenchHandoffsForUser,
   releaseWorkbenchHandoffForUser,
 } from "@/lib/workspace-store";
@@ -119,6 +121,7 @@ export async function POST(request: NextRequest) {
     existing: result.status === "existing",
     completed: result.status === "completed",
     cancelled: result.status === "cancelled",
+    failed: result.status === "failed",
   });
 }
 
@@ -137,11 +140,44 @@ export async function PATCH(request: NextRequest) {
     const result = claimWorkbenchHandoffForUser(user.id, id, claimToken);
     if (result.status === "missing") return NextResponse.json({ status: "missing" });
     if (result.status === "busy") return NextResponse.json({ status: "busy" });
+    if (result.status === "failed") {
+      if (result.handoff && result.originScope === "global") {
+        const workspace = getWorkspaceForUser(user.id, result.handoff.workspaceId);
+        appendWorkbenchCompletionForUser(user.id, {
+          handoffId: result.handoff.id,
+          workspaceId: result.handoff.workspaceId,
+          workspaceTitle: result.handoff.workspaceTitle,
+          outcome: "failed",
+          summary: "后台任务连续失败已达到自动重试上限。请查看工作区错误信息并调整要求后重试。",
+          completedTasks:
+            workspace?.result?.tasks.filter((task) => task.status === "done").length || 0,
+          totalTasks: workspace?.result?.tasks.length || 0,
+          artifactTitles: workspace?.result?.artifacts.map((artifact) => artifact.title) || [],
+        });
+      }
+      return NextResponse.json({ status: "failed" });
+    }
+    if (result.status === "delayed")
+      return NextResponse.json({ status: "delayed", retryAfterMs: result.retryAfterMs });
     return NextResponse.json({ status: "claimed", handoff: result.handoff, token: claimToken });
   }
   if (!token) return NextResponse.json({ error: "任务确认标识缺失。" }, { status: 400 });
   if (action === "release") {
-    return NextResponse.json({ ok: releaseWorkbenchHandoffForUser(user.id, id, token) });
+    const retryAfterMs =
+      typeof body.retryAfterMs === "number" && Number.isFinite(body.retryAfterMs)
+        ? Math.max(0, Math.min(10 * 60_000, Math.floor(body.retryAfterMs)))
+        : undefined;
+    const maxAttempts =
+      typeof body.maxAttempts === "number" && Number.isFinite(body.maxAttempts)
+        ? Math.max(1, Math.min(3, Math.floor(body.maxAttempts)))
+        : undefined;
+    const result = releaseWorkbenchHandoffForUser(user.id, id, token, {
+      ...(typeof body.retryable === "boolean" ? { retryable: body.retryable } : {}),
+      ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
+      ...(maxAttempts !== undefined ? { maxAttempts } : {}),
+      ...(typeof body.lastError === "string" ? { lastError: body.lastError.slice(0, 500) } : {}),
+    });
+    return NextResponse.json({ ok: result !== "missing", status: result });
   }
   if (action === "complete") {
     return NextResponse.json({ ok: completeWorkbenchHandoffForUser(user.id, id, token) });

@@ -1,16 +1,10 @@
 import { NextResponse } from "next/server";
 import { getUser } from "@/lib/auth";
 import { sameOriginError } from "@/lib/request";
-import {
-  DEEPSEEK_AUTH_ERROR,
-  DEEPSEEK_MODEL,
-  getDeepSeekUserId,
-  readDeepSeekUsage,
-  requestDeepSeek,
-} from "@/lib/deepseek";
+import { DEEPSEEK_AUTH_ERROR, DEEPSEEK_MODEL, requestDeepSeekModels } from "@/lib/deepseek";
 import { getDeepSeekApiKey } from "@/lib/deepseek-key.mjs";
 import { isAbortError } from "@/lib/errors";
-import { recordAiUsage } from "@/lib/ai-usage";
+import { deepSeekModelIsAvailable } from "@/lib/deepseek-model-catalog.mjs";
 
 export const runtime = "nodejs";
 
@@ -30,16 +24,7 @@ export async function POST(request: Request) {
 
   const started = performance.now();
   try {
-    const response = await requestDeepSeek(
-      apiKey,
-      {
-        user_id: getDeepSeekUserId(user.id),
-        max_tokens: 8,
-        messages: [{ role: "user", content: "Reply with exactly: OK" }],
-      },
-      20_000,
-      request.signal,
-    );
+    const response = await requestDeepSeekModels(apiKey, 20_000, request.signal);
     if (!response.ok)
       return NextResponse.json(
         {
@@ -52,11 +37,11 @@ export async function POST(request: Request) {
       );
 
     const payload = await response.json();
-    const usage = readDeepSeekUsage(payload, performance.now() - started);
-    recordAiUsage(user.id, "execute", usage, { source: "healthcheck" });
-    const content = payload?.choices?.[0]?.message?.content;
-    if (typeof content !== "string" || !content.trim())
-      return NextResponse.json({ error: "DeepSeek 已响应，但没有返回可读内容。" }, { status: 502 });
+    if (!deepSeekModelIsAvailable(payload, DEEPSEEK_MODEL))
+      return NextResponse.json(
+        { error: `DeepSeek 已连接，但模型「${DEEPSEEK_MODEL}」当前不可用。` },
+        { status: 502 },
+      );
 
     return NextResponse.json({
       model: DEEPSEEK_MODEL,

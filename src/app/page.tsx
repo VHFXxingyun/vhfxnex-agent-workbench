@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
@@ -36,6 +36,7 @@ import {
   Trash2,
   Users,
   WandSparkles,
+  Wrench,
   X,
   Zap,
 } from "lucide-react";
@@ -57,6 +58,8 @@ import AccountView from "@/components/AccountView";
 import ProjectFlowPanel from "@/components/ProjectFlowPanel";
 import WorkspaceChat from "@/components/WorkspaceChat";
 import ArtifactPreview from "@/components/ArtifactPreview";
+import ToolCenter from "@/components/ToolCenter";
+import SupervisorDock from "@/components/SupervisorDock";
 import ConfirmDialog, { type ConfirmRequest } from "@/components/ConfirmDialog";
 import { clientSession, reconcileUnauthorizedSession } from "@/lib/client-session";
 import { isSupportedImageDataUrl, MAX_IMAGE_BYTES } from "@/lib/image";
@@ -73,6 +76,8 @@ import { createVideoContactSheet, isVideoFile } from "@/lib/video-contact-sheet"
 const SIDEBAR_COLLAPSED_PREFERENCE_KEY = "nexora:sidebar-collapsed:v1";
 const SIDEBAR_PREFERENCE_EVENT = "nexora:sidebar-preference-change";
 const ACTIVE_WORKSPACE_SESSION_KEY_PREFIX = "vhfxnex:active-workspace:v1:";
+const ACTIVE_EXECUTION_STATUS_POLL_MS = 2_500;
+const IDLE_EXECUTION_STATUS_POLL_MS = 8_000;
 
 function activeWorkspaceSessionKey(userId: string) {
   return `${ACTIVE_WORKSPACE_SESSION_KEY_PREFIX}${userId}`;
@@ -159,7 +164,7 @@ type PlanDraftRecovery = {
   attachments: ChatAttachment[];
   useDemo: boolean;
 };
-type View = "home" | "workspace" | "history" | "knowledge" | "admin" | "account";
+type View = "home" | "workspace" | "history" | "knowledge" | "tools" | "admin" | "account";
 type AdminData = {
   userCount: number;
   workspaceCount: number;
@@ -1049,6 +1054,20 @@ export default function Home() {
   const [authMode, setAuthMode] = useState<"register" | "login">("register");
   const [loading, setLoading] = useState(true);
   const [view, setView] = useState<View>("home");
+  const [supervisorPrompt, setSupervisorPrompt] = useState("");
+  const [supervisorAttachments, setSupervisorAttachments] = useState<ChatAttachment[]>([]);
+  const [supervisorOpen, setSupervisorOpen] = useState(false);
+  const [directToolLaunch, setDirectToolLaunch] = useState<{
+    id: string;
+    tool: "documents" | "pdf" | "code" | "spreadsheet" | "json" | "presentation" | "search";
+    instruction: string;
+    consumed: boolean;
+  } | null>(null);
+  const consumeDirectToolLaunch = useCallback((launchId: string) => {
+    setDirectToolLaunch((current) =>
+      current?.id === launchId && !current.consumed ? { ...current, consumed: true } : current,
+    );
+  }, []);
   const [mobileNav, setMobileNav] = useState(false);
   const desktopSidebarCollapsed = useSyncExternalStore(
     subscribeToSidebarPreference,
@@ -1071,6 +1090,7 @@ export default function Home() {
   const [busy, setBusy] = useState<"analyze" | "execute" | null>(null);
   const [activeExecution, setActiveExecution] = useState<ActiveExecution | null>(null);
   const [serverExecution, setServerExecution] = useState<ActiveExecution | null>(null);
+  const [serverExecutions, setServerExecutions] = useState<ActiveExecution[]>([]);
   const activeExecutionStartedAt = Date.parse(activeExecution?.startedAt || "");
   const serverExecutionStartedAt = Date.parse(serverExecution?.startedAt || "");
   const serverExecutionMatchesActiveRun = Boolean(
@@ -1087,6 +1107,31 @@ export default function Home() {
         activeExecution?.workspaceId !== serverExecution.workspaceId
       ? serverExecution
       : activeExecution || serverExecution;
+  const executionStatusByWorkspace = useMemo(() => {
+    const statuses = new Map<string, ActiveExecution>();
+    const retainLatest = (candidate: ActiveExecution) => {
+      const current = statuses.get(candidate.workspaceId);
+      const candidateStartedAt =
+        Date.parse(candidate.startedAt || "") || Date.parse(candidate.updatedAt || "") || 0;
+      const currentStartedAt = current
+        ? Date.parse(current.startedAt || "") || Date.parse(current.updatedAt || "") || 0
+        : 0;
+      const candidateUpdatedAt = Date.parse(candidate.updatedAt || "") || candidateStartedAt;
+      const currentUpdatedAt = current
+        ? Date.parse(current.updatedAt || "") || currentStartedAt
+        : 0;
+      if (
+        !current ||
+        candidateStartedAt > currentStartedAt ||
+        (candidateStartedAt === currentStartedAt && candidateUpdatedAt > currentUpdatedAt)
+      )
+        statuses.set(candidate.workspaceId, candidate);
+    };
+    for (const execution of serverExecutions) retainLatest(execution);
+    if (serverExecution) retainLatest(serverExecution);
+    if (activeExecution) retainLatest(activeExecution);
+    return statuses;
+  }, [activeExecution, serverExecution, serverExecutions]);
   const [completedToolCalls, setCompletedToolCalls] = useState(0);
   const [executionStreamText, setExecutionStreamText] = useState("");
   const [questionBusy, setQuestionBusy] = useState(false);
@@ -1342,6 +1387,7 @@ export default function Home() {
     setBusy(null);
     setActiveExecution(null);
     setServerExecution(null);
+    setServerExecutions([]);
     setCompletedToolCalls(0);
     setQuestionBusy(false);
     setQuestionWorkspaceId(null);
@@ -1407,7 +1453,27 @@ export default function Home() {
   useEffect(() => {
     if (!user?.id) return;
     let active = true;
+    let requestInFlight = false;
+    let timer: number | undefined;
+    let hasRunningExecution = false;
+    const clearPoll = () => {
+      if (timer !== undefined) window.clearTimeout(timer);
+      timer = undefined;
+    };
+    const schedulePoll = () => {
+      clearPoll();
+      if (!active || document.visibilityState !== "visible") return;
+      const delay = hasRunningExecution
+        ? ACTIVE_EXECUTION_STATUS_POLL_MS
+        : IDLE_EXECUTION_STATUS_POLL_MS;
+      timer = window.setTimeout(() => {
+        timer = undefined;
+        void refreshExecutionStatus();
+      }, delay);
+    };
     const refreshExecutionStatus = async () => {
+      if (!active || document.visibilityState !== "visible" || requestInFlight) return;
+      requestInFlight = true;
       try {
         const data = await api<{ executions: ActiveExecution[] }>(
           "/api/executions",
@@ -1415,7 +1481,9 @@ export default function Home() {
           true,
         );
         if (!active) return;
+        setServerExecutions(data.executions);
         const running = data.executions.find((execution) => execution.state === "running");
+        hasRunningExecution = Boolean(running);
         const recentFailure = data.executions.find(
           (execution) =>
             execution.state === "failed" &&
@@ -1435,40 +1503,51 @@ export default function Home() {
         });
       } catch {
         // Keep the last known status visible if a brief poll fails.
+      } finally {
+        requestInFlight = false;
+        schedulePoll();
       }
     };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") void refreshExecutionStatus();
+      else clearPoll();
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
     void refreshExecutionStatus();
-    const interval = window.setInterval(() => void refreshExecutionStatus(), 2500);
     return () => {
       active = false;
-      window.clearInterval(interval);
+      clearPoll();
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, [user?.id]);
-  const recoveredExecutionSignature = useRef("");
+  const recoveredExecutionSignatures = useRef(new Set<string>());
   useEffect(() => {
-    if (visibleExecution?.state !== "completed" || !visibleExecution.updatedAt) return;
-    const signature = `${visibleExecution.workspaceId}:${visibleExecution.updatedAt}`;
-    if (recoveredExecutionSignature.current === signature) return;
-    recoveredExecutionSignature.current = signature;
-    let active = true;
-    api<{ workspace: Workspace }>(
-      `/api/workspaces/${visibleExecution.workspaceId}`,
-      undefined,
-      true,
-    )
-      .then(({ workspace: saved }) => {
-        if (!active) return;
-        setHistory((current) => [saved, ...current.filter((item) => item.id !== saved.id)]);
-        if (activeWorkspaceIdRef.current === saved.id) setActiveWorkspace(saved);
-      })
-      .catch(() => {
-        if (activeWorkspaceIdRef.current === visibleExecution.workspaceId)
-          setError("执行已完成，但暂时无法读取最新成果；重新打开工作区即可恢复。 ");
-      });
-    return () => {
-      active = false;
-    };
-  }, [visibleExecution?.state, visibleExecution?.updatedAt, visibleExecution?.workspaceId]);
+    const requestEpoch = clientSession.epoch;
+    for (const execution of executionStatusByWorkspace.values()) {
+      if (execution.state !== "completed" || !execution.updatedAt) continue;
+      const signature = `${execution.workspaceId}:${execution.updatedAt}`;
+      if (recoveredExecutionSignatures.current.has(signature)) continue;
+      recoveredExecutionSignatures.current.add(signature);
+      void api<{ workspace: Workspace }>(
+        `/api/workspaces/${execution.workspaceId}`,
+        undefined,
+        true,
+      )
+        .then(({ workspace: saved }) => {
+          if (requestEpoch !== clientSession.epoch) return;
+          setHistory((current) => [saved, ...current.filter((item) => item.id !== saved.id)]);
+          if (activeWorkspaceIdRef.current === saved.id) setActiveWorkspace(saved);
+        })
+        .catch(() => {
+          recoveredExecutionSignatures.current.delete(signature);
+          if (
+            requestEpoch === clientSession.epoch &&
+            activeWorkspaceIdRef.current === execution.workspaceId
+          )
+            setError("执行已完成，但暂时无法读取最新成果；重新打开工作区即可恢复。 ");
+        });
+    }
+  }, [executionStatusByWorkspace, user?.id]);
   useEffect(() => {
     const resetExpiredSession = (event: Event) => {
       const expiredEpoch = (event as CustomEvent<{ epoch?: number }>).detail?.epoch;
@@ -2767,6 +2846,7 @@ export default function Home() {
               undefined,
               true,
             ).catch(() => ({ executions: [] }));
+            setServerExecutions(statusSnapshot.executions);
             const recoveredExecution = statusSnapshot.executions
               .filter((execution) => execution.workspaceId === targetWorkspace.id)
               .sort(
@@ -3101,21 +3181,24 @@ export default function Home() {
     let claim: { id: string; token: string } | null = null;
     try {
       const claimed = await api<{
-        status: "claimed" | "busy" | "missing";
+        status: "claimed" | "busy" | "delayed" | "failed" | "missing";
         handoff?: QueuedWorkbenchHandoff;
         token?: string;
+        retryAfterMs?: number;
       }>("/api/handoffs", {
         method: "PATCH",
         body: JSON.stringify({ action: "claim", id: queued.id }),
       });
       if (requestEpoch !== clientSession.epoch) return;
-      if (claimed.status === "busy") {
+      if (claimed.status === "busy" || claimed.status === "delayed") {
         queuedHandoffsRef.current.unshift(queued);
         setQueuedHandoffCount(queuedHandoffsRef.current.length);
-        scheduleQueuedHandoffRetry(5000);
+        scheduleQueuedHandoffRetry(claimed.retryAfterMs ?? 5000);
         return;
       }
       if (claimed.status !== "claimed" || !claimed.handoff || !claimed.token) {
+        if (claimed.status === "failed" && activeWorkspaceIdRef.current === queued.workspaceId)
+          setError("这项后台任务已达到自动重试上限。请查看工作区错误信息，调整要求后再试。");
         setQueuedHandoffCount(queuedHandoffsRef.current.length);
         return;
       }
@@ -3345,6 +3428,22 @@ export default function Home() {
     setMobileNav(false);
     setError("");
   }
+  const consumeSupervisorPrompt = useCallback(() => setSupervisorPrompt(""), []);
+  const consumeSupervisorAttachments = useCallback(() => setSupervisorAttachments([]), []);
+  async function refreshQueuedHandoffs() {
+    try {
+      const queued = await api<{ handoffs: QueuedWorkbenchHandoff[] }>(
+        "/api/handoffs",
+        undefined,
+        true,
+      );
+      queuedHandoffsRef.current = queued.handoffs;
+      setQueuedHandoffCount(queued.handoffs.length);
+      if (queued.handoffs.length) scheduleQueuedHandoffRetry(0);
+    } catch {
+      setError("总控 Agent 已提交工作交接，但队列状态刷新失败；请稍后从工作区重试。");
+    }
+  }
   function toggleDesktopSidebar() {
     const nextCollapsed = !sidebarCollapsed;
     if (view === "workspace") {
@@ -3476,8 +3575,24 @@ export default function Home() {
       }),
     ]) ?? [],
   );
-  const workspaceExecution =
-    workspace && visibleExecution?.workspaceId === workspace.id ? visibleExecution : null;
+  const recentWorkspaces = [...history]
+    .sort((left, right) => {
+      const leftExecution = executionStatusByWorkspace.get(left.id);
+      const rightExecution = executionStatusByWorkspace.get(right.id);
+      const leftRunning = leftExecution?.state === "running";
+      const rightRunning = rightExecution?.state === "running";
+      if (leftRunning !== rightRunning) return leftRunning ? -1 : 1;
+      if (leftRunning && rightRunning)
+        return (
+          Date.parse(rightExecution?.updatedAt || rightExecution?.startedAt || "") -
+          Date.parse(leftExecution?.updatedAt || leftExecution?.startedAt || "")
+        );
+      return 0;
+    })
+    .slice(0, 3);
+  const workspaceExecution = workspace
+    ? executionStatusByWorkspace.get(workspace.id) || null
+    : null;
   return (
     <div className={`app-shell view-shell-${view}${sidebarCollapsed ? " nav-collapsed" : ""}`}>
       {mobileNav && (
@@ -3548,6 +3663,13 @@ export default function Home() {
             <BookOpen size={18} /> 我的知识库
           </button>
           <button
+            className={view === "tools" ? "active" : ""}
+            aria-current={view === "tools" ? "page" : undefined}
+            onClick={() => navigate("tools")}
+          >
+            <Wrench size={18} /> 直接工具
+          </button>
+          <button
             className={view === "history" ? "active" : ""}
             aria-current={view === "history" ? "page" : undefined}
             onClick={() => navigate("history")}
@@ -3573,15 +3695,8 @@ export default function Home() {
         </nav>
         <p className="nav-label recent-label">RECENT JOURNEYS</p>
         <div className="recent-list">
-          {(visibleExecution
-            ? [
-                ...history.filter((item) => item.id === visibleExecution.workspaceId),
-                ...history.filter((item) => item.id !== visibleExecution.workspaceId),
-              ].slice(0, 3)
-            : history.slice(0, 3)
-          ).map((item) => {
-            const executionForItem =
-              visibleExecution?.workspaceId === item.id ? visibleExecution : null;
+          {recentWorkspaces.map((item) => {
+            const executionForItem = executionStatusByWorkspace.get(item.id) || null;
             return (
               <button
                 key={item.id}
@@ -3707,9 +3822,11 @@ export default function Home() {
                   ? "管理控制台"
                   : view === "knowledge"
                     ? "我的知识库"
-                    : view === "account"
-                      ? "账户设置"
-                      : "我的目标"}
+                    : view === "tools"
+                      ? "直接工具"
+                      : view === "account"
+                        ? "账户设置"
+                        : "我的目标"}
           </div>
           <div>
             {visibleExecution && (
@@ -4542,6 +4659,19 @@ export default function Home() {
             </section>
           )}
           {view === "knowledge" && <KnowledgeView userId={user.id} />}
+          {view === "tools" && (
+            <ToolCenter
+              key={`${user.id}:${directToolLaunch?.id || "tool-center"}`}
+              userId={user.id}
+              launch={directToolLaunch}
+              onLaunchConsumed={consumeDirectToolLaunch}
+              onAskSupervisor={(message, attachments = []) => {
+                setSupervisorPrompt(message);
+                setSupervisorAttachments(attachments);
+                setSupervisorOpen(true);
+              }}
+            />
+          )}
           {view === "account" && (
             <AccountView
               user={user}
@@ -4585,50 +4715,84 @@ export default function Home() {
                 </div>
               )}
               <div className="history-grid">
-                {history.map((item) => (
-                  <article key={item.id}>
-                    <button
-                      className="history-card-open"
-                      type="button"
-                      onClick={() => openWorkspace(item)}
-                      aria-label={`打开工作区：${item.plan.title}`}
-                    >
-                      <span className="history-card-category">
-                        {item.plan.category}
-                        {workspaceAccessById[item.id] && workspaceAccessById[item.id] !== "owner"
-                          ? ` · ${workspaceAccessById[item.id] === "editor" ? "共享编辑" : "只读共享"}`
-                          : ""}
-                      </span>
-                      <h3>{item.plan.title}</h3>
-                      <p>{item.prompt}</p>
-                      <footer>
-                        <span>
-                          <Clock3 size={14} /> {shortDate(item.createdAt)}
-                        </span>
-                      </footer>
-                    </button>
-                    {(!workspaceAccessById[item.id] ||
-                      workspaceAccessById[item.id] === "owner") && (
+                {history.map((item) => {
+                  const executionForItem = executionStatusByWorkspace.get(item.id) || null;
+                  return (
+                    <article key={item.id}>
                       <button
-                        className="history-card-delete"
+                        className="history-card-open"
                         type="button"
-                        onClick={() =>
-                          setConfirmation({
-                            title: "删除这个目标？",
-                            description: `「${item.plan.title}」及其路线、任务和执行记录都会永久删除，无法恢复。`,
-                            confirmLabel: "删除目标",
-                            tone: "danger",
-                            onConfirm: () => remove(item.id),
-                          })
-                        }
-                        aria-label={`删除目标：${item.plan.title}`}
-                        title="删除目标"
+                        onClick={() => openWorkspace(item)}
+                        aria-label={`打开工作区：${item.plan.title}`}
                       >
-                        <Trash2 size={16} />
+                        <span className="history-card-category">
+                          {item.plan.category}
+                          {workspaceAccessById[item.id] && workspaceAccessById[item.id] !== "owner"
+                            ? ` · ${workspaceAccessById[item.id] === "editor" ? "共享编辑" : "只读共享"}`
+                            : ""}
+                        </span>
+                        <h3>{item.plan.title}</h3>
+                        <p>{item.prompt}</p>
+                        {executionForItem && (
+                          <span
+                            className={`history-card-execution ${executionForItem.state}`}
+                            role="status"
+                            aria-live="polite"
+                          >
+                            {executionForItem.state === "running" ? (
+                              <LoaderCircle size={14} className="chat-spinner" aria-hidden="true" />
+                            ) : executionForItem.state === "completed" ? (
+                              <Check size={14} aria-hidden="true" />
+                            ) : (
+                              <CircleAlert size={14} aria-hidden="true" />
+                            )}
+                            <span>
+                              <strong>
+                                {executionForItem.state === "running"
+                                  ? "Agent 正在推进"
+                                  : executionForItem.state === "completed"
+                                    ? "本轮执行已完成"
+                                    : "本轮执行中断"}
+                                {executionForItem.state === "running" &&
+                                  ` · 已完成 ${executionForItem.completedToolCalls ?? 0} 项操作`}
+                              </strong>
+                              <small>
+                                {executionForItem.state === "failed"
+                                  ? executionForItem.message || executionForItem.activity
+                                  : executionForItem.activity}
+                              </small>
+                            </span>
+                          </span>
+                        )}
+                        <footer>
+                          <span>
+                            <Clock3 size={14} /> {shortDate(item.createdAt)}
+                          </span>
+                        </footer>
                       </button>
-                    )}
-                  </article>
-                ))}
+                      {(!workspaceAccessById[item.id] ||
+                        workspaceAccessById[item.id] === "owner") && (
+                        <button
+                          className="history-card-delete"
+                          type="button"
+                          onClick={() =>
+                            setConfirmation({
+                              title: "删除这个目标？",
+                              description: `「${item.plan.title}」及其路线、任务和执行记录都会永久删除，无法恢复。`,
+                              confirmLabel: "删除目标",
+                              tone: "danger",
+                              onConfirm: () => remove(item.id),
+                            })
+                          }
+                          aria-label={`删除目标：${item.plan.title}`}
+                          title="删除目标"
+                        >
+                          <Trash2 size={16} />
+                        </button>
+                      )}
+                    </article>
+                  );
+                })}
                 {history.length === 0 && historyStatus === "loading" && (
                   <div className="history-empty" role="status" aria-live="polite">
                     <Compass size={35} />
@@ -4719,7 +4883,7 @@ export default function Home() {
                       {adminAiCostEstimate && (
                         <small
                           className="admin-cost-estimate"
-                          title="按 2026-11-14 核对的 DeepSeek V4.1 Flash 公开美元单价回算 DeepSeek Flash 及其当前计费别名的历史 Token；低值假设未测输入命中缓存且全部为非高峰计费，高值假设未测输入未命中且全部为高峰计费。其它或未知模型、历史单价、人民币换算、赠送额度及独立搜索/抓取费用不包含在内，实际账单请以 DeepSeek 平台为准。"
+                          title="按 2026-11-15 核对的 DeepSeek V4.1 Flash 公开美元单价回算 DeepSeek Flash 及其当前计费别名的历史 Token；低值假设未测输入命中缓存且全部为非高峰计费，高值假设未测输入未命中且全部为高峰计费。其它或未知模型、历史单价、人民币换算、赠送额度及独立搜索/抓取费用不包含在内，实际账单请以 DeepSeek 平台为准。"
                         >
                           当前价回算估值：
                           {formatEstimatedUsd(adminAiCostEstimate.lowerUsd)} –
@@ -4727,7 +4891,7 @@ export default function Home() {
                         </small>
                       )}
                       {adminAiCostEstimate?.measuredHitTokens ? (
-                        <small title="只按供应商明确报告的缓存命中 Token 计算相对缓存未命中的输入节省；仅限 DeepSeek Flash 及其当前计费别名，并使用 2026-11-14 核对的公开价，不推测没有缓存统计的请求。">
+                        <small title="只按供应商明确报告的缓存命中 Token 计算相对缓存未命中的输入节省；仅限 DeepSeek Flash 及其当前计费别名，并使用 2026-11-15 核对的公开价，不推测没有缓存统计的请求。">
                           已确认缓存命中可少付输入费约{" "}
                           {formatEstimatedUsd(adminAiCostEstimate.confirmedCacheSavingsUsd.lower)} –
                           {formatEstimatedUsd(adminAiCostEstimate.confirmedCacheSavingsUsd.upper)}
@@ -5377,6 +5541,38 @@ export default function Home() {
             </section>
           )}
         </main>
+        <SupervisorDock
+          workspaces={history
+            .filter((item) => workspaceAccessById[item.id] !== "viewer")
+            .map((item) => ({
+              id: item.id,
+              plan: item.plan,
+              mode: item.mode,
+              conversation: item.conversation,
+            }))}
+          activeWorkspaceId={workspace?.id || null}
+          open={supervisorOpen}
+          onOpenChange={setSupervisorOpen}
+          onOpenWorkspace={(id) => {
+            const target = history.find((item) => item.id === id);
+            if (target) openWorkspace(target);
+          }}
+          onOpenTools={() => navigate("tools")}
+          onOpenUserTool={(tool, instruction) => {
+            setDirectToolLaunch({ id: crypto.randomUUID(), tool, instruction, consumed: false });
+            setSupervisorOpen(false);
+            navigate("tools");
+          }}
+          onStartNewGoal={(newGoalPrompt) => {
+            setSupervisorOpen(false);
+            void analyze(newGoalPrompt);
+          }}
+          initialPrompt={supervisorPrompt}
+          onPromptConsumed={consumeSupervisorPrompt}
+          initialAttachments={supervisorAttachments}
+          onAttachmentsConsumed={consumeSupervisorAttachments}
+          onHandoff={() => void refreshQueuedHandoffs()}
+        />
       </div>
       <AnimatePresence>
         {sharingOpen && workspace && activeWorkspaceAccess === "owner" && (

@@ -1,5 +1,6 @@
 import type { AiRunUsage } from "@/lib/goal";
 import { parseDeepSeekUsage } from "@/lib/deepseek-usage.mjs";
+export { requestDeepSeekModels } from "@/lib/deepseek-model-catalog.mjs";
 export { getDeepSeekUserId } from "@/lib/deepseek-user-id.mjs";
 
 export const DEEPSEEK_CHAT_COMPLETIONS_URL = "https://api.deepseek.com/chat/completions";

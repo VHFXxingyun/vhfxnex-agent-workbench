@@ -11,4 +11,9 @@ export type InitialAgentOutput = {
   hasPdf?: boolean;
 };
 
+export function isExecutionContinuation(input?: {
+  explicitContinuation?: boolean;
+  previousResult?: unknown;
+}): boolean;
+
 export function missingInitialAgentOutputs(output: InitialAgentOutput): string[];

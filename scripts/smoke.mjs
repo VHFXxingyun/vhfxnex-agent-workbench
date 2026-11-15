@@ -7,10 +7,14 @@ import { createDeepSeek } from "@ai-sdk/deepseek";
 import Database from "better-sqlite3";
 import bcrypt from "bcryptjs";
 import JSZip from "jszip";
+import { parsePdfPageSelection } from "../src/lib/pdf-pages.mjs";
 import { generateText } from "ai";
 import * as pdfjs from "pdfjs-dist/legacy/build/pdf.mjs";
 import { configuredTrustedProxyHops, resolveClientAddress } from "../src/lib/client-address.mjs";
-import { missingInitialAgentOutputs } from "../src/lib/agent-validation.mjs";
+import {
+  isExecutionContinuation,
+  missingInitialAgentOutputs,
+} from "../src/lib/agent-validation.mjs";
 import {
   parseToolArguments,
   projectFileRequirements,
@@ -77,6 +81,16 @@ import {
   isWorkspaceProgressQuestion,
 } from "../src/lib/workspace-progress-answer.mjs";
 import { buildDialogueWorkspaceContext } from "../src/lib/dialogue-context.mjs";
+import { buildWorkbenchHandoffResultMessage } from "../src/lib/supervisor-handoff-result.mjs";
+import { classifyWorkbenchFailure, WORKBENCH_MAX_ATTEMPTS } from "../src/lib/workbench-retry.mjs";
+import { classifyExplicitUserToolLaunch } from "../src/lib/dialogue-intent.mjs";
+import {
+  readCodeDraft,
+  readDocumentDraft,
+  readJsonDraft,
+  readPresentationDraft,
+  readSpreadsheetDraft,
+} from "../src/lib/direct-tool-draft.mjs";
 import { availableCapacity, keepWithinLimit } from "../src/lib/workspace-capacity.mjs";
 import { createWorkspaceExecutionLeaseStore } from "../src/lib/workspace-execution-lease.mjs";
 import { resolveDatabasePath } from "../src/lib/database-path.mjs";
@@ -336,6 +350,222 @@ function checkDialogueWorkspaceContext() {
   check(true, "Keep dialogue context compact while preserving progress and full workbench state");
 }
 
+function checkDirectToolDrafts() {
+  assert.deepEqual(readDocumentDraft({ title: "方案", content: "# 内容" }), {
+    title: "方案",
+    content: "# 内容",
+  });
+  assert.equal(readDocumentDraft({ title: "x".repeat(81), content: "" }), null);
+  assert.deepEqual(
+    readCodeDraft({
+      title: "网页",
+      files: [{ path: "src/index.js", content: "ok" }],
+      activePath: "invalid.js",
+    }),
+    { title: "网页", files: [{ path: "src/index.js", content: "ok" }], activePath: "src/index.js" },
+  );
+  assert.equal(
+    readCodeDraft({
+      title: "危险路径",
+      files: [{ path: "../secret.txt", content: "no" }],
+      activePath: "../secret.txt",
+    }),
+    null,
+  );
+  assert.equal(
+    readSpreadsheetDraft({ name: "表格", columns: ["A", "B"], rows: [["只有一格"]] }),
+    null,
+  );
+  assert.deepEqual(
+    readSpreadsheetDraft({ name: "表格", columns: ["事项"], rows: [["保留内容"]] }),
+    { name: "表格", columns: ["事项"], rows: [["保留内容"]] },
+  );
+  assert.deepEqual(
+    readSpreadsheetDraft({
+      name: "备注",
+      columns: ["标题"],
+      rows: [["第二张表的数据"]],
+      sheets: [
+        { name: "事项", columns: ["名称"], rows: [["报名"]] },
+        { name: "备注", columns: ["标题"], rows: [["第二张表的数据"]] },
+      ],
+      activeSheetIndex: 1,
+    }),
+    {
+      name: "备注",
+      columns: ["标题"],
+      rows: [["第二张表的数据"]],
+      sheets: [
+        { name: "事项", columns: ["名称"], rows: [["报名"]] },
+        { name: "备注", columns: ["标题"], rows: [["第二张表的数据"]] },
+      ],
+      activeSheetIndex: 1,
+    },
+  );
+  assert.equal(
+    readSpreadsheetDraft({
+      name: "表格",
+      columns: ["事项"],
+      rows: [["ok"]],
+      sheets: Array.from({ length: 9 }, (_, index) => ({
+        name: `表${index}`,
+        columns: ["事项"],
+        rows: [["ok"]],
+      })),
+      activeSheetIndex: 0,
+    }),
+    null,
+  );
+  assert.deepEqual(readJsonDraft({ content: '{"ok":true}' }), { content: '{"ok":true}' });
+  assert.equal(readJsonDraft({ content: "x".repeat(300_001) }), null);
+  const presentationDraft = {
+    title: "项目提案",
+    description: "演示方案",
+    slides: [
+      { title: "问题", bulletsText: "场景一\n场景二", speakerNotes: "说明背景" },
+      { title: "方案", bulletsText: "执行\n验证", speakerNotes: "说明落地" },
+    ],
+    activeSlideIndex: 1,
+  };
+  assert.deepEqual(readPresentationDraft(presentationDraft), presentationDraft);
+  assert.equal(
+    readPresentationDraft({
+      ...presentationDraft,
+      slides: [{ title: "超载", bulletsText: "a\nb\nc\nd\ne\nf\ng", speakerNotes: "" }],
+      activeSlideIndex: 0,
+    }),
+    null,
+  );
+  assert.deepEqual(classifyExplicitUserToolLaunch("打开 JSON 工具"), {
+    tool: "json",
+    instruction: "打开 JSON 工具",
+  });
+  assert.equal(classifyExplicitUserToolLaunch("打开 PowerPoint 工具")?.tool, "presentation");
+  assert.equal(classifyExplicitUserToolLaunch("打开 PDF 工具箱")?.tool, "pdf");
+  assert.deepEqual(parsePdfPageSelection("1-3, 5, 3", 5), [0, 1, 2, 4]);
+  assert.throws(() => parsePdfPageSelection("0, 2", 5), /超出/u);
+  assert.throws(() => parsePdfPageSelection("1-6", 5), /超出/u);
+  assert.throws(() => parsePdfPageSelection("1,x", 5), /格式无效/u);
+  check(
+    true,
+    "Validate browser-local direct-tool drafts and PDF page selection without model calls",
+  );
+}
+
+function checkSupervisorHandoffResultMessages() {
+  const base = {
+    workspaceTitle: "回归项目",
+    summary: "工作区已保存本轮状态。",
+    completedTasks: 3,
+    totalTasks: 8,
+    completedToolCalls: 2,
+    artifactTitles: ["项目说明", "源代码"],
+  };
+  const completed = buildWorkbenchHandoffResultMessage(base);
+  assert.match(completed, /工作台已完成「回归项目」这一轮执行/u);
+  assert.match(completed, /完成 3\/8 项/u);
+  assert.match(completed, /已生成成果：项目说明、源代码/u);
+  assert.doesNotMatch(completed, /完成率|\d+%/u);
+
+  const interrupted = buildWorkbenchHandoffResultMessage({
+    ...base,
+    outcome: "interrupted",
+    summary: "本次执行遇到问题，已有内容仍然保留。",
+  });
+  assert.match(interrupted, /这一轮执行暂未完成/u);
+  assert.match(interrupted, /当前可查看成果：项目说明、源代码/u);
+  assert.match(interrupted, /继续推进/u);
+
+  const cancelled = buildWorkbenchHandoffResultMessage({
+    ...base,
+    outcome: "cancelled",
+    summary: "执行已停止。",
+    totalTasks: 0,
+    completedTasks: 0,
+    artifactTitles: [],
+  });
+  assert.match(cancelled, /已停止「回归项目」/u);
+  assert.match(cancelled, /已完成 2 项工具操作/u);
+  assert.match(cancelled, /此前保存的内容/u);
+  const failed = buildWorkbenchHandoffResultMessage({
+    ...base,
+    outcome: "failed",
+    summary: "鉴权失败，系统已停止自动重试。",
+  });
+  assert.match(failed, /执行失败，系统已停止自动重试/u);
+  assert.match(failed, /修正后重试/u);
+  check(
+    true,
+    "Report successful, interrupted, and cancelled handoffs with truthful saved progress",
+  );
+}
+
+function checkWorkbenchRetryPolicy() {
+  assert.equal(WORKBENCH_MAX_ATTEMPTS, 3);
+  assert.deepEqual(classifyWorkbenchFailure({ status: 401 }), {
+    retryable: false,
+    retryAfterMs: 0,
+    outcome: "failed",
+  });
+  assert.deepEqual(classifyWorkbenchFailure({ status: 429 }), {
+    retryable: true,
+    retryAfterMs: 60_000,
+    outcome: "retry",
+  });
+  assert.deepEqual(classifyWorkbenchFailure({ status: 409 }), {
+    retryable: false,
+    retryAfterMs: 0,
+    outcome: "failed",
+  });
+  assert.deepEqual(classifyWorkbenchFailure({ status: 503 }), {
+    retryable: true,
+    retryAfterMs: 15_000,
+    outcome: "retry",
+  });
+  assert.equal(classifyWorkbenchFailure({ error: new TypeError("fetch failed") }).retryable, true);
+  assert.equal(classifyWorkbenchFailure({ error: new Error("参数格式无效") }).retryable, false);
+  assert.deepEqual(
+    classifyWorkbenchFailure({ error: new Error("Agent 未生成可下载的代码项目，请重试") }),
+    { retryable: true, retryAfterMs: 15_000, maxAttempts: 2, outcome: "retry" },
+  );
+  assert.equal(
+    classifyWorkbenchFailure({ error: new Error("Agent 未能完成行动方案，请重试") }).retryable,
+    false,
+  );
+  assert.equal(classifyWorkbenchFailure({ cancelled: true }).outcome, "cancelled");
+  check(
+    true,
+    "Retry transient workbench failures only, stop permanent errors, and cap runs at three attempts",
+  );
+}
+
+function checkExecutionContinuationClassification() {
+  const firstRunContinuation = isExecutionContinuation({
+    explicitContinuation: false,
+    previousResult: null,
+  });
+  assert.equal(firstRunContinuation, false);
+  assert.deepEqual(
+    missingInitialAgentOutputs({
+      isContinuation: firstRunContinuation,
+      needsBudget: false,
+      taskCount: 2,
+      milestoneCount: 3,
+      hasDocument: false,
+      hasBudget: false,
+    }),
+    ["行动方案"],
+  );
+  assert.equal(
+    isExecutionContinuation({
+      explicitContinuation: false,
+      previousResult: { tasks: [], milestones: [] },
+    }),
+    true,
+  );
+  assert.equal(isExecutionContinuation({ explicitContinuation: true, previousResult: null }), true);
+}
+
 function checkAdminUsageCsvExport() {
   const csv = createAdminUsageCsv([
     {
@@ -368,6 +598,10 @@ try {
 
   checkExecutionLeaseStore();
   checkDialogueWorkspaceContext();
+  checkSupervisorHandoffResultMessages();
+  checkWorkbenchRetryPolicy();
+  checkExecutionContinuationClassification();
+  checkDirectToolDrafts();
   checkAdminUsageCsvExport();
   const envTestDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "nexora-env-smoke-"));
   const inheritedApiKey = process.env.DEEPSEEK_API_KEY;
@@ -554,7 +788,6 @@ try {
     ["src/app/api/plan/route.ts", "user_id", 1],
     ["src/app/api/chat/route.ts", "userId", 1],
     ["src/app/api/execute/route.ts", "userId", 2],
-    ["src/app/api/admin/ai-status/route.ts", "user_id", 1],
   ];
   for (const [routePath, field, expectedCalls] of deepSeekRequestPaths) {
     const routeSource = fs.readFileSync(path.join(process.cwd(), routePath), "utf8");
@@ -1313,6 +1546,24 @@ try {
       hasExistingProject: true,
     }),
     "update",
+  );
+  assert.equal(
+    classifyProjectIntent("做一份桌面番茄钟小工具吧", {
+      isContinuation: true,
+      hasExistingProject: true,
+      existingProjectContext: "做一个桌面计时器\n桌面计时器开发计划",
+    }),
+    "update",
+    "a new synonym for the existing desktop timer project should be treated as a patch",
+  );
+  assert.equal(
+    classifyProjectIntent("做一个桌面宠物小工具", {
+      isContinuation: true,
+      hasExistingProject: true,
+      existingProjectContext: "做一个桌面计时器\n桌面计时器开发计划",
+    }),
+    "create",
+    "a different project topic should remain a new project",
   );
   assert.equal(
     classifyProjectIntent("这个区域不能往下滑", {
@@ -3674,7 +3925,65 @@ try {
   });
   assert.equal(executionAfterProgressDialogue.payload?.executions?.[0]?.state, "running");
   check(true, "Persist dialogue-Agent progress replies while the workbench continues running");
+  const globalProgressDialogue = await request("/api/chat", {
+    method: "POST",
+    cookie: sessionCookie,
+    body: { question: "现在后台有项目在运行吗？", thinkingMode: "deep" },
+  });
+  assert.equal(globalProgressDialogue.response.status, 200);
+  assert.equal(globalProgressDialogue.payload?.kind, "reply");
+  assert.match(globalProgressDialogue.payload?.answer || "", new RegExp(workspace.plan.title));
+  assert.match(globalProgressDialogue.payload?.answer || "", /正在后台运行/);
+  const globalToolLaunch = await request("/api/chat", {
+    method: "POST",
+    cookie: sessionCookie,
+    body: { question: "打开代码工坊", thinkingMode: "deep" },
+  });
+  assert.equal(globalToolLaunch.response.status, 200);
+  assert.equal(globalToolLaunch.payload?.kind, "reply");
+  assert.ok(
+    globalToolLaunch.streamEvents.some(
+      (item) => item.type === "launch_tool" && item.tool === "code",
+    ),
+    "the global supervisor should launch the direct code tool without a model request",
+  );
+  const globalConversation = await request("/api/supervisor/conversation", {
+    cookie: sessionCookie,
+  });
+  assert.equal(globalConversation.response.status, 200);
+  assert.match(globalConversation.response.headers.get("cache-control") || "", /no-store/i);
+  assert.ok(
+    globalConversation.payload?.messages?.some(
+      (message) => message.role === "user" && message.content === "现在后台有项目在运行吗？",
+    ),
+    "global chat should persist user turns across refreshes",
+  );
+  assert.ok(
+    globalConversation.payload?.messages?.some(
+      (message) => message.role === "assistant" && /正在后台运行/.test(message.content),
+    ),
+  );
+  const clearGlobalConversation = await request("/api/supervisor/conversation", {
+    method: "DELETE",
+    cookie: sessionCookie,
+  });
+  assert.equal(clearGlobalConversation.response.status, 200);
+  const clearedGlobalConversation = await request("/api/supervisor/conversation", {
+    cookie: sessionCookie,
+  });
+  assert.deepEqual(clearedGlobalConversation.payload?.messages, []);
+  check(
+    true,
+    "Persist, reload, and clear global supervisor messages while local routes avoid model calls",
+  );
   const queuedInstruction = "请直接生成并交付一个可下载运行的桌面计时器代码项目。";
+  const queuedAttachment = {
+    id: crypto.randomUUID(),
+    name: "交接项目源码.txt",
+    mimeType: "text/plain",
+    kind: "text",
+    content: "<!doctype html><title>handoff source</title>",
+  };
   const queuedDialogue = await request("/api/chat", {
     method: "POST",
     cookie: sessionCookie,
@@ -3682,6 +3991,7 @@ try {
       workspaceId: workspace.id,
       question: queuedInstruction,
       thinkingMode: "deep",
+      handoffAttachments: [queuedAttachment],
     },
   });
   assert.equal(queuedDialogue.response.status, 200, queuedDialogue.payload?.error);
@@ -3694,6 +4004,11 @@ try {
     (handoff) => handoff.instruction === queuedInstruction,
   );
   assert.ok(queuedHandoff, "explicit new work should be durably queued during active execution");
+  assert.deepEqual(
+    queuedHandoff.attachments?.map(({ name, content }) => ({ name, content })),
+    [{ name: queuedAttachment.name, content: queuedAttachment.content }],
+    "pinned conversation attachments must reach the workbench queue intact",
+  );
   const blockedClaim = await request("/api/handoffs", {
     method: "PATCH",
     cookie: sessionCookie,
@@ -3702,7 +4017,7 @@ try {
   assert.equal(blockedClaim.payload?.status, "busy");
   check(
     true,
-    "Queue explicit new work during an active run and prevent it from taking over the workspace",
+    "Queue explicit new work and pinned attachments during an active run without taking over the workspace",
   );
   const outsiderExecutionStatuses = await request("/api/executions", { cookie: outsiderCookie });
   assert.equal(outsiderExecutionStatuses.response.status, 200);

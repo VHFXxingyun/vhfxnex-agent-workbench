@@ -1,3 +1,13 @@
+/**
+ * Planning data can already contain tasks and milestones before the first
+ * workbench run. Only an explicit continuation flag or a saved execution
+ * result makes a turn a continuation.
+ * @param {{ explicitContinuation?: boolean; previousResult?: unknown }} input
+ */
+export function isExecutionContinuation(input = {}) {
+  return input.explicitContinuation === true || input.previousResult != null;
+}
+
 export function missingInitialAgentOutputs(output) {
   if (output.isContinuation) return [];
 

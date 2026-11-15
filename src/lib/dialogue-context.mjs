@@ -3,12 +3,25 @@ const MAX_SUMMARY_CHARS = 600;
 const MAX_TASKS = 10;
 const MAX_COMPLETED_TASKS = 2;
 const MAX_ARTIFACTS = 5;
+const MAX_DIALOGUE_HISTORY_MESSAGES = 8;
+const MAX_DIALOGUE_HISTORY_MESSAGE_CHARS = 1_000;
 
 function compactText(value, limit) {
   if (typeof value !== "string") return "";
   const normalized = value.trim();
   if (normalized.length <= limit) return normalized;
   return `${normalized.slice(0, limit - 1).trimEnd()}…`;
+}
+
+/** Keep only recent turns in the model request; the full conversation remains persisted. */
+export function buildDialogueHistoryContext(conversation, { excludeMessageId = "" } = {}) {
+  return (Array.isArray(conversation) ? conversation : [])
+    .filter((message) => !excludeMessageId || message.id !== excludeMessageId)
+    .slice(-MAX_DIALOGUE_HISTORY_MESSAGES)
+    .map(({ role, content }) => ({
+      role,
+      content: compactText(content, MAX_DIALOGUE_HISTORY_MESSAGE_CHARS),
+    }));
 }
 
 /** Build a bounded dialogue-only summary; the workbench still reads full server state. */

@@ -10,6 +10,7 @@ import {
   type Workspace,
 } from "@/lib/goal";
 import { createWorkspaceExecutionLeaseStore } from "@/lib/workspace-execution-lease.mjs";
+import { WORKBENCH_MAX_ATTEMPTS } from "@/lib/workbench-retry.mjs";
 
 export type WorkspaceSaveOutcome =
   "saved" | "conflict" | "forbidden" | "limit" | "too-large" | "invalid" | "locked";
@@ -51,7 +52,12 @@ export type WorkspaceShareLink = {
   maxUses: number;
 };
 
-export type WorkspaceMember = { id: string; name: string; email: string; role: "editor" | "viewer" };
+export type WorkspaceMember = {
+  id: string;
+  name: string;
+  email: string;
+  role: "editor" | "viewer";
+};
 
 export function createWorkspaceShareLinkForUser(
   userId: string,
@@ -73,26 +79,24 @@ export function createWorkspaceShareLinkForUser(
         )
         .get(input.workspaceId, new Date().toISOString()) as { count: number };
       if (activeLinks.count >= 10) return "limit" as const;
-      return (
-        database
-          .prepare(
-            `INSERT INTO workspace_share_links
+      return database
+        .prepare(
+          `INSERT INTO workspace_share_links
               (id, workspace_id, token_hash, role, created_by, created_at, expires_at, max_uses, use_count)
              SELECT ?, id, ?, ?, ?, ?, ?, 10, 0 FROM workspaces WHERE id = ? AND user_id = ?`,
-          )
-          .run(
-            input.id,
-            input.tokenHash,
-            input.role,
-            userId,
-            new Date().toISOString(),
-            input.expiresAt,
-            input.workspaceId,
-            userId,
-          ).changes === 1
-          ? ("created" as const)
-          : ("forbidden" as const)
-      );
+        )
+        .run(
+          input.id,
+          input.tokenHash,
+          input.role,
+          userId,
+          new Date().toISOString(),
+          input.expiresAt,
+          input.workspaceId,
+          userId,
+        ).changes === 1
+        ? ("created" as const)
+        : ("forbidden" as const);
     })
     .immediate();
 }
@@ -150,9 +154,10 @@ export function removeWorkspaceMemberForUser(
     return false;
   return database
     .transaction(() => {
-      const removed = database
-        .prepare("DELETE FROM workspace_members WHERE workspace_id = ? AND user_id = ?")
-        .run(workspaceId, memberId).changes === 1;
+      const removed =
+        database
+          .prepare("DELETE FROM workspace_members WHERE workspace_id = ? AND user_id = ?")
+          .run(workspaceId, memberId).changes === 1;
       if (!removed) return false;
       const now = new Date().toISOString();
       database
@@ -175,14 +180,20 @@ export function removeWorkspaceMemberForUser(
     .immediate();
 }
 
-export function revokeWorkspaceShareLinkForUser(userId: string, workspaceId: string, linkId: string) {
+export function revokeWorkspaceShareLinkForUser(
+  userId: string,
+  workspaceId: string,
+  linkId: string,
+) {
   if (getWorkspaceAccessRoleForUser(userId, workspaceId) !== "owner") return false;
-  return database
-    .prepare(
-      `UPDATE workspace_share_links SET revoked_at = ?
+  return (
+    database
+      .prepare(
+        `UPDATE workspace_share_links SET revoked_at = ?
          WHERE id = ? AND workspace_id = ? AND revoked_at IS NULL`,
-    )
-    .run(new Date().toISOString(), linkId, workspaceId).changes === 1;
+      )
+      .run(new Date().toISOString(), linkId, workspaceId).changes === 1
+  );
 }
 
 export function acceptWorkspaceShareLinkForUser(
@@ -227,8 +238,7 @@ export function acceptWorkspaceShareLinkForUser(
       const existingMember = database
         .prepare("SELECT 1 FROM workspace_members WHERE workspace_id = ? AND user_id = ?")
         .get(row.workspace_id, userId);
-      if (!existingMember && row.use_count >= row.max_uses)
-        return { status: "exhausted" as const };
+      if (!existingMember && row.use_count >= row.max_uses) return { status: "exhausted" as const };
       database
         .prepare(
           `INSERT INTO workspace_members (workspace_id, user_id, role, added_by, created_at)
@@ -237,7 +247,9 @@ export function acceptWorkspaceShareLinkForUser(
         )
         .run(row.workspace_id, userId, row.role, row.created_by, new Date().toISOString());
       if (!existingMember)
-        database.prepare("UPDATE workspace_share_links SET use_count = use_count + 1 WHERE id = ?").run(row.id);
+        database
+          .prepare("UPDATE workspace_share_links SET use_count = use_count + 1 WHERE id = ?")
+          .run(row.id);
       return {
         status: "accepted" as const,
         workspaceId: row.workspace_id,
@@ -487,6 +499,14 @@ export type WorkbenchHandoff = {
   createdAt: string;
 };
 
+export type EditableWorkspaceDispatchOption = {
+  id: string;
+  title: string;
+  prompt: string;
+  category: string;
+  selectedRoute: string;
+};
+
 type DbWorkbenchHandoff = {
   id: string;
   workspace_id: string;
@@ -496,6 +516,9 @@ type DbWorkbenchHandoff = {
   user_message: string;
   attachments_json: string;
   created_at: string;
+  origin_scope: string;
+  attempt_count: number;
+  next_attempt_at: string | null;
 };
 
 function decodeWorkbenchHandoff(row: DbWorkbenchHandoff): WorkbenchHandoff | null {
@@ -519,7 +542,9 @@ function decodeWorkbenchHandoff(row: DbWorkbenchHandoff): WorkbenchHandoff | nul
 
 export function enqueueWorkbenchHandoffForUser(
   userId: string,
-  input: Omit<WorkbenchHandoff, "workspaceTitle" | "createdAt">,
+  input: Omit<WorkbenchHandoff, "workspaceTitle" | "createdAt"> & {
+    userMessageRecord?: ConversationMessage;
+  },
   assistantMessage?: ConversationMessage,
 ): {
   status:
@@ -527,6 +552,7 @@ export function enqueueWorkbenchHandoffForUser(
     | "existing"
     | "completed"
     | "cancelled"
+    | "failed"
     | "missing"
     | "forbidden"
     | "invalid"
@@ -534,12 +560,14 @@ export function enqueueWorkbenchHandoffForUser(
   handoff?: WorkbenchHandoff;
 } {
   const now = new Date().toISOString();
+  const { userMessageRecord, ...handoffInput } = input;
+  const originScope = userMessageRecord ? "global" : "workspace";
   const attachmentsJson = JSON.stringify(input.attachments);
   return database
     .transaction(() => {
       database
         .prepare(
-          "DELETE FROM workbench_handoffs WHERE user_id = ? AND status IN ('completed', 'cancelled') AND updated_at < ?",
+          "DELETE FROM workbench_handoffs WHERE user_id = ? AND status IN ('completed', 'cancelled', 'failed') AND updated_at < ?",
         )
         .run(userId, new Date(Date.now() - 30 * 24 * 60 * 60_000).toISOString());
       const workspaceRole = getWorkspaceAccessRoleForUser(userId, input.workspaceId);
@@ -560,9 +588,20 @@ export function enqueueWorkbenchHandoffForUser(
       } catch {
         return { status: "invalid" as const };
       }
+      if (!isWorkspace(decodedWorkspace)) return { status: "invalid" as const };
       if (
-        !isWorkspace(decodedWorkspace) ||
-        !decodedWorkspace.conversation?.some(
+        userMessageRecord &&
+        (userMessageRecord.id !== input.userMessageId ||
+          userMessageRecord.role !== "user" ||
+          userMessageRecord.content !== input.userMessage)
+      )
+        return { status: "invalid" as const };
+      const conversation = mergeConversations(
+        decodedWorkspace.conversation,
+        userMessageRecord ? [userMessageRecord] : undefined,
+      );
+      if (
+        !conversation.some(
           (message) => message.id === input.userMessageId && message.role === "user",
         )
       )
@@ -571,9 +610,11 @@ export function enqueueWorkbenchHandoffForUser(
       const nextWorkspace: Workspace = assistantMessage
         ? {
             ...decodedWorkspace,
-            conversation: mergeConversations(decodedWorkspace.conversation, [assistantMessage]),
+            conversation: mergeConversations(conversation, [assistantMessage]),
           }
-        : decodedWorkspace;
+        : userMessageRecord
+          ? { ...decodedWorkspace, conversation }
+          : decodedWorkspace;
       if (!isWorkspace(nextWorkspace)) return { status: "invalid" as const };
       const serializedWorkspace = JSON.stringify(nextWorkspace);
       if (Buffer.byteLength(serializedWorkspace, "utf8") > accountDataLimits.workspaceBytes)
@@ -590,7 +631,7 @@ export function enqueueWorkbenchHandoffForUser(
       if (existing) {
         const handoff = decodeWorkbenchHandoff(existing);
         if (!handoff) return { status: "invalid" as const };
-        if (assistantMessage) {
+        if (assistantMessage || userMessageRecord) {
           database
             .prepare("UPDATE workspaces SET body = ?, updated_at = ? WHERE id = ?")
             .run(serializedWorkspace, now, input.workspaceId);
@@ -599,6 +640,7 @@ export function enqueueWorkbenchHandoffForUser(
           return { status: "completed" as const, handoff };
         if (existing.handoff_status === "cancelled")
           return { status: "cancelled" as const, handoff };
+        if (existing.handoff_status === "failed") return { status: "failed" as const, handoff };
         return { status: "existing" as const, handoff };
       }
 
@@ -623,8 +665,8 @@ export function enqueueWorkbenchHandoffForUser(
         .prepare(
           `INSERT INTO workbench_handoffs
             (id, user_id, workspace_id, instruction, user_message_id, user_message,
-             attachments_json, status, claim_token, claim_expires_at, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', NULL, NULL, ?, ?)`,
+             origin_scope, attachments_json, status, claim_token, claim_expires_at, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, NULL, ?, ?)`,
         )
         .run(
           input.id,
@@ -633,11 +675,12 @@ export function enqueueWorkbenchHandoffForUser(
           input.instruction,
           input.userMessageId,
           input.userMessage,
+          originScope,
           attachmentsJson,
           now,
           now,
         );
-      if (assistantMessage) {
+      if (assistantMessage || userMessageRecord) {
         database
           .prepare("UPDATE workspaces SET body = ?, updated_at = ? WHERE id = ?")
           .run(serializedWorkspace, now, input.workspaceId);
@@ -645,13 +688,24 @@ export function enqueueWorkbenchHandoffForUser(
       return {
         status: "queued" as const,
         handoff: {
-          ...input,
+          ...handoffInput,
           workspaceTitle: workspace.title,
           createdAt: now,
         },
       };
     })
     .immediate();
+}
+
+export function isGlobalWorkbenchHandoffForUser(userId: string, handoffId: string, token: string) {
+  return Boolean(
+    database
+      .prepare(
+        `SELECT 1 FROM workbench_handoffs WHERE id = ? AND user_id = ? AND origin_scope = 'global'
+           AND status = 'running' AND claim_token = ? AND claim_expires_at > ?`,
+      )
+      .get(handoffId, userId, token, Date.now()),
+  );
 }
 
 export function listPendingWorkbenchHandoffsForUser(userId: string): WorkbenchHandoff[] {
@@ -705,13 +759,18 @@ export function claimWorkbenchHandoffForUser(
   userId: string,
   handoffId: string,
   token: string,
-): { status: "claimed" | "busy" | "missing"; handoff?: WorkbenchHandoff } {
+): {
+  status: "claimed" | "busy" | "delayed" | "failed" | "missing";
+  handoff?: WorkbenchHandoff;
+  retryAfterMs?: number;
+  originScope?: "workspace" | "global";
+} {
   return database
     .transaction(() => {
       const row = database
         .prepare(
           `SELECT h.*, w.title AS workspace_title, h.status, h.claim_token,
-                  h.claim_expires_at
+                  h.claim_expires_at, h.next_attempt_at
            FROM workbench_handoffs h JOIN workspaces w ON w.id = h.workspace_id
            WHERE h.id = ? AND h.user_id = ?`,
         )
@@ -720,6 +779,7 @@ export function claimWorkbenchHandoffForUser(
             status: string;
             claim_token: string | null;
             claim_expires_at: number | null;
+            next_attempt_at: string | null;
           })
         | undefined;
       if (!row || (row.status !== "pending" && row.status !== "running"))
@@ -735,6 +795,11 @@ export function claimWorkbenchHandoffForUser(
         return { status: "missing" as const };
       }
       const now = Date.now();
+      if (row.status === "pending" && row.next_attempt_at) {
+        const retryAt = Date.parse(row.next_attempt_at);
+        if (Number.isFinite(retryAt) && retryAt > now)
+          return { status: "delayed" as const, retryAfterMs: retryAt - now };
+      }
       const activeLease = database
         .prepare(
           "SELECT 1 FROM workspace_execution_locks WHERE workspace_id = ? AND user_id = ? AND expires_at > ?",
@@ -743,6 +808,26 @@ export function claimWorkbenchHandoffForUser(
       const claimIsActive = row.status === "running" && (row.claim_expires_at || 0) > now;
       if (activeLease || (claimIsActive && row.claim_token !== token))
         return { status: "busy" as const };
+      if (row.attempt_count >= WORKBENCH_MAX_ATTEMPTS) {
+        const handoff = decodeWorkbenchHandoff(row);
+        const changed = database
+          .prepare(
+            `UPDATE workbench_handoffs SET status = 'failed', claim_token = NULL,
+               claim_expires_at = NULL, next_attempt_at = NULL,
+               last_error = '后台任务达到最大尝试次数，系统已停止自动重试。',
+               attachments_json = '[]', updated_at = ?
+             WHERE id = ? AND user_id = ? AND status IN ('pending', 'running')`,
+          )
+          .run(new Date(now).toISOString(), handoffId, userId).changes;
+        return changed && handoff
+          ? {
+              status: "failed" as const,
+              handoff,
+              originScope:
+                row.origin_scope === "global" ? ("global" as const) : ("workspace" as const),
+            }
+          : { status: "missing" as const };
+      }
       const expiresAt = now + 10 * 60_000;
       const changed = database
         .prepare(
@@ -812,33 +897,57 @@ export function releaseWorkbenchHandoffForUser(
   userId: string,
   handoffId: string,
   token: string,
-): boolean {
-  const now = Date.now();
-  const row = database
-    .prepare("SELECT attempt_count FROM workbench_handoffs WHERE id = ? AND user_id = ?")
-    .get(handoffId, userId) as { attempt_count: number } | undefined;
-  if (!row) return false;
-  const exhausted = row.attempt_count >= 5;
-  const retryDelay = Math.min(10 * 60_000, 15_000 * 2 ** Math.max(0, row.attempt_count - 1));
-  return (
-    database
-      .prepare(
-        `UPDATE workbench_handoffs SET status = ?, claim_token = NULL,
-           claim_expires_at = NULL, updated_at = ?, next_attempt_at = ?,
-           last_error = '本轮未完成。请在工作区查看状态并补充指示。',
-           attachments_json = CASE WHEN ? = 1 THEN '[]' ELSE attachments_json END
-         WHERE id = ? AND user_id = ? AND status = 'running' AND claim_token = ?`,
-      )
-      .run(
-        exhausted ? "cancelled" : "pending",
-        new Date(now).toISOString(),
-        exhausted ? null : new Date(now + retryDelay).toISOString(),
-        exhausted ? 1 : 0,
-        handoffId,
-        userId,
-        token,
-      ).changes === 1
-  );
+  options: {
+    retryable?: boolean;
+    retryAfterMs?: number;
+    maxAttempts?: number;
+    lastError?: string;
+  } = {},
+): "retry" | "failed" | "missing" {
+  return database
+    .transaction(() => {
+      const row = database
+        .prepare(
+          `SELECT attempt_count FROM workbench_handoffs
+           WHERE id = ? AND user_id = ? AND status = 'running' AND claim_token = ?`,
+        )
+        .get(handoffId, userId, token) as { attempt_count: number } | undefined;
+      if (!row) return "missing" as const;
+
+      const now = Date.now();
+      const retryable = options.retryable !== false;
+      const maxAttempts = Number.isInteger(options.maxAttempts)
+        ? Math.max(1, Math.min(WORKBENCH_MAX_ATTEMPTS, options.maxAttempts!))
+        : WORKBENCH_MAX_ATTEMPTS;
+      const failed = !retryable || row.attempt_count >= maxAttempts;
+      const retryDelay = Math.min(
+        10 * 60_000,
+        Math.max(1_000, options.retryAfterMs ?? 15_000 * 2 ** Math.max(0, row.attempt_count - 1)),
+      );
+      const lastError = (options.lastError || "本轮执行未完成。请在工作区查看状态并修正后重试。")
+        .replace(/[\u0000-\u001f\u007f]/g, " ")
+        .slice(0, 500);
+      const changed = database
+        .prepare(
+          `UPDATE workbench_handoffs SET status = ?, claim_token = NULL,
+             claim_expires_at = NULL, updated_at = ?, next_attempt_at = ?, last_error = ?,
+             attachments_json = CASE WHEN ? = 1 THEN '[]' ELSE attachments_json END
+           WHERE id = ? AND user_id = ? AND status = 'running' AND claim_token = ?`,
+        )
+        .run(
+          failed ? "failed" : "pending",
+          new Date(now).toISOString(),
+          failed ? null : new Date(now + retryDelay).toISOString(),
+          lastError,
+          failed ? 1 : 0,
+          handoffId,
+          userId,
+          token,
+        ).changes;
+      if (!changed) return "missing" as const;
+      return failed ? ("failed" as const) : ("retry" as const);
+    })
+    .immediate();
 }
 
 export function cancelWorkbenchHandoffForUser(
@@ -891,6 +1000,46 @@ export function getWorkspaceForUser(userId: string, workspaceId: string): Worksp
   } catch {
     return null;
   }
+}
+
+/** Return minimal user-editable workspace context for the global supervisor dispatcher. */
+export function listEditableWorkspacesForUser(
+  userId: string,
+  limit = 12,
+): EditableWorkspaceDispatchOption[] {
+  const rows = database
+    .prepare(
+      `SELECT w.id, w.body FROM workspaces w LEFT JOIN workspace_members m
+         ON m.workspace_id = w.id AND m.user_id = ?
+        WHERE w.user_id = ? OR (m.user_id = ? AND m.role = 'editor')
+        ORDER BY w.updated_at DESC LIMIT ?`,
+    )
+    .all(userId, userId, userId, Math.max(1, Math.min(24, Math.floor(limit)))) as Array<{
+    id: string;
+    body: string;
+  }>;
+  return rows.flatMap((row) => {
+    try {
+      const parsed: unknown = JSON.parse(row.body);
+      if (!isWorkspace(parsed)) return [];
+      const route = parsed.plan.routes.find((item) => item.id === parsed.selectedRouteId);
+      return [
+        {
+          id: parsed.id,
+          title: parsed.plan.title.slice(0, 120),
+          // The dispatcher only needs a compact clue to distinguish similar
+          // projects. Keep the full prompt in the workspace itself; sending
+          // 500 characters for every project on every global chat turn wastes
+          // input tokens without improving authorization or execution.
+          prompt: parsed.prompt.slice(0, 220),
+          category: parsed.plan.category.slice(0, 60),
+          selectedRoute: (route?.title || "未选择路线").slice(0, 100),
+        },
+      ];
+    } catch {
+      return [];
+    }
+  });
 }
 
 export function saveWorkspaceForUser(userId: string, value: unknown): WorkspaceSaveOutcome {
@@ -968,13 +1117,7 @@ export function saveWorkspaceForUser(userId: string, value: unknown): WorkspaceS
           .prepare(
             "UPDATE workspaces SET title = ?, category = ?, body = ?, updated_at = ? WHERE id = ?",
           )
-          .run(
-            workspace.plan.title,
-            workspace.plan.category,
-            serialized,
-            now,
-            workspace.id,
-          );
+          .run(workspace.plan.title, workspace.plan.category, serialized, now, workspace.id);
       }
       return "saved" as const;
     })
@@ -1068,9 +1211,8 @@ export function appendWorkspaceConversationForUser(
   if (!canEditWorkspace(userId, workspaceId)) return "forbidden";
   return database
     .transaction(() => {
-      const row = database
-        .prepare("SELECT body FROM workspaces WHERE id = ?")
-        .get(workspaceId) as Pick<DbWorkspace, "body"> | undefined;
+      const row = database.prepare("SELECT body FROM workspaces WHERE id = ?").get(workspaceId) as
+        Pick<DbWorkspace, "body"> | undefined;
       if (!row) return "missing" as const;
       let current: unknown;
       try {
@@ -1103,9 +1245,8 @@ export function addWorkspaceUsageForUser(
   if (usage.totalTokens <= 0) return "saved";
   if (!canEditWorkspace(userId, workspaceId)) return "forbidden";
   return database.transaction(() => {
-    const row = database
-      .prepare("SELECT body FROM workspaces WHERE id = ?")
-      .get(workspaceId) as Pick<DbWorkspace, "body"> | undefined;
+    const row = database.prepare("SELECT body FROM workspaces WHERE id = ?").get(workspaceId) as
+      Pick<DbWorkspace, "body"> | undefined;
     if (!row) return "missing" as const;
 
     let value: unknown;

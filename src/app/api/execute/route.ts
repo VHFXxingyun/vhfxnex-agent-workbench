@@ -20,7 +20,7 @@ import {
 import { getUser } from "@/lib/auth";
 import { readJsonObject } from "@/lib/request";
 import { isGoalPlan, isRouteOption, WORKSPACE_LIMITS } from "@/lib/workspace-validation";
-import { missingInitialAgentOutputs } from "@/lib/agent-validation.mjs";
+import { isExecutionContinuation, missingInitialAgentOutputs } from "@/lib/agent-validation.mjs";
 import { availableCapacity, keepWithinLimit } from "@/lib/workspace-capacity.mjs";
 import { BUDGET_AMOUNT_LIMIT, normalizeBudgetItems } from "@/lib/budget-validation.mjs";
 import {
@@ -45,6 +45,7 @@ import {
   finishWorkspaceExecutionStatus,
   getWorkspaceForUser,
   getWorkspaceAccessRoleForUser,
+  isGlobalWorkbenchHandoffForUser,
   isWorkspaceExecutionCancellationRequested,
   isWorkbenchHandoffClaimValid,
   refreshWorkbenchHandoffClaimForUser,
@@ -65,11 +66,20 @@ import {
 } from "@/lib/project-review.mjs";
 import { searchDuckDuckGo } from "@/lib/web-search.mjs";
 import { classifySearchIntent } from "@/lib/search-intent.mjs";
-import { buildExecutionSystemPrompt } from "@/lib/execution-prompt.mjs";
+import {
+  buildExecutionCheckpointMessage,
+  buildExecutionRecentUserInstructions,
+  buildExecutionSystemPrompt,
+} from "@/lib/execution-prompt.mjs";
 import { prependSharedAgentPromptPrefix } from "@/lib/agent-prompt-prefix.mjs";
 import { compactToolFailure } from "@/lib/tool-failure.mjs";
 import { isAbortError } from "@/lib/errors";
 import { mergeExecutionCheckpoint } from "@/lib/execution-checkpoint.mjs";
+import {
+  shouldRetryNoProgressProjectRepair,
+  snapshotExecutionRepairProgress,
+} from "@/lib/execution-repair-progress.mjs";
+import { normalizeThinkingMode } from "@/lib/thinking-mode.mjs";
 import { validateExecutionFeasibility } from "@/lib/feasibility-validation.mjs";
 import {
   latestDraftDocumentEventIndex,
@@ -80,6 +90,8 @@ import {
   shouldReviewExistingExecutionFeasibility,
 } from "@/lib/feasibility-intent.mjs";
 import { markPlanChecklistItemsPending } from "@/lib/plan-markdown.mjs";
+import { appendWorkbenchCompletionForUser } from "@/lib/supervisor-store";
+import { classifyWorkbenchFailure } from "@/lib/workbench-retry.mjs";
 
 export const runtime = "nodejs";
 const executionLeaseError =
@@ -514,15 +526,58 @@ function applyTool(
 
 export async function POST(request: NextRequest) {
   let heldExecutionLease: { userId: string; workspaceId: string; token: string } | null = null;
-  let heldHandoffClaim: { userId: string; id: string; token: string } | null = null;
-  const releaseHandoffClaim = () => {
-    if (!heldHandoffClaim) return;
-    releaseWorkbenchHandoffForUser(
-      heldHandoffClaim.userId,
-      heldHandoffClaim.id,
-      heldHandoffClaim.token,
+  let heldHandoffClaim: {
+    userId: string;
+    id: string;
+    token: string;
+    workspaceId: string;
+    workspaceTitle: string;
+  } | null = null;
+  let returnResultToSupervisor = false;
+  const recordSupervisorHandoffFailure = (
+    claim: NonNullable<typeof heldHandoffClaim>,
+    outcome: "interrupted" | "failed" | "cancelled",
+    summary: string,
+  ) => {
+    if (!returnResultToSupervisor) return;
+    const workspace = getWorkspaceForUser(claim.userId, claim.workspaceId);
+    const result = workspace?.result;
+    appendWorkbenchCompletionForUser(claim.userId, {
+      handoffId: claim.id,
+      workspaceId: claim.workspaceId,
+      workspaceTitle: claim.workspaceTitle,
+      outcome,
+      summary,
+      completedTasks: result?.tasks.filter((task) => task.status === "done").length || 0,
+      totalTasks: result?.tasks.length || 0,
+      artifactTitles: result?.artifacts.map((artifact) => artifact.title) || [],
+    });
+  };
+  const releaseHandoffClaim = (
+    options: {
+      retryable?: boolean;
+      retryAfterMs?: number;
+      maxAttempts?: number;
+      lastError?: string;
+    } = {},
+  ) => {
+    if (!heldHandoffClaim) return "missing" as const;
+    const claim = heldHandoffClaim;
+    const releaseStatus = releaseWorkbenchHandoffForUser(
+      claim.userId,
+      claim.id,
+      claim.token,
+      options,
     );
     heldHandoffClaim = null;
+    if (releaseStatus !== "missing") {
+      const terminal = releaseStatus === "failed";
+      const summary = terminal
+        ? `${options.lastError || "本轮执行遇到不可恢复的问题。"} 系统已停止自动重试；工作区此前保存的内容仍然保留。`
+        : `本轮执行遇到暂时性问题。工作区此前保存的内容仍然保留，系统将在约 ${Math.max(1, Math.ceil((options.retryAfterMs || 15_000) / 1000))} 秒后自动重试。`;
+      recordSupervisorHandoffFailure(claim, terminal ? "failed" : "interrupted", summary);
+    }
+    return releaseStatus;
   };
   try {
     const user = await getUser();
@@ -658,12 +713,6 @@ export async function POST(request: NextRequest) {
                   : ("within" as const),
           }
         : undefined;
-    const isContinuation =
-      body.continuation === true || currentTasks.length > 0 || currentMilestones.length > 0;
-    const mustAddTask =
-      isContinuation && /只(?:新增|添加|增加)(?:一项|一个)\s*任务/.test(instruction);
-    const updateBudget = !isContinuation || /预算|费用|成本|经费|金额/.test(instruction);
-    const requestedWork = isContinuation ? instruction : `${goal}\n${instruction}`;
     if (
       !prompt ||
       !isGoalPlan(plan) ||
@@ -688,6 +737,14 @@ export async function POST(request: NextRequest) {
         { error: "实时执行需要一个已保存的工作空间，请重新打开目标后重试。" },
         { status: 409 },
       );
+    const isContinuation = isExecutionContinuation({
+      explicitContinuation: body.continuation === true,
+      previousResult: persistedWorkspace.result,
+    });
+    const mustAddTask =
+      isContinuation && /只(?:新增|添加|增加)(?:一项|一个)\s*任务/.test(instruction);
+    const updateBudget = !isContinuation || /预算|费用|成本|经费|金额/.test(instruction);
+    const requestedWork = isContinuation ? instruction : `${goal}\n${instruction}`;
     if (getWorkspaceAccessRoleForUser(user.id, persistedWorkspace.id) === "viewer")
       return NextResponse.json({ error: "你只有查看权限，无法启动工作台执行。" }, { status: 403 });
     if (
@@ -698,8 +755,20 @@ export async function POST(request: NextRequest) {
         { error: "这项工作已失效，请从保存的任务队列重新开始。" },
         { status: 409 },
       );
-    if (handoffJobId)
-      heldHandoffClaim = { userId: user.id, id: handoffJobId, token: handoffClaimToken };
+    if (handoffJobId) {
+      heldHandoffClaim = {
+        userId: user.id,
+        id: handoffJobId,
+        token: handoffClaimToken,
+        workspaceId: persistedWorkspace.id,
+        workspaceTitle: persistedWorkspace.plan.title,
+      };
+      returnResultToSupervisor = isGlobalWorkbenchHandoffForUser(
+        user.id,
+        handoffJobId,
+        handoffClaimToken,
+      );
+    }
     if (
       persistedWorkspace.prompt !== goal ||
       persistedWorkspace.plan.title !== plan.title ||
@@ -708,8 +777,11 @@ export async function POST(request: NextRequest) {
         (candidate) => candidate.id === route.id && candidate.title === route.title,
       )
     ) {
-      releaseHandoffClaim();
-      return NextResponse.json({ error: "工作空间已更新，请刷新目标后再执行。" }, { status: 409 });
+      releaseHandoffClaim({ retryable: false, lastError: "工作空间已更新，请刷新目标后再执行。" });
+      return NextResponse.json(
+        { error: "工作空间已更新，请刷新目标后再执行。", retryable: false },
+        { status: 409 },
+      );
     }
     const delegatedMessage = dialogMessageId
       ? persistedWorkspace.conversation?.find(
@@ -717,9 +789,12 @@ export async function POST(request: NextRequest) {
         )
       : undefined;
     if (dialogMessageId && !delegatedMessage) {
-      releaseHandoffClaim();
+      releaseHandoffClaim({
+        retryable: false,
+        lastError: "聊天交接记录已失效，请重新发送这条要求。",
+      });
       return NextResponse.json(
-        { error: "聊天交接记录已失效，请重新发送这条要求。" },
+        { error: "聊天交接记录已失效，请重新发送这条要求。", retryable: false },
         { status: 409 },
       );
     }
@@ -737,6 +812,13 @@ export async function POST(request: NextRequest) {
       isContinuation,
       hasExistingProject: existingProjectFiles.length > 0,
       mustAddTask,
+      existingProjectContext: [
+        persistedWorkspace.prompt,
+        plan.title,
+        plan.summary,
+        existingCodeProject?.title || "",
+        existingProjectDescription,
+      ].join("\n"),
       isSoftwareWorkspace:
         /软件|开发|编程|software|development/i.test(plan.category) &&
         /桌宠|桌面.{0,12}(?:定时器|工具|应用|程序|软件)|定时器|网页|网站|应用|小程序|程序|代码|源码|插件|游戏|脚本|app|web app|prototype|website|software/i.test(
@@ -748,16 +830,27 @@ export async function POST(request: NextRequest) {
     const leaseToken = crypto.randomUUID();
     const lease = acquireWorkspaceExecutionLease(user.id, persistedWorkspace.id, leaseToken);
     if (lease.status === "missing") {
-      releaseHandoffClaim();
+      releaseHandoffClaim({
+        retryable: false,
+        lastError: "工作空间已不存在，请重新打开目标后重试。",
+      });
       return NextResponse.json(
-        { error: "工作空间已不存在，请重新打开目标后重试。" },
+        { error: "工作空间已不存在，请重新打开目标后重试。", retryable: false },
         { status: 409 },
       );
     }
     if (lease.status === "busy") {
-      releaseHandoffClaim();
+      releaseHandoffClaim({
+        retryable: true,
+        retryAfterMs: 5_000,
+        lastError: "目标当前正在执行其他任务。",
+      });
       return NextResponse.json(
-        { error: "这个目标正在执行中，请等待当前任务完成后再继续。" },
+        {
+          error: "这个目标正在执行中，请等待当前任务完成后再继续。",
+          retryable: true,
+          retryAfterMs: 5_000,
+        },
         { status: 409 },
       );
     }
@@ -770,9 +863,12 @@ export async function POST(request: NextRequest) {
     if (!apiKey) {
       releaseWorkspaceExecutionLease(user.id, persistedWorkspace.id, lease.token);
       heldExecutionLease = null;
-      releaseHandoffClaim();
+      releaseHandoffClaim({ retryable: false, lastError: "尚未配置 DeepSeek API Key。" });
       return NextResponse.json(
-        { error: "尚未配置 DeepSeek API Key。请开启演示模式，或由管理员在服务端配置 Key。" },
+        {
+          error: "尚未配置 DeepSeek API Key。请开启演示模式，或由管理员在服务端配置 Key。",
+          retryable: false,
+        },
         { status: 503 },
       );
     }
@@ -781,7 +877,11 @@ export async function POST(request: NextRequest) {
     if (!rateLimit.allowed) {
       releaseWorkspaceExecutionLease(user.id, persistedWorkspace.id, lease.token);
       heldExecutionLease = null;
-      releaseHandoffClaim();
+      releaseHandoffClaim({
+        retryable: true,
+        retryAfterMs: rateLimit.retryAfterSeconds * 1000,
+        lastError: "AI 请求达到频率限制。",
+      });
       return rateLimitedResponse(rateLimit.retryAfterSeconds);
     }
 
@@ -839,9 +939,17 @@ export async function POST(request: NextRequest) {
       if (conversationOutcome !== "saved") {
         releaseWorkspaceExecutionLease(user.id, persistedWorkspace.id, lease.token);
         heldExecutionLease = null;
-        releaseHandoffClaim();
+        releaseHandoffClaim({
+          retryable: true,
+          retryAfterMs: 5_000,
+          lastError: "执行指示暂时无法保存。",
+        });
         return NextResponse.json(
-          { error: "无法保存这条执行指示；原工作区内容已保留，请重试。" },
+          {
+            error: "无法保存这条执行指示；原工作区内容已保留，请重试。",
+            retryable: true,
+            retryAfterMs: 5_000,
+          },
           { status: 409 },
         );
       }
@@ -933,7 +1041,7 @@ export async function POST(request: NextRequest) {
             ...plan.sources.flatMap((source) => [source.title, source.excerpt]),
           ].join("\n"),
         );
-    const thinkingMode = body.thinkingMode === "deep" ? "deep" : "fast";
+    const thinkingMode = normalizeThinkingMode(body.thinkingMode);
     const searchIntent = classifySearchIntent(requestedWork);
     const needsSearch = searchIntent.requiresSearch;
     const needsSpreadsheet = /(?:excel|xlsx|电子表格|工作簿)/i.test(requestedWork);
@@ -942,10 +1050,10 @@ export async function POST(request: NextRequest) {
       /(?:生成|导出|下载|制作|输出|创建|转换|generate|export|create|convert).{0,18}(?:PDF|\.pdf)|(?:PDF|\.pdf).{0,18}(?:生成|导出|下载|制作|输出|创建|转换)/i.test(
         requestedWork,
       );
-    const conversationHistory = (persistedWorkspace.conversation || [])
-      .filter(({ role }) => role === "user")
-      .slice(-6)
-      .map(({ role, content }) => ({ role, content: content.slice(0, 1600) }));
+    const conversationHistory = buildExecutionRecentUserInstructions(
+      persistedWorkspace.conversation || [],
+      [goal, instruction, displayMessage, prompt, requestedWork],
+    );
     const projectInstructions = state.projectDraft
       ? "工作区里已有未完成的代码项目批次。必须调用 create_project 的 mode='append' 继续，只提交新增或要修正的文件，不要重复未修改的文件；未结束时 complete=false，全部文件齐备且通过检查时 complete=true。最终项目仍需包含 README.md 和可运行入口。"
       : projectIntent === "update"
@@ -969,7 +1077,7 @@ export async function POST(request: NextRequest) {
               : "optional",
         }),
       },
-      ...conversationHistory,
+      ...conversationHistory.map((content) => ({ role: "user", content })),
       {
         role: "user",
         content: [
@@ -978,7 +1086,10 @@ export async function POST(request: NextRequest) {
             text: JSON.stringify({
               today,
               timezone: "Asia/Shanghai",
-              goal: prompt,
+              // Keep the workspace goal and this turn's instruction separate.
+              // `prompt` already concatenates both for internal routing, so
+              // serializing it here would charge the same instruction twice.
+              goal,
               route: route.title,
               currentTasks,
               currentMilestones,
@@ -1016,9 +1127,17 @@ export async function POST(request: NextRequest) {
     ) {
       releaseWorkspaceExecutionLease(user.id, persistedWorkspace.id, lease.token);
       heldExecutionLease = null;
-      releaseHandoffClaim();
+      releaseHandoffClaim({
+        retryable: true,
+        retryAfterMs: 15_000,
+        lastError: "无法登记本轮执行状态。",
+      });
       return NextResponse.json(
-        { error: "无法登记本轮执行状态，请刷新工作区后重试。" },
+        {
+          error: "无法登记本轮执行状态，请刷新工作区后重试。",
+          retryable: true,
+          retryAfterMs: 15_000,
+        },
         { status: 409 },
       );
     }
@@ -1237,10 +1356,10 @@ export async function POST(request: NextRequest) {
           const checkpoint = {
             checkpoint: true,
             requiredTool,
-            goal: prompt,
+            goal,
             instruction,
             route: route.title,
-            recentUserInstructions: conversationHistory.map((message) => message.content),
+            recentUserInstructions: conversationHistory,
             constraints: plan.constraints.slice(0, 20),
             knowledge: Array.isArray(plan.sources)
               ? plan.sources.slice(0, 3).map((source) => ({
@@ -1289,20 +1408,13 @@ export async function POST(request: NextRequest) {
               requiredTool === "create_project" ? state.projectDraft?.files || [] : [],
             stagedProjectDeletes:
               requiredTool === "create_project" ? state.projectDraft?.deleteFiles || [] : [],
-            userProvidedMaterials: relevantTextAttachments,
-            userProvidedImages: relevantImages.map(({ name, mimeType }) => ({ name, mimeType })),
           };
           return [
-            {
-              role: "user",
-              content: [
-                { type: "text", text: JSON.stringify(checkpoint) },
-                ...relevantImages.map((attachment) => ({
-                  type: "image" as const,
-                  image: attachment.content,
-                })),
-              ],
-            },
+            buildExecutionCheckpointMessage({
+              textAttachments: relevantTextAttachments,
+              images: relevantImages,
+              checkpoint,
+            }),
           ];
         };
 
@@ -1936,47 +2048,87 @@ export async function POST(request: NextRequest) {
                   repairAttempt < 3 && !isComplete();
                   repairAttempt += 1
                 ) {
+                  const progressBeforeRepair = snapshotExecutionRepairProgress(state);
                   const requiredTool = requiredToolForNextStep();
                   if (!requiredTool) throw new Error("Agent 未能补齐必需产物，请重试。");
                   send({
                     type: "status",
                     message: `正在根据已有结果补齐缺少的工具产物（第 ${repairAttempt + 1} 次）`,
                   });
-                  finalText = await withAiSpan(
-                    "goalflow.agent.pass",
-                    { "goalflow.operation": "execute", "goalflow.pass": "repair" },
-                    () =>
-                      runAgentPass(
-                        [
-                          ...messages.slice(1),
-                          {
-                            role: "user",
-                            content: JSON.stringify({
-                              recovery: true,
-                              instruction:
-                                requiredTool === "draft_document"
-                                  ? "可行性复核发现了具体冲突。根据 recentToolFailures 中列出的冲突修订方案文档，保留未知事实为待确认；只调用 draft_document，不要重复其他已完成工具。修订后系统会再次自动核验。"
-                                  : "前一轮没有完成所有必需产物。现在只调用指定的必需工具完成这一项，不要输出解释，不要重复已经完成的工具操作。",
-                              requiredTool,
-                              currentTasks: state.tasks,
-                              currentMilestones: state.milestones,
-                              completedArtifacts: state.artifacts.map(({ type, title }) => ({
-                                type,
-                                title,
-                              })),
-                              completedTools: state.events.map(({ name, title }) => ({
-                                name,
-                                title,
-                              })),
-                              recentToolFailures: state.toolFailures.slice(-4),
-                              budget: state.budget,
-                            }),
-                          },
-                        ],
-                        2,
-                        true,
-                      ),
-                  );
+                  try {
+                    finalText = await withAiSpan(
+                      "goalflow.agent.pass",
+                      { "goalflow.operation": "execute", "goalflow.pass": "repair" },
+                      () =>
+                        runAgentPass(
+                          [
+                            ...messages.slice(1),
+                            {
+                              role: "user",
+                              content: JSON.stringify({
+                                recovery: true,
+                                instruction:
+                                  requiredTool === "draft_document"
+                                    ? "可行性复核发现了具体冲突。根据 recentToolFailures 中列出的冲突修订方案文档，保留未知事实为待确认；只调用 draft_document，不要重复其他已完成工具。修订后系统会再次自动核验。"
+                                    : "前一轮没有完成所有必需产物。现在只调用指定的必需工具完成这一项，不要输出解释，不要重复已经完成的工具操作。",
+                                requiredTool,
+                                currentTasks: state.tasks,
+                                currentMilestones: state.milestones,
+                                completedArtifacts: state.artifacts.map(({ type, title }) => ({
+                                  type,
+                                  title,
+                                })),
+                                completedTools: state.events.map(({ name, title }) => ({
+                                  name,
+                                  title,
+                                })),
+                                recentToolFailures: state.toolFailures.slice(-4),
+                                budget: state.budget,
+                              }),
+                            },
+                          ],
+                          2,
+                          true,
+                        ),
+                    );
+                  } catch (error) {
+                    const missingRequiredToolCall =
+                      error instanceof Error &&
+                      /did not contain a call to the required tool/i.test(error.message);
+                    if (
+                      !missingRequiredToolCall ||
+                      !shouldRetryNoProgressProjectRepair({
+                        requiredTool,
+                        repairAttempt,
+                        cancelled: executionSignal.aborted,
+                      })
+                    )
+                      throw error;
+                    send({
+                      type: "status",
+                      message: "代码工具调用未启动，正在进行最后一次定向补救。",
+                    });
+                    continue;
+                  }
+                  if (
+                    !isComplete() &&
+                    snapshotExecutionRepairProgress(state) === progressBeforeRepair
+                  ) {
+                    if (
+                      shouldRetryNoProgressProjectRepair({
+                        requiredTool,
+                        repairAttempt,
+                        cancelled: executionSignal.aborted,
+                      })
+                    ) {
+                      send({
+                        type: "status",
+                        message: "代码项目尚未落盘，正在进行最后一次定向补救。",
+                      });
+                      continue;
+                    }
+                    break;
+                  }
                 }
               }
               if (requiredFeasibilityTool())
@@ -2011,8 +2163,31 @@ export async function POST(request: NextRequest) {
                   `Agent 未能完成${missingOutputs.join("、")}，请重试。${failureHint}`,
                 );
               }
-              if (needsProject && !state.artifacts.some((item) => item.type === "code"))
+              if (needsProject && !state.artifacts.some((item) => item.type === "code")) {
+                const projectToolFailure = [...state.toolFailures]
+                  .reverse()
+                  .find((failure) => failure.name === "create_project");
+                if (projectIntent === "update" && existingCodeProject) {
+                  const draftDetail = state.projectDraft
+                    ? `本轮补丁已暂存 ${state.projectDraft.files.length} 个文件。`
+                    : "";
+                  const failureDetail = projectToolFailure
+                    ? `最近一次代码校验反馈：${projectToolFailure.detail}。`
+                    : "";
+                  throw new Error(
+                    `本轮未能完成现有代码项目更新。${draftDetail}${failureDetail}原有项目文件和已保存阶段成果均已保留。可以继续推进，或缩小本轮修改范围。`,
+                  );
+                }
+                if (projectToolFailure)
+                  throw new Error(
+                    `代码项目生成校验未通过：${projectToolFailure.detail}。已保存的其他阶段成果仍保留。`,
+                  );
+                if (state.projectDraft)
+                  throw new Error(
+                    `代码项目仍在分批生成，已暂存 ${state.projectDraft.files.length} 个文件，但尚未形成可下载项目。阶段成果已保存，可继续完成剩余文件。`,
+                  );
                 throw new Error("Agent 未生成可下载的代码项目，请重试或缩小实现范围。");
+              }
               if (needsSpreadsheet && !state.artifacts.some((item) => item.type === "spreadsheet"))
                 throw new Error("Agent 未生成可下载的 Excel 工作簿，请重试并缩小表格范围。");
               if (
@@ -2100,15 +2275,37 @@ export async function POST(request: NextRequest) {
                 message: finalExecution.summary,
                 completedToolCalls,
               });
-              if (
-                heldHandoffClaim &&
-                !completeWorkbenchHandoffForUser(
-                  heldHandoffClaim.userId,
-                  heldHandoffClaim.id,
-                  heldHandoffClaim.token,
+              if (heldHandoffClaim) {
+                const completedHandoff = heldHandoffClaim;
+                if (
+                  !completeWorkbenchHandoffForUser(
+                    completedHandoff.userId,
+                    completedHandoff.id,
+                    completedHandoff.token,
+                  )
                 )
-              )
-                console.error("Unable to mark a committed handoff as complete.");
+                  console.error("Unable to mark a committed handoff as complete.");
+                if (returnResultToSupervisor) {
+                  try {
+                    const savedResult = appendWorkbenchCompletionForUser(user.id, {
+                      handoffId: completedHandoff.id,
+                      workspaceId: persistedWorkspace.id,
+                      workspaceTitle: persistedWorkspace.plan.title,
+                      summary: finalExecution.summary,
+                      completedTasks: finalExecution.tasks.filter((task) => task.status === "done")
+                        .length,
+                      totalTasks: finalExecution.tasks.length,
+                      artifactTitles: finalExecution.artifacts.map((artifact) => artifact.title),
+                    });
+                    if (!savedResult)
+                      console.error(
+                        "Unable to return a committed handoff result to the supervisor.",
+                      );
+                  } catch {
+                    console.error("Unable to return a committed handoff result to the supervisor.");
+                  }
+                }
+              }
               heldHandoffClaim = null;
               releaseWorkspaceExecutionLease(user.id, persistedWorkspace.id, lease.token);
               runSpan.setAttribute("goalflow.outcome", "success");
@@ -2131,6 +2328,21 @@ export async function POST(request: NextRequest) {
               }
               if (checkpointProgress.savedEvents > 0 && !message.includes("已保存"))
                 message += ` 已保存 ${checkpointProgress.savedEvents} 项阶段成果。`;
+              const failurePolicy = classifyWorkbenchFailure({
+                status: providerStatus,
+                error,
+                cancelled,
+              });
+              const handoffRelease = cancelled
+                ? "missing"
+                : heldHandoffClaim
+                  ? releaseHandoffClaim({
+                      retryable: failurePolicy.retryable,
+                      retryAfterMs: failurePolicy.retryAfterMs,
+                      maxAttempts: failurePolicy.maxAttempts,
+                      lastError: message,
+                    })
+                  : "missing";
               const lastSavedCheckpoint = checkpointProgress.lastSaved;
               if (lastSavedCheckpoint?.result && checkpointProgress.savedEvents > 0) {
                 const partialCheckpoint: Workspace = {
@@ -2158,11 +2370,50 @@ export async function POST(request: NextRequest) {
                 message,
                 completedToolCalls,
               });
+              if (
+                !workspaceCommitted &&
+                heldHandoffClaim &&
+                returnResultToSupervisor &&
+                cancelled
+              ) {
+                const savedResult =
+                  checkpointProgress.lastSaved?.result || persistedWorkspace.result;
+                try {
+                  const savedSupervisorUpdate = appendWorkbenchCompletionForUser(user.id, {
+                    handoffId: heldHandoffClaim.id,
+                    workspaceId: persistedWorkspace.id,
+                    workspaceTitle: persistedWorkspace.plan.title,
+                    outcome: cancelled ? "cancelled" : "interrupted",
+                    summary: cancelled
+                      ? "本轮执行已停止，工作区此前保存的内容仍然保留。"
+                      : `本次执行遇到问题；工作区${checkpointProgress.savedEvents > 0 ? `已保存 ${checkpointProgress.savedEvents} 项阶段成果，` : "此前已保存的内容已保留，"}未完成工作仍可继续推进。`,
+                    completedTasks:
+                      savedResult?.tasks.filter((task) => task.status === "done").length || 0,
+                    totalTasks: savedResult?.tasks.length || 0,
+                    completedToolCalls,
+                    artifactTitles: savedResult?.artifacts.map((artifact) => artifact.title) || [],
+                  });
+                  if (!savedSupervisorUpdate)
+                    console.error(
+                      "Unable to return a committed handoff interruption to the supervisor.",
+                    );
+                } catch {
+                  console.error(
+                    "Unable to return a committed handoff interruption to the supervisor.",
+                  );
+                }
+              }
               runSpan.setAttribute(
                 "goalflow.outcome",
                 executionSignal.aborted || isAbortError(error) ? "cancelled" : "error",
               );
-              send({ type: "error", error: message });
+              send({
+                type: "error",
+                error: message,
+                retryable: handoffRelease === "retry",
+                retryAfterMs: failurePolicy.retryAfterMs,
+                maxAttempts: failurePolicy.maxAttempts,
+              });
               throw error;
             } finally {
               if (!workspaceCommitted && usage) {
@@ -2228,14 +2479,36 @@ export async function POST(request: NextRequest) {
     heldExecutionLease = null;
     return response;
   } catch (error) {
-    releaseHandoffClaim();
+    const requestCancelled = request.signal.aborted || isAbortError(error);
+    const failurePolicy = classifyWorkbenchFailure({
+      error,
+      cancelled: requestCancelled,
+    });
+    let handoffRelease: "retry" | "failed" | "missing" = "missing";
+    if (requestCancelled && heldHandoffClaim) {
+      const claim = heldHandoffClaim;
+      cancelWorkbenchHandoffForUser(claim.userId, claim.id, claim.token);
+      heldHandoffClaim = null;
+      recordSupervisorHandoffFailure(
+        claim,
+        "cancelled",
+        "本轮执行已停止，工作区此前保存的内容仍然保留。",
+      );
+    } else if (heldHandoffClaim) {
+      handoffRelease = releaseHandoffClaim({
+        retryable: failurePolicy.retryable,
+        retryAfterMs: failurePolicy.retryAfterMs,
+        maxAttempts: failurePolicy.maxAttempts,
+        lastError: error instanceof Error ? error.message : "执行失败",
+      });
+    }
     if (heldExecutionLease)
       releaseWorkspaceExecutionLease(
         heldExecutionLease.userId,
         heldExecutionLease.workspaceId,
         heldExecutionLease.token,
       );
-    if (request.signal.aborted || isAbortError(error)) {
+    if (requestCancelled) {
       return NextResponse.json({ error: "已取消本次 AI 请求。" }, { status: 499 });
     }
     return NextResponse.json(
@@ -2245,6 +2518,9 @@ export async function POST(request: NextRequest) {
           : error instanceof Error
             ? error.message
             : "执行失败",
+        retryable: handoffRelease === "retry",
+        retryAfterMs: failurePolicy.retryAfterMs,
+        maxAttempts: failurePolicy.maxAttempts,
       },
       { status: isTimeoutError(error) ? 504 : 500 },
     );

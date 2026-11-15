@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
 import JSZip from "jszip";
+import { PDFDocument } from "pdf-lib";
 import AxeBuilder from "@axe-core/playwright";
 import { chromium, request } from "playwright-core";
 import { readChatDocument } from "../src/lib/attachment-reader.mjs";
@@ -71,6 +72,12 @@ function makePdfAttachmentFixture() {
   }
   pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`;
   return Buffer.from(pdf, "ascii");
+}
+
+async function makePdfToolFixture(pageWidths) {
+  const document = await PDFDocument.create();
+  for (const width of pageWidths) document.addPage([width, 792]);
+  return Buffer.from(await document.save());
 }
 
 const uiSmokeDownloadArtifacts = [
@@ -278,10 +285,16 @@ async function assertNamedFields(page, screenName) {
   check(true, `All visible fields have accessible names on ${screenName}`);
 }
 
-async function assertAccessible(page, screenName) {
-  const result = await new AxeBuilder({ page })
-    .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"])
-    .analyze();
+async function assertAccessible(page, screenName, excludedSelectors = []) {
+  const axe = new AxeBuilder({ page }).withTags([
+    "wcag2a",
+    "wcag2aa",
+    "wcag21a",
+    "wcag21aa",
+    "wcag22aa",
+  ]);
+  for (const selector of excludedSelectors) axe.exclude(selector);
+  const result = await axe.analyze();
   const violations = result.violations.map((violation) => ({
     id: violation.id,
     impact: violation.impact,
@@ -305,6 +318,32 @@ async function assertAccessible(page, screenName) {
   }
   assert.deepEqual(violations, [], `${screenName} has WCAG accessibility violations`);
   check(true, `Pass axe-core WCAG 2.2 AA checks on ${screenName}`);
+}
+
+async function clickAndCaptureBlobDownload(page, button, statusText) {
+  await page.evaluate(() => {
+    if (window.__vhfxnexCapturedDownloads) return;
+    window.__vhfxnexCapturedDownloads = [];
+    const nativeClick = HTMLAnchorElement.prototype.click;
+    HTMLAnchorElement.prototype.click = function () {
+      if (this.download && this.href.startsWith("blob:")) {
+        window.__vhfxnexCapturedDownloads.push({ filename: this.download, url: this.href });
+        return;
+      }
+      nativeClick.call(this);
+    };
+  });
+  await button.click();
+  await page.getByRole("status").getByText(statusText).waitFor();
+  const captured = await page.evaluate(async () => {
+    const item = window.__vhfxnexCapturedDownloads?.at(-1);
+    if (!item) return null;
+    const response = await fetch(item.url);
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    return { filename: item.filename, bytes: Array.from(bytes) };
+  });
+  assert.ok(captured, `Expected a generated Blob download for ${statusText}`);
+  return { filename: captured.filename, bytes: Buffer.from(captured.bytes) };
 }
 
 async function assertSmallPhoneAuth(page, screenName, screenshotName) {
@@ -558,6 +597,836 @@ try {
   await assertAccessible(page, "signed-in home");
   await page.screenshot({ path: path.join(screenshots, "home-desktop.png"), fullPage: true });
   check(true, "Distinguish a failed history request from an empty account and allow retry");
+
+  const supervisorContextWorkspaces = ["甲", "乙"].map((label) => {
+    const workspaceId = crypto.randomUUID();
+    const routeId = `${workspaceId}-route`;
+    return {
+      id: workspaceId,
+      prompt: `管理员对话隔离回归项目${label}`,
+      plan: {
+        title: `管理员对话隔离回归项目${label}`,
+        category: "项目推进",
+        summary: `只属于项目${label}的摘要`,
+        constraints: [],
+        routes: [
+          {
+            id: routeId,
+            title: `项目${label}执行路线`,
+            subtitle: "管理员上下文隔离回归",
+            fit: 100,
+            reason: "用于验证不同工作区的管理员对话不会串线。",
+            accent: "violet",
+          },
+        ],
+        tasks: [],
+        question: "",
+        sources: [],
+      },
+      selectedRouteId: routeId,
+      result: null,
+      conversation: [
+        { id: crypto.randomUUID(), role: "user", content: `项目${label}专属历史` },
+        {
+          id: crypto.randomUUID(),
+          role: "assistant",
+          agent: "dialogue",
+          content: `项目${label}历史回复`,
+        },
+      ],
+      createdAt: new Date().toISOString(),
+      mode: "live",
+    };
+  });
+  const supervisorWorkspaceSaveResults = await page.evaluate(async (workspaces) => {
+    const results = [];
+    for (const workspace of workspaces) {
+      const response = await fetch("/api/workspaces", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ workspace }),
+      });
+      results.push({ status: response.status, payload: await response.json() });
+    }
+    return results;
+  }, supervisorContextWorkspaces);
+  assert.ok(
+    supervisorWorkspaceSaveResults.every((result) => result.status === 200),
+    `supervisor scope fixtures must be saved: ${JSON.stringify(supervisorWorkspaceSaveResults)}`,
+  );
+  await page.reload({ waitUntil: "networkidle" });
+  await page.locator(".home-primary").waitFor({ state: "visible" });
+
+  await page.getByRole("button", { name: "直接工具" }).click();
+  await page.getByRole("heading", { name: "把常用能力，放到手边。" }).waitFor();
+  await assertAccessible(page, "direct user tools");
+  const directDocument = "# Direct tool import\n\nImported text stays editable.";
+  await page.locator(".document-tool input[type=file]").setInputFiles({
+    name: "direct-document-smoke.md",
+    mimeType: "text/markdown",
+    buffer: Buffer.from(directDocument, "utf8"),
+  });
+  await page.waitForFunction(
+    (expected) => document.querySelector(".document-editor textarea")?.value === expected,
+    directDocument,
+  );
+  const directWord = await clickAndCaptureBlobDownload(
+    page,
+    page.locator(".document-tool").getByRole("button", { name: "导出 Word" }),
+    "Word 文档已开始下载。",
+  );
+  assert.match(directWord.filename, /\.docx$/);
+  const directWordArchive = await JSZip.loadAsync(directWord.bytes, { checkCRC32: true });
+  assert.match(
+    await directWordArchive.file("word/document.xml").async("string"),
+    /Direct tool import/,
+  );
+
+  await page.getByRole("button", { name: /表格工作台/ }).click();
+  const directCsv = '事项,负责人\r\n"整理,资料",=2+2\r\n校验,普通文本';
+  await page.locator(".spreadsheet-tool input[type=file]").setInputFiles({
+    name: "direct-table-smoke.csv",
+    mimeType: "text/csv",
+    buffer: Buffer.from(directCsv, "utf8"),
+  });
+  await page.locator(".spreadsheet-tool .tool-status").getByText("已读取 2 行、2 列。").waitFor();
+  assert.equal(await page.locator(".spreadsheet-grid tbody tr").count(), 2);
+  assert.equal(await page.getByRole("textbox", { name: "1 行 1 列" }).inputValue(), "整理,资料");
+  const directXlsx = await clickAndCaptureBlobDownload(
+    page,
+    page.getByRole("button", { name: "导出 Excel", exact: true }),
+    "Excel 工作簿已开始下载。",
+  );
+  assert.match(directXlsx.filename, /\.xlsx$/);
+  const directXlsxArchive = await JSZip.loadAsync(directXlsx.bytes, { checkCRC32: true });
+  const directWorksheet = await directXlsxArchive.file("xl/worksheets/sheet1.xml").async("string");
+  assert.match(directWorksheet, /整理,资料/);
+  assert.match(directWorksheet, /=2\+2/);
+  assert.doesNotMatch(directWorksheet, /<f>/);
+
+  const directCsvDownload = await clickAndCaptureBlobDownload(
+    page,
+    page.getByRole("button", { name: "下载 CSV" }),
+    "CSV 已开始下载；潜在公式前缀已按文本安全处理。",
+  );
+  assert.match(directCsvDownload.filename, /\.csv$/);
+  const directCsvExport = directCsvDownload.bytes.toString("utf8");
+  assert.ok(directCsvExport.startsWith("\uFEFF"));
+  assert.match(directCsvExport, /'=2\+2/);
+
+  const formulaWorksheet = directWorksheet.replace(
+    /<c r="B2"[^>]*>.*?<\/c>/u,
+    '<c r="B2" t="n"><f>1+1</f><v>2</v></c>',
+  );
+  assert.notEqual(
+    formulaWorksheet,
+    directWorksheet,
+    "the xlsx import fixture should include a formula",
+  );
+  directXlsxArchive.file("xl/worksheets/sheet1.xml", formulaWorksheet);
+  const directWorkbookXml = await directXlsxArchive.file("xl/workbook.xml").async("string");
+  directXlsxArchive.file(
+    "xl/workbook.xml",
+    directWorkbookXml.replace("</sheets>", '<sheet name="备注" sheetId="2" r:id="rId3"/></sheets>'),
+  );
+  const directRelationships = await directXlsxArchive
+    .file("xl/_rels/workbook.xml.rels")
+    .async("string");
+  directXlsxArchive.file(
+    "xl/_rels/workbook.xml.rels",
+    directRelationships.replace(
+      "</Relationships>",
+      '<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/></Relationships>',
+    ),
+  );
+  const directTypes = await directXlsxArchive.file("[Content_Types].xml").async("string");
+  directXlsxArchive.file(
+    "[Content_Types].xml",
+    directTypes.replace(
+      "</Types>",
+      '<Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>',
+    ),
+  );
+  directXlsxArchive.file(
+    "xl/worksheets/sheet2.xml",
+    '<?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>备注</t></is></c></row><row r="2"><c r="A2" t="inlineStr"><is><t>需要保留</t></is></c></row></sheetData></worksheet>',
+  );
+  const formulaWorkbook = await directXlsxArchive.generateAsync({ type: "nodebuffer" });
+  await page.locator(".spreadsheet-tool input[type=file]").setInputFiles({
+    name: "direct-table-formula-smoke.xlsx",
+    mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    buffer: formulaWorkbook,
+  });
+  await page
+    .locator(".spreadsheet-tool .tool-status")
+    .getByText(/已导入 2 张可见工作表/u)
+    .waitFor();
+  assert.equal(await page.locator(".spreadsheet-grid tbody tr").count(), 2);
+  assert.equal(await page.getByRole("textbox", { name: "1 行 2 列" }).inputValue(), "2");
+  await page
+    .locator(".spreadsheet-tool .tool-status")
+    .getByText(/只读取 Excel 中已有的缓存结果，不执行公式/u)
+    .waitFor();
+  const workbookSelector = page.getByRole("combobox", { name: "Excel 工作表" });
+  await workbookSelector.selectOption("1");
+  assert.equal(await page.getByRole("textbox", { name: "1 列名称" }).inputValue(), "备注");
+  assert.equal(await page.getByRole("textbox", { name: "1 行 1 列" }).inputValue(), "需要保留");
+  await page.getByRole("textbox", { name: "1 行 1 列" }).fill("编辑后的第二张表");
+  await workbookSelector.selectOption("0");
+  assert.equal(await page.getByRole("textbox", { name: "1 行 2 列" }).inputValue(), "2");
+  const multiSheetXlsx = await clickAndCaptureBlobDownload(
+    page,
+    page.getByRole("button", { name: "导出 Excel", exact: true }),
+    "Excel 工作簿已开始下载。",
+  );
+  const multiSheetArchive = await JSZip.loadAsync(multiSheetXlsx.bytes, { checkCRC32: true });
+  assert.match(await multiSheetArchive.file("xl/workbook.xml").async("string"), /备注/u);
+  assert.match(
+    await multiSheetArchive.file("xl/worksheets/sheet2.xml").async("string"),
+    /编辑后的第二张表/u,
+  );
+
+  await page.route("**/api/tools/search", async (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        query: "Next.js official docs",
+        results: [
+          {
+            title: "Next.js Documentation",
+            url: "https://nextjs.org/docs",
+            snippet: "Find comprehensive documentation for Next.js.",
+          },
+        ],
+      }),
+    }),
+  );
+  await page.getByRole("button", { name: /联网搜索/u }).click();
+  await page.getByRole("textbox", { name: "联网搜索关键词" }).fill("Next.js official docs");
+  await page.getByRole("button", { name: "搜索网页" }).click();
+  await page.getByRole("link", { name: /Next\.js Documentation/u }).waitFor();
+  assert.equal(
+    await page.getByRole("link", { name: /Next\.js Documentation/u }).getAttribute("href"),
+    "https://nextjs.org/docs",
+  );
+  assert.equal(
+    await page.getByRole("link", { name: /Next\.js Documentation/u }).getAttribute("rel"),
+    "noopener noreferrer",
+  );
+  await page
+    .locator(".direct-search-tool .tool-status")
+    .getByText(/找到 1 条结果/u)
+    .waitFor();
+  await assertAccessible(page, "direct web search tool");
+  check(true, "Search public web sources directly without consuming DeepSeek model requests");
+
+  await page
+    .locator(".tool-center-nav")
+    .getByRole("button", { name: /PDF 工具箱/u })
+    .click();
+  await page.locator(".pdf-tool").waitFor({ state: "visible" });
+  await page.locator('.pdf-tool input[type="file"]').setInputFiles([
+    {
+      name: "甲本.pdf",
+      mimeType: "application/pdf",
+      buffer: await makePdfToolFixture([310, 311]),
+    },
+    {
+      name: "乙本.pdf",
+      mimeType: "application/pdf",
+      buffer: await makePdfToolFixture([410]),
+    },
+  ]);
+  await page
+    .locator(".pdf-tool .tool-status")
+    .getByText(/已读取 2 份 PDF，共 3 页/u)
+    .waitFor();
+  await page.getByRole("button", { name: "上移 乙本.pdf" }).click();
+  await page.getByRole("textbox", { name: "页面范围" }).fill("1-2");
+  const extractedPdf = await clickAndCaptureBlobDownload(
+    page,
+    page.getByRole("button", { name: "提取页面并下载" }),
+    "已提取 2 页并开始下载；文件仅在本机浏览器处理。",
+  );
+  assert.match(extractedPdf.filename, /甲本-页面-1-2\.pdf/u);
+  const extractedDocument = await PDFDocument.load(extractedPdf.bytes);
+  assert.equal(extractedDocument.getPageCount(), 2);
+  assert.equal(extractedDocument.getPage(0).getWidth(), 310);
+  assert.equal(extractedDocument.getPage(1).getWidth(), 311);
+  const mergedPdf = await clickAndCaptureBlobDownload(
+    page,
+    page.getByRole("button", { name: "合并并下载 PDF" }),
+    "已合并 2 份 PDF，共 3 页；文件仅在本机浏览器处理。",
+  );
+  assert.match(mergedPdf.filename, /合并文档\.pdf/u);
+  const mergedDocument = await PDFDocument.load(mergedPdf.bytes);
+  assert.equal(mergedDocument.getPageCount(), 3);
+  assert.deepEqual(
+    mergedDocument.getPages().map((pdfPage) => pdfPage.getWidth()),
+    [410, 310, 311],
+    "the merge output must follow the visible file order",
+  );
+  await assertAccessible(page, "local PDF merge and page extraction tool");
+  check(
+    true,
+    "Merge, reorder, and extract PDF pages entirely in the browser without using the AI API",
+  );
+
+  await page.getByRole("button", { name: /代码工坊/ }).click();
+  await page.locator(".code-tool input[type=file]").setInputFiles([
+    {
+      name: "index.html",
+      mimeType: "text/html",
+      buffer: Buffer.from(
+        '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>Direct tool</title><link rel="stylesheet" href="styles.css"></head><body><main><h1>Imported project</h1><script src="app.js"></script></main></body></html>',
+        "utf8",
+      ),
+    },
+    {
+      name: "styles.css",
+      mimeType: "text/css",
+      buffer: Buffer.from("body { color: #222; }", "utf8"),
+    },
+    {
+      name: "app.js",
+      mimeType: "text/javascript",
+      buffer: Buffer.from('document.documentElement.dataset.ready = "yes";', "utf8"),
+    },
+    {
+      name: "README.md",
+      mimeType: "text/markdown",
+      buffer: Buffer.from("# Imported project\n\nOpen index.html in a browser.\n", "utf8"),
+    },
+  ]);
+  await page
+    .locator(".code-tool .tool-status")
+    .getByText("已导入 4 个文件；同名文件已更新，其他文件保留。")
+    .waitFor();
+  const directCodeEditor = page.getByRole("textbox", { name: "index.html 源码" });
+  await directCodeEditor.waitFor({ state: "visible" });
+  assert.equal(await page.locator(".code-editor .cm-gutters").count(), 1);
+  assert.match(await page.locator(".code-editor-language").textContent(), /HTML · \d+ 行/u);
+  await page.locator('.code-file-list button[title="styles.css"]').click();
+  await page.getByRole("textbox", { name: "styles.css 源码" }).waitFor({ state: "visible" });
+  assert.match(await page.locator(".code-editor-language").textContent(), /CSS · \d+ 行/u);
+  await page.locator('.code-file-list button[title="index.html"]').click();
+  await page.getByRole("textbox", { name: "index.html 源码" }).waitFor({ state: "visible" });
+  check(
+    true,
+    "Edit code with syntax-aware language modes, accessible line numbers, active-line focus, and file-aware labels",
+  );
+  const directCodePreviewFrame = page.frameLocator(".code-tool-preview iframe");
+  await directCodePreviewFrame.getByRole("heading", { name: "Imported project" }).waitFor();
+  assert.equal(await page.locator(".code-tool-preview iframe").getAttribute("sandbox"), "");
+  assert.equal(
+    await directCodePreviewFrame.locator("body").evaluate((body) => getComputedStyle(body).color),
+    "rgb(34, 34, 34)",
+  );
+  assert.equal(
+    await directCodePreviewFrame.locator("html").evaluate((html) => html.dataset.ready || null),
+    null,
+    "project scripts must remain disabled in the user-facing code preview",
+  );
+  await assertAccessible(page, "direct code tool with isolated preview", [
+    ".code-tool-preview iframe",
+  ]);
+  await page.getByRole("button", { name: "手机 390px" }).click();
+  assert.equal(
+    await page.getByRole("button", { name: "手机 390px" }).getAttribute("aria-pressed"),
+    "true",
+  );
+  const directMobilePreviewWidth = await page
+    .locator(".code-tool-preview iframe")
+    .evaluate((frame) => frame.getBoundingClientRect().width);
+  assert.ok(directMobilePreviewWidth > 0 && directMobilePreviewWidth <= 390);
+  await page.getByRole("button", { name: "桌面", exact: true }).click();
+  await page.screenshot({ path: path.join(screenshots, "code-direct-tool.png"), fullPage: true });
+  check(
+    true,
+    "Preview directly edited project HTML and local CSS in desktop and phone sizes without executing scripts",
+  );
+  const directProjectZip = await clickAndCaptureBlobDownload(
+    page,
+    page.getByRole("button", { name: "检查并下载 ZIP" }),
+    "检查通过，已打包 4 个文件。ZIP 已开始下载。",
+  );
+  assert.match(directProjectZip.filename, /\.zip$/);
+  const directProjectArchive = await JSZip.loadAsync(directProjectZip.bytes, { checkCRC32: true });
+  assert.match(await directProjectArchive.file("index.html").async("string"), /Imported project/);
+  assert.equal(
+    await directProjectArchive.file("README.md").async("string"),
+    "# Imported project\n\nOpen index.html in a browser.\n",
+  );
+  const sharedToolChatPayloads = [];
+  const alphaWorkspaceQuestion = "只属于项目甲的在途对话";
+  const alphaWorkspaceReply = "项目甲的在途回复，不应出现在项目乙。";
+  const longSupervisorReplyQuestion = "验证管理员长回复自动滚动";
+  const directToolLaunchQuestion = "测试管理员直接打开 JSON 工坊";
+  const directToolLaunchInstruction = "请把这段数据整理成合法 JSON";
+  const longSupervisorReply =
+    "管理员长回复滚动回归段落，用于确认新内容会跟随到聊天区底部。\n".repeat(180);
+  let releaseAlphaWorkspaceReply;
+  let markAlphaWorkspaceRequestStarted;
+  const alphaWorkspaceReplyGate = new Promise((resolve) => {
+    releaseAlphaWorkspaceReply = resolve;
+  });
+  const alphaWorkspaceRequestStarted = new Promise((resolve) => {
+    markAlphaWorkspaceRequestStarted = resolve;
+  });
+  await page.route("**/api/chat", async (route) => {
+    const body = route.request().postDataJSON();
+    sharedToolChatPayloads.push(body);
+    if (body.question === alphaWorkspaceQuestion) {
+      markAlphaWorkspaceRequestStarted();
+      await alphaWorkspaceReplyGate;
+      await route.fulfill({
+        status: 200,
+        headers: { "content-type": "text/event-stream; charset=utf-8" },
+        body: [
+          { type: "text", text: alphaWorkspaceReply },
+          {
+            type: "result",
+            data: { kind: "reply", answer: alphaWorkspaceReply },
+          },
+        ]
+          .map((event) => `data: ${JSON.stringify(event)}\n\n`)
+          .join(""),
+      });
+      return;
+    }
+    if (body.question === longSupervisorReplyQuestion) {
+      await route.fulfill({
+        status: 200,
+        headers: { "content-type": "text/event-stream; charset=utf-8" },
+        body: [
+          { type: "text", text: longSupervisorReply },
+          {
+            type: "result",
+            data: { kind: "reply", answer: longSupervisorReply },
+          },
+        ]
+          .map((event) => `data: ${JSON.stringify(event)}\n\n`)
+          .join(""),
+      });
+      return;
+    }
+    if (body.question === directToolLaunchQuestion) {
+      await route.fulfill({
+        status: 200,
+        headers: { "content-type": "text/event-stream; charset=utf-8" },
+        body: [
+          { type: "text", text: "我已打开 JSON 工坊。" },
+          {
+            type: "launch_tool",
+            tool: "json",
+            instruction: directToolLaunchInstruction,
+          },
+          {
+            type: "result",
+            data: { kind: "reply", answer: "我已打开 JSON 工坊。" },
+          },
+        ]
+          .map((event) => `data: ${JSON.stringify(event)}\n\n`)
+          .join(""),
+      });
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      headers: { "content-type": "text/event-stream; charset=utf-8" },
+      body: [
+        { type: "text", text: "我已收到代码工坊的源码，可继续帮你处理。" },
+        {
+          type: "result",
+          data: { kind: "reply", answer: "我已收到代码工坊的源码，可继续帮你处理。" },
+        },
+      ]
+        .map((event) => `data: ${JSON.stringify(event)}\n\n`)
+        .join(""),
+    });
+  });
+  await page.getByRole("button", { name: "把当前内容交给总控" }).click();
+  await page.locator(".supervisor-pending-attachments").waitFor();
+  assert.match(await page.locator(".supervisor-pending-attachments").innerText(), /源码\.txt/u);
+  await page
+    .getByRole("textbox", { name: "发送给管理员 Agent" })
+    .fill("请检查并优化当前代码项目。");
+  await page.getByRole("button", { name: "发送消息" }).click();
+  await page.getByText("我已收到代码工坊的源码，可继续帮你处理。", { exact: true }).waitFor();
+  assert.equal(sharedToolChatPayloads[0].attachments?.length, 1);
+  assert.match(sharedToolChatPayloads[0].attachments[0].name, /源码\.txt$/u);
+  assert.match(sharedToolChatPayloads[0].attachments[0].content, /Imported project/u);
+  assert.match(sharedToolChatPayloads[0].attachments[0].content, /color: #222/u);
+  assert.equal(sharedToolChatPayloads[0].attachments[0].kind, "text");
+  assert.match(await page.locator(".supervisor-pending-attachments").innerText(), /对话保留附件/u);
+  await page
+    .getByRole("textbox", { name: "发送给管理员 Agent" })
+    .fill("请继续修改并交付这份代码。");
+  await page.getByRole("button", { name: "发送消息" }).click();
+  await page
+    .getByText("我已收到代码工坊的源码，可继续帮你处理。", { exact: true })
+    .last()
+    .waitFor();
+  assert.equal(sharedToolChatPayloads[1].attachments?.length, 0);
+  assert.equal(sharedToolChatPayloads[1].handoffAttachments?.length, 1);
+  assert.match(sharedToolChatPayloads[1].handoffAttachments[0].content, /Imported project/u);
+  await page.getByRole("button", { name: "移除对话附件" }).click();
+  assert.equal(await page.locator(".supervisor-pending-attachments").count(), 0);
+
+  const supervisorTextbox = page.getByRole("textbox", { name: "发送给管理员 Agent" });
+  await supervisorTextbox.fill(directToolLaunchQuestion);
+  await page.getByRole("button", { name: "发送消息" }).click();
+  await page.locator(".json-tool").waitFor({ state: "visible" });
+  assert.ok(
+    (await page.locator(".tool-launch-context").innerText()).includes(directToolLaunchInstruction),
+    "the direct tool should show the instruction received from the supervisor",
+  );
+  await page.locator(".supervisor-dock").waitFor({ state: "hidden" });
+  check(
+    true,
+    "Route a supervisor launch_tool event into the selected direct tool and preserve its instruction",
+  );
+  await page.getByRole("button", { name: "打开管理员 Agent" }).click();
+
+  const supervisorScopeSelector = page.locator(".supervisor-context-select");
+  await supervisorScopeSelector.click();
+  const supervisorScopeMenu = page.locator(".supervisor-context-menu");
+  await supervisorScopeMenu.getByRole("button", { name: /管理员对话隔离回归项目甲/u }).click();
+  await page.getByText("项目甲专属历史", { exact: true }).waitFor();
+  await supervisorTextbox.fill("甲项目暂存草稿");
+  await supervisorScopeSelector.click();
+  await page
+    .locator(".supervisor-context-menu")
+    .getByRole("button", { name: /管理员对话隔离回归项目乙/u })
+    .click();
+  await page.getByText("项目乙专属历史", { exact: true }).waitFor();
+  assert.equal(await supervisorTextbox.inputValue(), "");
+  assert.equal(await page.getByText("项目甲专属历史", { exact: true }).count(), 0);
+  await supervisorScopeSelector.click();
+  await page
+    .locator(".supervisor-context-menu")
+    .getByRole("button", { name: /管理员对话隔离回归项目甲/u })
+    .click();
+  assert.equal(await supervisorTextbox.inputValue(), "甲项目暂存草稿");
+  await supervisorTextbox.fill(alphaWorkspaceQuestion);
+  const alphaRequestWait = page.waitForRequest(
+    (request) =>
+      request.url().includes("/api/chat") &&
+      request.postDataJSON()?.question === alphaWorkspaceQuestion,
+  );
+  await page.getByRole("button", { name: "发送消息" }).click();
+  await alphaRequestWait;
+  await alphaWorkspaceRequestStarted;
+  await supervisorScopeSelector.click();
+  await page
+    .locator(".supervisor-context-menu")
+    .getByRole("button", { name: /管理员对话隔离回归项目乙/u })
+    .click();
+  await page.getByText("项目乙专属历史", { exact: true }).waitFor();
+  assert.equal(await page.getByText(alphaWorkspaceQuestion, { exact: true }).count(), 0);
+  const betaWorkspaceQuestion = "项目乙自己的并行问题";
+  await supervisorTextbox.fill(betaWorkspaceQuestion);
+  assert.equal(await page.getByRole("button", { name: "发送消息" }).isDisabled(), false);
+  const betaResponseWait = page.waitForResponse(
+    (response) =>
+      response.url().includes("/api/chat") &&
+      response.request().postDataJSON()?.question === betaWorkspaceQuestion,
+  );
+  await page.getByRole("button", { name: "发送消息" }).click();
+  await betaResponseWait;
+  await page
+    .getByText("我已收到代码工坊的源码，可继续帮你处理。", { exact: true })
+    .last()
+    .waitFor();
+  assert.equal(await page.getByText(alphaWorkspaceReply, { exact: true }).count(), 0);
+  await supervisorTextbox.fill(longSupervisorReplyQuestion);
+  const longReplyRequestWait = page.waitForRequest(
+    (request) =>
+      request.url().includes("/api/chat") &&
+      request.postDataJSON()?.question === longSupervisorReplyQuestion,
+  );
+  await page.getByRole("button", { name: "发送消息" }).click();
+  await longReplyRequestWait;
+  await page.getByText("管理员长回复滚动回归段落", { exact: false }).waitFor();
+  const supervisorScrollState = await page.locator(".supervisor-thread").evaluate((thread) => ({
+    scrollTop: thread.scrollTop,
+    scrollHeight: thread.scrollHeight,
+    clientHeight: thread.clientHeight,
+  }));
+  assert.ok(
+    supervisorScrollState.scrollHeight > supervisorScrollState.clientHeight &&
+      supervisorScrollState.scrollHeight -
+        supervisorScrollState.scrollTop -
+        supervisorScrollState.clientHeight <=
+        64,
+    `the administrator chat should follow a long reply to its latest content: ${JSON.stringify(supervisorScrollState)}`,
+  );
+  check(true, "Keep new administrator replies in view while the user follows the latest messages");
+  await page.locator(".supervisor-thread").evaluate((thread) => {
+    thread.scrollTop = 0;
+    thread.dispatchEvent(new Event("scroll"));
+  });
+  const jumpToLatestButton = page.getByRole("button", { name: "跳到最新消息" });
+  await jumpToLatestButton.waitFor({ state: "visible" });
+  await jumpToLatestButton.click();
+  await page.waitForFunction(() => {
+    const thread = document.querySelector(".supervisor-thread");
+    return Boolean(thread && thread.scrollHeight - thread.scrollTop - thread.clientHeight <= 64);
+  });
+  check(true, "Offer a clear jump-to-latest action when reading earlier administrator messages");
+  await page.locator(".supervisor-thread").evaluate((thread) => {
+    thread.scrollTop = 0;
+    thread.dispatchEvent(new Event("scroll"));
+  });
+  await supervisorScopeSelector.click();
+  await page
+    .locator(".supervisor-context-menu")
+    .getByRole("button", { name: /管理员对话隔离回归项目甲/u })
+    .click();
+  await page.getByText(alphaWorkspaceQuestion, { exact: true }).waitFor();
+  await supervisorScopeSelector.click();
+  await page
+    .locator(".supervisor-context-menu")
+    .getByRole("button", { name: /管理员对话隔离回归项目乙/u })
+    .click();
+  await page.getByText(longSupervisorReplyQuestion, { exact: true }).waitFor();
+  const restoredSupervisorScrollState = await page
+    .locator(".supervisor-thread")
+    .evaluate((thread) => ({
+      scrollTop: thread.scrollTop,
+      scrollHeight: thread.scrollHeight,
+      clientHeight: thread.clientHeight,
+    }));
+  assert.ok(
+    restoredSupervisorScrollState.scrollHeight -
+      restoredSupervisorScrollState.scrollTop -
+      restoredSupervisorScrollState.clientHeight <=
+      64,
+    `switching back to a workspace should reveal its newest reply: ${JSON.stringify(restoredSupervisorScrollState)}`,
+  );
+  check(true, "Restore the latest-message view after switching administrator chat scopes");
+  const alphaResponseWait = page.waitForResponse(
+    (response) =>
+      response.url().includes("/api/chat") &&
+      response.request().postDataJSON()?.question === alphaWorkspaceQuestion,
+  );
+  releaseAlphaWorkspaceReply();
+  await alphaResponseWait;
+  await supervisorScopeSelector.click();
+  await page
+    .locator(".supervisor-context-menu")
+    .getByRole("button", { name: /管理员对话隔离回归项目甲/u })
+    .click();
+  await page.getByText(alphaWorkspaceQuestion, { exact: true }).waitFor();
+  await page.getByText(alphaWorkspaceReply, { exact: true }).waitFor();
+  assert.equal(await page.getByText(betaWorkspaceQuestion, { exact: true }).count(), 0);
+  await supervisorScopeSelector.click();
+  await page
+    .locator(".supervisor-context-menu")
+    .getByRole("button", { name: /^VHFXNEX 全局管理员/u })
+    .click();
+  assert.equal(await page.getByText(alphaWorkspaceReply, { exact: true }).count(), 0);
+
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  let supervisorCompletion = {
+    id: "ui-smoke-workbench-completion",
+    role: "assistant",
+    content:
+      "工作台已完成「管理员对话隔离回归项目甲」这一轮执行。\n\n已生成成果：UI Smoke 项目说明。",
+    workspaceId: supervisorContextWorkspaces[0].id,
+  };
+  await page.route("**/api/supervisor/conversation", async (route) => {
+    if (route.request().method() !== "GET") {
+      await route.continue();
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ messages: [supervisorCompletion] }),
+    });
+  });
+  await page.getByRole("button", { name: "查看项目成果" }).waitFor({ timeout: 7_000 });
+  await page.getByRole("button", { name: "查看项目成果" }).click();
+  await page.getByText(supervisorContextWorkspaces[0].plan.title, { exact: true }).last().waitFor();
+  check(
+    true,
+    "Refresh a completed global handoff into the manager chat and open its linked workspace result",
+  );
+  await page.getByRole("button", { name: "展开导航栏" }).click();
+  await page.getByRole("button", { name: "探索入口" }).click();
+  await supervisorScopeSelector.click();
+  await page
+    .locator(".supervisor-context-menu")
+    .getByRole("button", { name: /^VHFXNEX 全局管理员/u })
+    .click();
+  supervisorCompletion = {
+    ...supervisorCompletion,
+    content:
+      "「管理员对话隔离回归项目甲」这一轮执行暂未完成。\n\n工作区已保留此前保存的内容，可继续推进。",
+  };
+  await page
+    .locator(".supervisor-message.assistant")
+    .getByText(/这一轮执行暂未完成/u)
+    .waitFor({ timeout: 7_000 });
+  assert.equal(await page.getByText(/已生成成果：UI Smoke 项目说明/u).count(), 0);
+  check(
+    true,
+    "Refresh an interrupted handoff status in place without adding a duplicate manager reply",
+  );
+  await page.unroute("**/api/supervisor/conversation");
+
+  check(
+    true,
+    "Keep administrator messages, drafts, stream state, and send availability isolated by workspace while requests finish in the background",
+  );
+
+  const supervisorFixtureCleanup = await page.evaluate(
+    async (workspaceIds) => {
+      const results = [];
+      for (const workspaceId of workspaceIds) {
+        const response = await fetch(`/api/workspaces/${workspaceId}`, { method: "DELETE" });
+        results.push({ status: response.status, payload: await response.json() });
+      }
+      return results;
+    },
+    supervisorContextWorkspaces.map((workspace) => workspace.id),
+  );
+  assert.ok(
+    supervisorFixtureCleanup.every((result) => result.status === 200),
+    `supervisor context fixtures must be removed: ${JSON.stringify(supervisorFixtureCleanup)}`,
+  );
+
+  await page.unroute("**/api/chat");
+  await page
+    .locator(".supervisor-dock-head")
+    .getByRole("button", { name: "收起管理员 Agent" })
+    .click();
+  await page.locator(".supervisor-dock").waitFor({ state: "detached" });
+  check(
+    true,
+    "Share a code draft once, keep it available for workbench handoff without resending model content, and allow the user to clear it",
+  );
+  await page.getByRole("button", { name: "直接工具" }).click();
+  await page.getByRole("button", { name: /JSON 工坊/ }).click();
+  const jsonEditor = page.getByRole("textbox", { name: "JSON 内容" });
+  await jsonEditor.fill('{"ok":true,"items":[1,2]}');
+  await page.getByRole("button", { name: "校验并美化" }).click();
+  await page
+    .locator(".json-tool .tool-status")
+    .getByText(/JSON 校验通过/)
+    .waitFor();
+  assert.match(await jsonEditor.inputValue(), /\n  "items": \[/);
+  const jsonDownload = await clickAndCaptureBlobDownload(
+    page,
+    page.getByRole("button", { name: "下载 JSON" }),
+    "JSON 文件已开始下载。",
+  );
+  assert.equal(jsonDownload.filename, "data.json");
+  assert.deepEqual(JSON.parse(jsonDownload.bytes.toString("utf8")), { ok: true, items: [1, 2] });
+  await page.getByRole("button", { name: /演示稿工坊/ }).click();
+  await assertAccessible(page, "direct presentation tool");
+  await page.getByRole("textbox", { name: "演示稿标题" }).fill("活动复盘演示");
+  await page.getByRole("textbox", { name: "当前页标题" }).fill("目标与结果");
+  await page
+    .getByRole("textbox", { name: "当前页要点" })
+    .fill("回顾活动目标\n整理参与数据\n提出下一步建议");
+  await page
+    .getByRole("textbox", { name: "当前页演讲备注" })
+    .fill("先介绍活动目标，再过渡到成果。");
+  await page.screenshot({
+    path: path.join(screenshots, "presentation-direct-tool.png"),
+    fullPage: true,
+  });
+  await page.setViewportSize({ width: 320, height: 720 });
+  const presentationGrid = page.locator(".presentation-editor-grid");
+  const presentationGridDimensions = await presentationGrid.evaluate((element) => ({
+    clientWidth: element.clientWidth,
+    scrollWidth: element.scrollWidth,
+  }));
+  assert.ok(
+    presentationGridDimensions.clientWidth > 0 &&
+      presentationGridDimensions.scrollWidth <= presentationGridDimensions.clientWidth,
+    `presentation editor overflows at 320 px: ${JSON.stringify(presentationGridDimensions)}`,
+  );
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  check(
+    true,
+    "Keep the directly editable presentation tool accessible and within a 320px phone width",
+  );
+  await page.getByRole("button", { name: "当前页下移" }).click();
+  assert.equal(await page.getByRole("textbox", { name: "当前页标题" }).inputValue(), "目标与结果");
+  const directPresentation = await clickAndCaptureBlobDownload(
+    page,
+    page.getByRole("button", { name: "导出 PowerPoint", exact: true }),
+    "PowerPoint 演示稿已开始下载。 共 2 页，包含演讲备注。",
+  );
+  assert.match(directPresentation.filename, /活动复盘演示\.pptx$/u);
+  const directPresentationArchive = await JSZip.loadAsync(directPresentation.bytes, {
+    checkCRC32: true,
+  });
+  assert.match(
+    await directPresentationArchive.file("ppt/slides/slide2.xml").async("string"),
+    /目标与结果/u,
+  );
+  assert.ok(directPresentationArchive.file("ppt/notesSlides/notesSlide2.xml"));
+  await page.locator(".direct-draft-status.saved").waitFor({ state: "visible" });
+  const immediateUnmountDraft = "快速离开工具前的最新备注";
+  await page.getByRole("textbox", { name: "当前页演讲备注" }).fill(immediateUnmountDraft);
+  await page.getByRole("button", { name: /探索入口/ }).click();
+  await page.locator(".home-primary").waitFor({ state: "visible" });
+  await page.getByRole("button", { name: "直接工具" }).click();
+  await page.getByRole("button", { name: /演示稿工坊/ }).click();
+  assert.equal(
+    await page.getByRole("textbox", { name: "当前页演讲备注" }).inputValue(),
+    immediateUnmountDraft,
+  );
+  check(true, "Flush the latest local tool edit when navigating away before the debounce timer");
+  await page.getByRole("button", { name: /探索入口/ }).click();
+  await page.locator(".home-primary").waitFor({ state: "visible" });
+  await page.getByRole("button", { name: "直接工具" }).click();
+  await page.locator(".document-editor textarea").waitFor({ state: "visible" });
+  await page.waitForFunction(
+    (expected) => document.querySelector(".document-editor textarea")?.value === expected,
+    directDocument,
+  );
+  await page.getByRole("button", { name: /表格工作台/ }).click();
+  await page.getByRole("textbox", { name: "1 行 1 列" }).waitFor({ state: "visible" });
+  assert.equal(await page.getByRole("textbox", { name: "1 行 1 列" }).inputValue(), "整理,资料");
+  await page.getByRole("combobox", { name: "Excel 工作表" }).selectOption("1");
+  assert.equal(
+    await page.getByRole("textbox", { name: "1 行 1 列" }).inputValue(),
+    "编辑后的第二张表",
+  );
+  await page.getByRole("button", { name: /代码工坊/ }).click();
+  const importedHtmlEditor = page.getByRole("textbox", { name: "index.html 源码" });
+  await importedHtmlEditor.waitFor({ state: "visible" });
+  assert.match((await importedHtmlEditor.textContent()) || "", /Imported project/);
+  await page.getByRole("button", { name: /JSON 工坊/ }).click();
+  await page.getByRole("textbox", { name: "JSON 内容" }).waitFor({ state: "visible" });
+  assert.deepEqual(
+    JSON.parse(await page.getByRole("textbox", { name: "JSON 内容" }).inputValue()),
+    { ok: true, items: [1, 2] },
+  );
+  await page.getByRole("button", { name: /演示稿工坊/ }).click();
+  assert.equal(
+    await page.getByRole("textbox", { name: "演示稿标题" }).inputValue(),
+    "活动复盘演示",
+  );
+  assert.equal(await page.getByRole("textbox", { name: "当前页标题" }).inputValue(), "目标与结果");
+  await page.getByRole("button", { name: "当前页上移" }).click();
+  assert.equal(await page.getByRole("textbox", { name: "当前页标题" }).inputValue(), "目标与结果");
+  assert.equal(
+    await page.getByRole("textbox", { name: "当前页演讲备注" }).inputValue(),
+    immediateUnmountDraft,
+  );
+  await page.getByRole("button", { name: /探索入口/ }).click();
+  await page.locator(".home-primary").waitFor({ state: "visible" });
+  check(
+    true,
+    "Import, validate, export, and restore document, CSV/XLSX spreadsheet, code, presentation, and JSON drafts after reopening direct tools without AI calls",
+  );
 
   database = new Database(resolveDatabasePath(), {
     timeout: 10_000,

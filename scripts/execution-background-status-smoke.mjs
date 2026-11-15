@@ -34,6 +34,10 @@ const name = "VHFXNEX 状态回归";
 const email = `nexora-execution-smoke-${suffix}@example.test`;
 const password = crypto.randomBytes(24).toString("base64url");
 const database = new Database(resolveDatabasePath());
+const progressScreenshot = path.join(
+  path.dirname(resolveDatabasePath()),
+  "vhfxnex-history-execution-progress.png",
+);
 const browser = await chromium.launch({
   headless: true,
   executablePath,
@@ -98,6 +102,29 @@ try {
   }, workspace);
   assert.equal(saveResponse.status, 200, saveResponse.error || "workspace save failed");
 
+  const parallelWorkspaceId = crypto.randomUUID();
+  const parallelWorkspaceTitle = "并行工作区后台状态回归";
+  const parallelWorkspace = {
+    ...workspace,
+    id: parallelWorkspaceId,
+    prompt: "验证另一个工作区的后台状态也能同时显示",
+    plan: { ...workspace.plan, title: parallelWorkspaceTitle },
+    conversation: [],
+  };
+  const parallelSaveResponse = await page.evaluate(async (value) => {
+    const response = await fetch("/api/workspaces", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ workspace: value }),
+    });
+    return { status: response.status, ...(await response.json()) };
+  }, parallelWorkspace);
+  assert.equal(
+    parallelSaveResponse.status,
+    200,
+    parallelSaveResponse.error || "parallel workspace save failed",
+  );
+
   await page.reload({ waitUntil: "networkidle" });
   await page.locator(".home-primary").waitFor({ state: "visible" });
   await page.getByRole("button", { name: /我的目标/ }).click();
@@ -107,6 +134,17 @@ try {
   await workspaceCard.waitFor({ state: "visible" });
   await workspaceCard.locator(".history-card-open").click();
   await page.locator("#workspace-chat-input").waitFor({ state: "visible" });
+
+  const idleStatusPolls = [];
+  page.on("request", (request) => {
+    if (request.url().endsWith("/api/executions") && request.method() === "GET")
+      idleStatusPolls.push(Date.now());
+  });
+  await page.waitForTimeout(5_200);
+  assert.ok(
+    idleStatusPolls.length <= 1,
+    `idle status polling should be throttled to one request per 8 seconds; observed ${idleStatusPolls.length} requests in 5.2 seconds`,
+  );
 
   const userId = database.prepare("SELECT id FROM users WHERE email = ?").get(email)?.id;
   assert.ok(userId, "registered user must have a local database row");
@@ -177,6 +215,54 @@ try {
     throw error;
   }
   assert.equal(await page.locator(".workspace-live-progress.failed").count(), 0);
+
+  const parallelExecutionToken = crypto.randomUUID();
+  const parallelStartedAt = new Date(Date.now() + 1).toISOString();
+  database
+    .prepare(
+      "INSERT INTO workspace_execution_locks (workspace_id, user_id, token, expires_at) VALUES (?, ?, ?, ?)",
+    )
+    .run(parallelWorkspaceId, userId, parallelExecutionToken, Date.now() + 60_000);
+  database
+    .prepare(
+      `INSERT INTO workspace_execution_status
+        (token, workspace_id, user_id, workspace_title, state, activity, completed_tool_calls,
+         message, started_at, updated_at, finished_at)
+       VALUES (?, ?, ?, ?, 'running', ?, 1, NULL, ?, ?, NULL)`,
+    )
+    .run(
+      parallelExecutionToken,
+      parallelWorkspaceId,
+      userId,
+      parallelWorkspaceTitle,
+      "正在生成并行工作区成果",
+      parallelStartedAt,
+      parallelStartedAt,
+    );
+
+  await page.getByRole("button", { name: "展开导航栏" }).click();
+  await page.getByRole("button", { name: /我的目标/ }).click();
+  const activeWorkspaceCard = page
+    .locator(".history-grid article")
+    .filter({ hasText: planResponse.plan.title });
+  const cardExecutionStatus = activeWorkspaceCard.locator(".history-card-execution.running");
+  await cardExecutionStatus.waitFor({ state: "visible" });
+  assert.match(await cardExecutionStatus.innerText(), /Agent 正在推进/);
+  assert.match(await cardExecutionStatus.innerText(), /正在生成代码交付物/);
+  assert.match(await cardExecutionStatus.innerText(), /已完成 2 项操作/);
+  const parallelWorkspaceCard = page
+    .locator(".history-grid article")
+    .filter({ hasText: parallelWorkspaceTitle });
+  const parallelCardStatus = parallelWorkspaceCard.locator(".history-card-execution.running");
+  await parallelCardStatus.waitFor({ state: "visible" });
+  assert.match(await parallelCardStatus.innerText(), /正在生成并行工作区成果/);
+  assert.match(await parallelCardStatus.innerText(), /已完成 1 项操作/);
+  await page.screenshot({ path: progressScreenshot });
+  await activeWorkspaceCard.locator(".history-card-open").click();
+  await page
+    .locator(".workspace-live-progress.running")
+    .filter({ hasText: "正在生成代码交付物" })
+    .waitFor({ state: "visible" });
 
   const row = database.prepare("SELECT body FROM workspaces WHERE id = ?").get(workspaceId);
   const completedWorkspace = JSON.parse(row.body);
@@ -263,13 +349,17 @@ try {
     .waitFor({ state: "visible" });
   assert.equal(await page.locator(".workspace-live-progress.running").count(), 0);
   console.log(
-    "PASS: preserve the server-confirmed running state after a browser disconnect, then sync the final workspace result and artifacts.",
+    `PASS: preserve background execution state on the goal card after a browser disconnect, then sync the final workspace result and artifacts. Screenshot: ${progressScreenshot}`,
   );
 
   await page.unroute("**/api/execute");
   await page.evaluate(
     async (id) => fetch(`/api/workspaces/${id}`, { method: "DELETE" }),
     workspaceId,
+  );
+  await page.evaluate(
+    async (id) => fetch(`/api/workspaces/${id}`, { method: "DELETE" }),
+    parallelWorkspaceId,
   );
   await context.close();
 } finally {

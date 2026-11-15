@@ -11,12 +11,21 @@ import {
   PROJECT_BATCH_LIMITS,
 } from "../src/lib/project-batch.mjs";
 import { prepareProjectDeliveryBatch } from "../src/lib/project-delivery.mjs";
+import {
+  isExecutionContinuation,
+  missingInitialAgentOutputs,
+} from "../src/lib/agent-validation.mjs";
 import { mergeExecutionCheckpoint } from "../src/lib/execution-checkpoint.mjs";
+import {
+  shouldRetryNoProgressProjectRepair,
+  snapshotExecutionRepairProgress,
+} from "../src/lib/execution-repair-progress.mjs";
 import {
   attachProjectReviewStatus,
   finalizeExecutionSummary,
   parseProjectReview,
 } from "../src/lib/project-review.mjs";
+import { classifyProjectIntent } from "../src/lib/project-intent.mjs";
 
 const projectWithDeclaredDependencies = [
   {
@@ -50,6 +59,92 @@ const projectWithDeclaredDependencies = [
 ];
 
 assert.deepEqual(validateGeneratedProject(projectWithDeclaredDependencies), []);
+
+const firstRunIsContinuation = isExecutionContinuation({
+  explicitContinuation: false,
+  previousResult: null,
+});
+assert.equal(firstRunIsContinuation, false);
+assert.deepEqual(
+  missingInitialAgentOutputs({
+    isContinuation: firstRunIsContinuation,
+    needsBudget: false,
+    taskCount: 2,
+    milestoneCount: 3,
+    hasDocument: false,
+    hasBudget: false,
+  }),
+  ["行动方案"],
+);
+assert.equal(
+  isExecutionContinuation({ explicitContinuation: false, previousResult: { tasks: [] } }),
+  true,
+);
+
+assert.equal(
+  classifyProjectIntent("做一份桌面番茄钟小工具吧", {
+    isContinuation: true,
+    hasExistingProject: true,
+    existingProjectContext: "做一个桌面计时器\n桌面计时器开发计划",
+  }),
+  "update",
+);
+assert.equal(
+  classifyProjectIntent("做一个桌面宠物小工具", {
+    isContinuation: true,
+    hasExistingProject: true,
+    existingProjectContext: "做一个桌面计时器\n桌面计时器开发计划",
+  }),
+  "create",
+);
+const repairProgressFixture = {
+  tasks: [{ id: "task-1", title: "实现计时逻辑", status: "pending" }],
+  milestones: [],
+  artifacts: [],
+  events: [],
+  budget: null,
+  projectDraft: null,
+  existingProjectFiles: [],
+  feasibilityReview: null,
+  toolFailures: [{ name: "create_project", detail: "调用失败" }],
+};
+const noProgressSnapshot = snapshotExecutionRepairProgress(repairProgressFixture);
+assert.equal(snapshotExecutionRepairProgress(repairProgressFixture), noProgressSnapshot);
+assert.equal(
+  snapshotExecutionRepairProgress({
+    ...repairProgressFixture,
+    toolFailures: [{ name: "create_project", detail: "相同工具再次失败" }],
+  }),
+  noProgressSnapshot,
+);
+assert.notEqual(
+  snapshotExecutionRepairProgress({
+    ...repairProgressFixture,
+    events: [
+      { name: "create_project", title: "代码已生成", detail: "新增 1 个文件", status: "done" },
+    ],
+  }),
+  noProgressSnapshot,
+);
+assert.equal(
+  shouldRetryNoProgressProjectRepair({ requiredTool: "create_project", repairAttempt: 0 }),
+  true,
+);
+assert.equal(
+  shouldRetryNoProgressProjectRepair({ requiredTool: "create_project", repairAttempt: 1 }),
+  false,
+);
+assert.equal(
+  shouldRetryNoProgressProjectRepair({
+    requiredTool: "create_project",
+    repairAttempt: 0,
+  }),
+  true,
+);
+assert.equal(
+  shouldRetryNoProgressProjectRepair({ requiredTool: "draft_document", repairAttempt: 0 }),
+  false,
+);
 
 const firstProjectBatch = mergeProjectBatch({
   mode: "full",
