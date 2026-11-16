@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-const [dockerfile, dockerIgnore, compose, workflow] = await Promise.all([
+const [dockerfile, dockerIgnore, compose, workflow, workerSource] = await Promise.all([
   readFile("Dockerfile", "utf8"),
   readFile(".dockerignore", "utf8"),
   readFile("compose.yaml", "utf8"),
   readFile(".github/workflows/ci.yml", "utf8"),
+  readFile("scripts/workbench-worker.mjs", "utf8"),
 ]);
 let checks = 0;
 
@@ -89,12 +90,22 @@ check(
   /scripts\/workbench-worker\.mjs/.test(runner),
   "runtime must include the persistent workbench worker",
 );
+const workerLibraryImports = [
+  ...workerSource.matchAll(/from\s+["']\.\.\/src\/lib\/([^"']+)["']/g),
+].map((match) => match[1]);
 check(
-  /COPY\s+--from=builder\s+\/app\/src\/lib\/database-path\.mjs\s+\.\/src\/lib\/database-path\.mjs/m.test(
-    runner,
-  ),
-  "runtime must include the database path module imported by the workbench worker",
+  workerLibraryImports.length > 0,
+  "the workbench worker must expose its local runtime imports",
 );
+for (const modulePath of workerLibraryImports) {
+  check(
+    new RegExp(
+      `COPY\\s+--from=builder\\s+/app/src/lib/${modulePath.replaceAll(".", "\\.")}\\s+\\./src/lib/${modulePath.replaceAll(".", "\\.")}`,
+      "m",
+    ).test(runner),
+    `runtime must include ${modulePath}, imported by the workbench worker`,
+  );
+}
 check(
   /CMD\s+\[\s*"node"\s*,\s*"scripts\/next\.mjs"/m.test(runner),
   "container startup must use the supervised Next.js launcher",

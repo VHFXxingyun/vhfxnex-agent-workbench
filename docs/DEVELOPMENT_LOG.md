@@ -1,5 +1,11 @@
 # VHFXNEX 开发记录
 
+## 2026-11-16｜修复 CI 发现的容器 worker 依赖缺失
+
+- GitHub Actions 在提交 `6408495` 上通过了安装、lint、TypeScript、生产构建、密钥扫描和 API 回归，但 Docker 容器启动健康检查失败。容器的 runtime 阶段没有复制 worker 新增导入的 `src/lib/workbench-retry.mjs`，worker 因模块缺失退出。
+- Dockerfile 已补齐该模块；容器静态烟测现在会解析 worker 的本地库导入，并逐个确认 runtime 阶段有对应 COPY，避免以后新增依赖再次漏打包。
+- 本机复核：容器配置静态 smoke 38 项、ESLint、TypeScript、Next.js 生产构建与 `git diff --check` 通过。当前环境没有 Docker 引擎，真实镜像健康检查等推送修正后由 GitHub Actions 复验；该修正尚未推送。未调用 DeepSeek。
+
 ## 2026-11-16｜复验工作区滚动与管理员聊天状态
 
 - 浏览器回归发现短屏下行动计划没有独立滚动：工作区切换动画外层没有明确高度，导致子工作区按内容撑开。现在将该容器限制在视口高度内，恢复工作区自身的滚动区域。
