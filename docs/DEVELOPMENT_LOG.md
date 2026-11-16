@@ -4,7 +4,7 @@
 
 - GitHub Actions 在提交 `6408495` 上通过了安装、lint、TypeScript、生产构建、密钥扫描和 API 回归，但 Docker 容器启动健康检查失败。容器的 runtime 阶段没有复制 worker 新增导入的 `src/lib/workbench-retry.mjs`，worker 因模块缺失退出。
 - Dockerfile 已补齐该模块；容器静态烟测现在会解析 worker 的本地库导入，并逐个确认 runtime 阶段有对应 COPY，避免以后新增依赖再次漏打包。
-- 本机复核：容器配置静态 smoke 38 项、ESLint、TypeScript、Next.js 生产构建与 `git diff --check` 通过。当前环境没有 Docker 引擎，真实镜像健康检查等推送修正后由 GitHub Actions 复验；该修正尚未推送。未调用 DeepSeek。
+- 本机复核：容器配置静态 smoke 38 项、ESLint、TypeScript、Next.js 生产构建与 `git diff --check` 通过。修正已提交并推送为 `03ae6e5`；GitHub Actions 运行 [#43839469284](https://github.com/VHFXxingyun/vhfxnex-agent-workbench/actions/runs/43839469284) 全流程通过，包含真实镜像构建、容器健康端点和非 root worker 检查。未调用 DeepSeek。
 
 ## 2026-11-16｜复验工作区滚动与管理员聊天状态
 
