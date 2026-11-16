@@ -23,12 +23,11 @@ function write32(view: DataView, offset: number, value: number) {
 }
 
 export function createProjectZip(files: ProjectFile[]): Uint8Array {
-  if (!files.length || files.length > 60) throw new Error("项目文件数量无效。");
+  if (!files.length || files.length > 0xffff) throw new Error("项目文件数量超出 ZIP 格式限制。");
   const paths = new Set<string>();
   const localRecords: Uint8Array[] = [];
   const centralRecords: Uint8Array[] = [];
   let localOffset = 0;
-  let totalBytes = 0;
 
   for (const file of files) {
     const safePath = normalizeProjectPath(file.path);
@@ -41,8 +40,8 @@ export function createProjectZip(files: ProjectFile[]): Uint8Array {
 
     const filename = encoder.encode(safePath);
     const content = encoder.encode(file.content);
-    totalBytes += content.byteLength;
-    if (totalBytes > 100_000) throw new Error("项目文件超过安全大小上限。");
+    if (filename.length > 0xffff || content.byteLength > 0xffffffff)
+      throw new Error("项目文件超出 ZIP32 格式限制。");
     const checksum = crc32(content);
     const local = new Uint8Array(30 + filename.length + content.length);
     const localView = new DataView(local.buffer);
@@ -83,9 +82,12 @@ export function createProjectZip(files: ProjectFile[]): Uint8Array {
     central.set(filename, 46);
     centralRecords.push(central);
     localOffset += local.length;
+    if (localOffset > 0xffffffff) throw new Error("项目归档超出 ZIP32 格式限制。");
   }
 
   const centralSize = centralRecords.reduce((sum, record) => sum + record.length, 0);
+  if (centralSize > 0xffffffff || localOffset + centralSize > 0xffffffff)
+    throw new Error("项目归档超出 ZIP32 格式限制。");
   const end = new Uint8Array(22);
   const endView = new DataView(end.buffer);
   write32(endView, 0, 0x06054b50);

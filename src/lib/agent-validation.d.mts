@@ -16,4 +16,9 @@ export function isExecutionContinuation(input?: {
   previousResult?: unknown;
 }): boolean;
 
+export function requiresDocumentDeliverable(
+  input: string,
+  options?: { isContinuation?: boolean },
+): boolean;
+
 export function missingInitialAgentOutputs(output: InitialAgentOutput): string[];

@@ -17,8 +17,7 @@ function isProjectFile(value: unknown): boolean {
     isRecord(value) &&
     isText(value.path, 120) &&
     normalizeProjectPath(value.path) !== null &&
-    typeof value.content === "string" &&
-    value.content.length <= 45_000
+    typeof value.content === "string"
   );
 }
 
@@ -230,16 +229,14 @@ function isExecutionResult(value: unknown): boolean {
         typeof artifact.description === "string" &&
         artifact.description.length <= 500 &&
         typeof artifact.content === "string" &&
+        (artifact.templateId === undefined ||
+          (artifact.type === "document" &&
+            isText(artifact.templateId, 80) &&
+            /^[0-9a-f-]{36}$/i.test(artifact.templateId))) &&
         (artifact.type === "code"
           ? Array.isArray(artifact.files) &&
             artifact.files.length > 0 &&
-            artifact.files.length <= 60 &&
             artifact.files.every(isProjectFile) &&
-            artifact.files.reduce((total, file) => total + file.content.length, 0) <= 100_000 &&
-            artifact.files.reduce(
-              (total, file) => total + new TextEncoder().encode(file.content).byteLength,
-              0,
-            ) <= 100_000 &&
             new Set(artifact.files.map((file) => projectPathKey(file.path))).size ===
               artifact.files.length
           : artifact.content.length <= 50000),

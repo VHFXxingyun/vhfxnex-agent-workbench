@@ -2,7 +2,7 @@
 
 目标：按赛事要求制作 PDF，控制在 30 页以内。建议最终 12–18 页，所有截图、测试数据和团队信息均用真实材料补齐。
 
-当前已有一份完整的事实标注工作稿：[VHFXNEX 技术说明书工作稿](../deliverables/VHFXNEX-technical-report-draft.md)。它不是可直接提交的 PDF；真实团队资料、最终演示证据、部署信息和视觉复核仍需补齐。
+当前已有一份完整的事实标注工作稿：[VHFXNEX 技术说明书工作稿](../deliverables/VHFXNEX-technical-report-draft.md)，并已生成 9 页 A4 PDF 且逐页检查当前版面。它仍不是可直接提交的最终 PDF；真实团队资料、最终演示证据和部署信息仍需补齐。
 
 ## 建议目录
 

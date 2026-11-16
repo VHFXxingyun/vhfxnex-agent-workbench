@@ -9,3 +9,11 @@ export interface ProjectIntentContext {
 }
 
 export function classifyProjectIntent(input: string, context?: ProjectIntentContext): ProjectIntent;
+export function requestsProjectDraftRestart(input: string): boolean;
+export function shouldResumeProjectDraft(context?: {
+  hasDraft?: boolean;
+  isContinuation?: boolean;
+  isSoftwareWorkspace?: boolean;
+  input?: string;
+  projectIntent?: ProjectIntent;
+}): boolean;

@@ -42,6 +42,7 @@ import {
 import { consumeAiRateLimits, rateLimitedResponse } from "@/lib/auth-rate-limit";
 import { recordAiUsage } from "@/lib/ai-usage";
 import { isSupportedImageDataUrl } from "@/lib/image";
+import { isDocxTemplateDataUrl, saveDocxTemplateForUser } from "@/lib/docx-template.mjs";
 import {
   appendSupervisorConversationForUser,
   getSupervisorConversationForUser,
@@ -91,9 +92,15 @@ function getSupervisorTestModel(request: NextRequest): SupervisorTestModel | nul
     return null;
   const scenario = request.headers.get("x-vhfxnex-supervisor-test-scenario") || "";
   if (
-    !["reply", "handoff", "handoff-unauthorized", "open-user-tool", "new-goal", "search"].includes(
-      scenario,
-    )
+    ![
+      "reply",
+      "handoff",
+      "handoff-invalid",
+      "handoff-unauthorized",
+      "open-user-tool",
+      "new-goal",
+      "search",
+    ].includes(scenario)
   )
     return null;
   const requestedTool = request.headers.get("x-vhfxnex-supervisor-test-tool") || "pdf";
@@ -206,12 +213,24 @@ function parseAttachments(value: unknown): ChatAttachment[] | string {
       textBytes += new TextEncoder().encode(item.content).byteLength;
       if (item.content.length > 120_000 || textBytes > 200_000)
         return "文本附件总量不能超过 200 KB。";
+      if (
+        item.sourceDataUrl !== undefined &&
+        (typeof item.sourceDataUrl !== "string" ||
+          !isDocxTemplateDataUrl(item.name, item.mimeType, item.sourceDataUrl))
+      )
+        return "DOCX 模板附件格式无效或超过 1 MB。";
+      if (item.templateId !== undefined && typeof item.templateId !== "string")
+        return "DOCX 模板标识无效。";
       attachments.push({
         id: crypto.randomUUID(),
         name: item.name,
         mimeType: item.mimeType.slice(0, 100),
         kind: "text",
         content: item.content,
+        ...(typeof item.sourceDataUrl === "string"
+          ? { sourceDataUrl: item.sourceDataUrl }
+          : {}),
+        ...(typeof item.templateId === "string" ? { templateId: item.templateId } : {}),
       });
     } else {
       return "附件类型无效。";
@@ -266,6 +285,7 @@ function createDialogStreamResponse(args: {
   modelResult?: ChatModelResult;
   staticAnswer?: string;
   staticHandoff?: Handoff;
+  handoffFallback?: Handoff;
   staticUserToolLaunch?: UserToolLaunch;
   staticNewGoalLaunch?: NewGoalLaunch;
   runActivity: string;
@@ -300,6 +320,7 @@ function createDialogStreamResponse(args: {
             signal: args.signal,
             isCancelled: () => cancelled,
             send,
+            handoffFallback: args.handoffFallback,
             schemas: {
               handoff: handoffSchema,
               userTool: userToolSchema,
@@ -394,6 +415,20 @@ function createDialogStreamResponse(args: {
             agent: "dialogue",
             content: acknowledgment,
           };
+          const selectedAttachments = args.handoffAttachments.length
+            ? args.handoffAttachments
+            : args.attachments;
+          const retainedAttachments: ChatAttachment[] = [];
+          for (const attachment of selectedAttachments) {
+            const { sourceDataUrl, ...safeAttachment } = attachment;
+            const templateId = sourceDataUrl
+              ? saveDocxTemplateForUser(args.userId, sourceDataUrl)
+              : safeAttachment.templateId;
+            retainedAttachments.push({
+              ...safeAttachment,
+              ...(templateId ? { templateId } : {}),
+            });
+          }
           const savedHandoff = enqueueWorkbenchHandoffForUser(
             args.userId,
             {
@@ -402,9 +437,7 @@ function createDialogStreamResponse(args: {
               instruction: handoff.instruction,
               userMessageId: args.userMessage.id,
               userMessage: args.userMessage.content,
-              attachments: args.handoffAttachments.length
-                ? args.handoffAttachments
-                : args.attachments,
+              attachments: retainedAttachments,
               ...(!args.workspaceId ? { userMessageRecord: args.userMessage } : {}),
             },
             assistantMessage,
@@ -672,9 +705,7 @@ export async function POST(request: NextRequest) {
     const explicitWorkbenchExecution =
       workspace?.mode === "live" &&
       workspace.plan.routes.some((route) => route.id === workspace.selectedRouteId) &&
-      attachments.length === 0
-        ? classifyExplicitWorkbenchExecution(question)
-        : null;
+      classifyExplicitWorkbenchExecution(question);
     const requiresDialogueApi =
       (!workspace || workspace.mode === "live") &&
       !progressAnswer &&
@@ -682,13 +713,10 @@ export async function POST(request: NextRequest) {
       !explicitNewGoalLaunch &&
       !capabilityAnswer &&
       !explicitWorkbenchExecution;
-    const requiresWorkbenchApi = Boolean(explicitWorkbenchExecution);
     const supervisorTestModel = getSupervisorTestModel(request);
     const apiKey =
-      !supervisorTestModel && (requiresDialogueApi || requiresWorkbenchApi)
-        ? getDeepSeekApiKey()
-        : "";
-    if ((requiresDialogueApi || requiresWorkbenchApi) && !apiKey && !supervisorTestModel)
+      !supervisorTestModel && requiresDialogueApi ? getDeepSeekApiKey() : "";
+    if (requiresDialogueApi && !apiKey && !supervisorTestModel)
       return NextResponse.json(
         { error: "尚未配置 DeepSeek API Key；请检查服务端配置。" },
         { status: 503 },
@@ -1027,7 +1055,10 @@ export async function POST(request: NextRequest) {
           : {},
       stopWhen: ({ steps }) => steps.length >= 2,
       toolChoice: "auto",
-      maxOutputTokens: 1400,
+      // DeepSeek counts reasoning tokens against this same output cap. The old
+      // 1,400-token ceiling could be exhausted before a long, explicit request
+      // produced either a visible answer or its workbench handoff.
+      maxOutputTokens: 8192,
       maxRetries: 0,
       abortSignal: streamSignal,
       timeout: { stepMs: 90_000, totalMs: 90_000 },
@@ -1047,6 +1078,9 @@ export async function POST(request: NextRequest) {
       attachments,
       handoffAttachments,
       workspace,
+      ...(workspace && question
+        ? { handoffFallback: { workspaceId: workspace.id, instruction: question } }
+        : {}),
       modelResult: modelResult as unknown as ChatModelResult,
       runActivity: globalExecution?.activity || "",
       completedToolCalls,

@@ -1,7 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { AnimatePresence, motion } from "motion/react";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
+import Image from "next/image";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   ArrowRight,
@@ -9,8 +10,6 @@ import {
   BookOpen,
   CalendarDays,
   Check,
-  ChevronLeft,
-  ChevronRight,
   Circle,
   CircleAlert,
   Clock3,
@@ -25,6 +24,8 @@ import {
   LoaderCircle,
   LogOut,
   Menu,
+  PanelLeftClose,
+  PanelLeftOpen,
   Pencil,
   Plus,
   Save,
@@ -57,6 +58,7 @@ import KnowledgeView from "@/components/KnowledgeView";
 import AccountView from "@/components/AccountView";
 import ProjectFlowPanel from "@/components/ProjectFlowPanel";
 import WorkspaceChat from "@/components/WorkspaceChat";
+import FrameTrace from "@/components/FrameTrace";
 import ArtifactPreview from "@/components/ArtifactPreview";
 import ToolCenter from "@/components/ToolCenter";
 import SupervisorDock from "@/components/SupervisorDock";
@@ -77,6 +79,23 @@ const SIDEBAR_COLLAPSED_PREFERENCE_KEY = "nexora:sidebar-collapsed:v1";
 const SIDEBAR_PREFERENCE_EVENT = "nexora:sidebar-preference-change";
 const ACTIVE_WORKSPACE_SESSION_KEY_PREFIX = "vhfxnex:active-workspace:v1:";
 const ACTIVE_EXECUTION_STATUS_POLL_MS = 2_500;
+
+function SidebarActiveMarker() {
+  const prefersReducedMotion = useReducedMotion();
+
+  return (
+    <motion.span
+      className="side-nav-active-marker"
+      layoutId="vhfxnex-sidebar-active-marker"
+      transition={
+        prefersReducedMotion
+          ? { duration: 0.01 }
+          : { type: "spring", stiffness: 520, damping: 38 }
+      }
+      aria-hidden="true"
+    />
+  );
+}
 const IDLE_EXECUTION_STATUS_POLL_MS = 8_000;
 
 function activeWorkspaceSessionKey(userId: string) {
@@ -608,26 +627,22 @@ const shortDate = (date: string) =>
 
 function BrandMark({ compact = false }: { compact?: boolean }) {
   return (
-    <svg
+    <span
       className={`brand-mark${compact ? " brand-mark-compact" : ""}`}
-      viewBox="0 0 64 64"
       role="img"
       aria-label={compact ? undefined : "VHFXNEX 标志"}
       aria-hidden={compact ? true : undefined}
     >
-      <rect x="2" y="2" width="60" height="60" rx="18" fill="#171621" stroke="#ffffff16" />
-      <path
-        d="M17 45V19l30 26V19"
-        fill="none"
-        stroke="#cbb2f3"
-        strokeWidth="6"
-        strokeLinecap="round"
-        strokeLinejoin="round"
+      <Image
+        className="brand-mark-art"
+        src="/brand-mark.png?v=20261116-gold2"
+        alt=""
+        width={1360}
+        height={1157}
+        unoptimized
+        draggable={false}
       />
-      <path d="M18 45 46 19" fill="none" stroke="#d8eeab" strokeWidth="4.5" strokeLinecap="round" />
-      <circle cx="17" cy="19" r="3.2" fill="#e9dcff" />
-      <circle cx="47" cy="45" r="3.2" fill="#d8eeab" />
-    </svg>
+    </span>
   );
 }
 
@@ -780,11 +795,10 @@ function AuthScreen({
             <span className="pulse" /> 目标驱动的 AI 执行空间
           </p>
           <h1>
-            想法很多。
-            <br />
-            <em>让它真正发生。</em>
+            <span className="auth-title-line auth-title-first">把想法，</span>
+            <em className="auth-title-line auth-title-second">变成进展。</em>
           </h1>
-          <p>说出你的目标，Agent 规划路线、调用工具并持续推进。你始终掌握关键选择。</p>
+          <p>从目标澄清到交付结果，Agent 协同推进；路线选择和关键决策由你掌控。</p>
           <div className="auth-flow">
             <span>01 提出目标</span>
             <b /> <span>02 选择路线</span>
@@ -1049,6 +1063,7 @@ function AuthScreen({
 
 export default function Home() {
   const queryClient = useQueryClient();
+  const prefersReducedMotion = useReducedMotion();
   const [user, setUser] = useState<User | null>(null);
   const [aiConfigured, setAiConfigured] = useState(false);
   const [authMode, setAuthMode] = useState<"register" | "login">("register");
@@ -2061,7 +2076,12 @@ export default function Home() {
         extension = "zip";
         successMessage = "项目 ZIP 已开始下载。解压后按 README.md 的步骤运行。";
       } else {
-        const exported = await createArtifactDownload(artifact, artifactDraft, format);
+        const exported = await createArtifactDownload(
+          artifact,
+          artifactDraft,
+          format,
+          workspace?.id,
+        );
         blob = exported.blob;
         extension = exported.extension;
         successMessage = exported.message;
@@ -2428,12 +2448,30 @@ export default function Home() {
           const content = await readChatDocument(file);
           totalTextBytes += new TextEncoder().encode(content).byteLength;
           if (totalTextBytes > 200_000) throw new Error("文本附件合计不能超过 200 KB。");
+          let sourceDataUrl: string | undefined;
+          if (file.name.toLowerCase().endsWith(".docx")) {
+            if (file.size > 1_000_000) throw new Error("用于保留原版式的 DOCX 模板不能超过 1 MB。");
+            sourceDataUrl = await new Promise<string>((resolve, reject) => {
+              const reader = new FileReader();
+              reader.onload = () =>
+                typeof reader.result === "string"
+                  ? resolve(reader.result)
+                  : reject(new Error("DOCX 模板读取失败。"));
+              reader.onerror = () => reject(new Error("DOCX 模板读取失败，请重试。"));
+              reader.readAsDataURL(file);
+            });
+          }
           next.push({
             id: crypto.randomUUID(),
             name: file.name.slice(0, 160),
-            mimeType: file.type || "text/plain",
+            mimeType:
+              file.type ||
+              (file.name.toLowerCase().endsWith(".docx")
+                ? "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                : "text/plain"),
             kind: "text",
             content,
+            ...(sourceDataUrl ? { sourceDataUrl } : {}),
           });
         }
       }
@@ -3604,20 +3642,6 @@ export default function Home() {
           onClick={() => setMobileNav(false)}
         />
       )}
-      {sidebarCollapsed && (
-        <button
-          className="desktop-sidebar-expand"
-          ref={desktopSidebarExpandButtonRef}
-          type="button"
-          onClick={toggleDesktopSidebar}
-          aria-expanded={false}
-          aria-controls="primary-sidebar"
-          aria-label="展开导航栏"
-          title="展开导航栏"
-        >
-          <ChevronRight size={17} />
-        </button>
-      )}
       <aside
         id="primary-sidebar"
         ref={mobileNavRef}
@@ -3625,10 +3649,25 @@ export default function Home() {
         role={mobileNav ? "dialog" : undefined}
         aria-modal={mobileNav ? true : undefined}
         aria-label={mobileNav ? "导航菜单" : undefined}
+        inert={sidebarCollapsed && !mobileNav}
         onKeyDown={trapMobileNavFocus}
       >
         <div className="sidebar-brand">
           <Brand />
+          {!sidebarCollapsed && (
+            <button
+              className="desktop-sidebar-toggle"
+              ref={desktopSidebarCollapseButtonRef}
+              type="button"
+              onClick={toggleDesktopSidebar}
+              aria-expanded={true}
+              aria-controls="primary-sidebar"
+              aria-label="收起导航栏"
+              title="收起导航栏"
+            >
+              <PanelLeftClose size={18} strokeWidth={1.8} />
+            </button>
+          )}
           <button
             className="mobile-close"
             ref={mobileCloseButtonRef}
@@ -3646,6 +3685,7 @@ export default function Home() {
             aria-current={view === "home" ? "page" : undefined}
             onClick={() => navigate("home")}
           >
+            {view === "home" && <SidebarActiveMarker />}
             <Compass size={18} /> 探索入口 <ArrowUpRight size={15} />
           </button>
           <button
@@ -3653,6 +3693,7 @@ export default function Home() {
             aria-current={view === "workspace" ? "page" : undefined}
             onClick={() => navigate(workspace ? "workspace" : "home")}
           >
+            {view === "workspace" && <SidebarActiveMarker />}
             <Target size={18} /> 当前工作区
           </button>
           <button
@@ -3660,6 +3701,7 @@ export default function Home() {
             aria-current={view === "knowledge" ? "page" : undefined}
             onClick={() => navigate("knowledge")}
           >
+            {view === "knowledge" && <SidebarActiveMarker />}
             <BookOpen size={18} /> 我的知识库
           </button>
           <button
@@ -3667,6 +3709,7 @@ export default function Home() {
             aria-current={view === "tools" ? "page" : undefined}
             onClick={() => navigate("tools")}
           >
+            {view === "tools" && <SidebarActiveMarker />}
             <Wrench size={18} /> 直接工具
           </button>
           <button
@@ -3674,6 +3717,7 @@ export default function Home() {
             aria-current={view === "history" ? "page" : undefined}
             onClick={() => navigate("history")}
           >
+            {view === "history" && <SidebarActiveMarker />}
             <FolderKanban size={18} /> 我的目标 <small>{history.length}</small>
           </button>
           <button
@@ -3681,6 +3725,7 @@ export default function Home() {
             aria-current={view === "account" ? "page" : undefined}
             onClick={() => navigate("account")}
           >
+            {view === "account" && <SidebarActiveMarker />}
             <Settings size={18} /> 账户设置
           </button>
           {user.role === "admin" && (
@@ -3689,6 +3734,7 @@ export default function Home() {
               aria-current={view === "admin" ? "page" : undefined}
               onClick={openAdmin}
             >
+              {view === "admin" && <SidebarActiveMarker />}
               <ShieldCheck size={18} /> 管理控制台
             </button>
           )}
@@ -3780,22 +3826,24 @@ export default function Home() {
             </button>
           </div>
         </div>
-        <button
-          className="desktop-sidebar-toggle"
-          ref={desktopSidebarCollapseButtonRef}
-          type="button"
-          onClick={toggleDesktopSidebar}
-          aria-expanded={!sidebarCollapsed}
-          aria-controls="primary-sidebar"
-          aria-label="收起导航栏"
-          title="收起导航栏"
-        >
-          <ChevronLeft size={17} />
-        </button>
       </aside>
       <div className="main-column">
         <header className={`topbar${visibleExecution ? " has-active-execution" : ""}`}>
           <div>
+            {sidebarCollapsed && (
+              <button
+                className="desktop-sidebar-expand"
+                ref={desktopSidebarExpandButtonRef}
+                type="button"
+                onClick={toggleDesktopSidebar}
+                aria-expanded={false}
+                aria-controls="primary-sidebar"
+                aria-label="展开导航栏"
+                title="展开导航栏"
+              >
+                <PanelLeftOpen size={18} strokeWidth={1.8} />
+              </button>
+            )}
             <button
               className="mobile-menu"
               ref={mobileMenuButtonRef}
@@ -3900,6 +3948,19 @@ export default function Home() {
               </button>
             </div>
           )}
+          <AnimatePresence mode="wait">
+            <motion.div
+              key={view}
+              className="view-transition-shell"
+              initial={prefersReducedMotion ? false : { opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={prefersReducedMotion ? undefined : { opacity: 0 }}
+              transition={
+                prefersReducedMotion
+                  ? { duration: 0.01 }
+                  : { duration: 0.24, ease: [0.22, 1, 0.36, 1] }
+              }
+            >
           {view === "home" && (
             <section className="home">
               <div className="home-glow" />
@@ -3915,9 +3976,8 @@ export default function Home() {
                     <Sparkles size={16} /> 你的想法，值得被认真执行
                   </p>
                   <h1>
-                    接下来，
-                    <br />
-                    <em>我们做什么？</em>
+                    <span className="home-title-line home-title-first">接下来，</span>
+                    <em className="home-title-line home-title-second">我们做什么？</em>
                   </h1>
                   <div>
                     把目标告诉 Agent。它会理解方向、提出路线、调用工具，与你一起把事情推进到底。
@@ -3930,6 +3990,7 @@ export default function Home() {
                     analyze();
                   }}
                 >
+                  <FrameTrace />
                   <div className="composer-top">
                     <span>✦ &nbsp; NEW MISSION</span>
                     <span>CTRL / ⌘ + ENTER</span>
@@ -4260,6 +4321,7 @@ export default function Home() {
                 </div>
                 <aside className="workspace-side-panel" aria-label="行动计划">
                   <div className="workspace-details">
+                    <FrameTrace delay={0.28} />
                     <div className="workspace-details-head">
                       <span>行动计划</span>
                       <small>
@@ -5540,6 +5602,8 @@ export default function Home() {
               )}
             </section>
           )}
+            </motion.div>
+          </AnimatePresence>
         </main>
         <SupervisorDock
           workspaces={history

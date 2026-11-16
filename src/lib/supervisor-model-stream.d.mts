@@ -12,6 +12,7 @@ export function consumeSupervisorModelStream(args: {
   signal: AbortSignal;
   isCancelled: () => boolean;
   send: (event: unknown) => boolean;
+  handoffFallback?: Handoff | null;
   schemas: {
     handoff: ZodType<Handoff>;
     userTool: ZodType<UserToolLaunch>;

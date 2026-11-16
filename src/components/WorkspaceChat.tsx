@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { motion, useReducedMotion } from "motion/react";
+import FrameTrace from "@/components/FrameTrace";
 import {
   ArrowDownToLine,
   ArrowRight,
@@ -305,6 +306,7 @@ export default function WorkspaceChat({
 
   return (
     <section className="workspace-chat" aria-label="与目标 Agent 对话">
+      <FrameTrace delay={0.2} />
       <header className="workspace-chat-head">
         <span className="workspace-chat-avatar">
           <Sparkles size={18} />

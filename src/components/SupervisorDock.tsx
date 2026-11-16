@@ -99,6 +99,7 @@ export default function SupervisorDock({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const abortControllersRef = useRef(new Map<string, AbortController>());
   const globalConversationLoaded = useRef(false);
+  const globalConversationRevision = useRef(0);
   const selectedWorkspaceId =
     workspaceId === GLOBAL_SCOPE
       ? ""
@@ -136,6 +137,7 @@ export default function SupervisorDock({
     update: DockMessage[] | ((current: DockMessage[]) => DockMessage[]),
   ) => {
     if (!scopeWorkspaceId) {
+      globalConversationRevision.current += 1;
       setGlobalMessages(update);
       return;
     }
@@ -171,6 +173,7 @@ export default function SupervisorDock({
   useEffect(() => {
     if (workspaceId !== GLOBAL_SCOPE || globalConversationLoaded.current) return;
     let cancelled = false;
+    const requestRevision = globalConversationRevision.current;
     void fetch("/api/supervisor/conversation", { cache: "no-store" })
       .then(async (response) => {
         if (!response.ok) throw new Error("无法载入总控历史对话。");
@@ -185,15 +188,17 @@ export default function SupervisorDock({
       })
       .then((payload) => {
         if (cancelled) return;
-        setGlobalMessages(
-          Array.isArray(payload.messages)
-            ? payload.messages.map((message) => ({
-                id: message.id,
-                role: message.role,
-                content: message.content,
-                ...(message.workspaceId ? { workspaceId: message.workspaceId } : {}),
-              }))
-            : [],
+        setGlobalMessages((current) =>
+          globalConversationRevision.current === requestRevision
+            ? Array.isArray(payload.messages)
+              ? payload.messages.map((message) => ({
+                  id: message.id,
+                  role: message.role,
+                  content: message.content,
+                  ...(message.workspaceId ? { workspaceId: message.workspaceId } : {}),
+                }))
+              : []
+            : current,
         );
         globalConversationLoaded.current = true;
       })
@@ -217,6 +222,7 @@ export default function SupervisorDock({
     const refreshConversation = async () => {
       if (refreshing) return;
       refreshing = true;
+      const requestRevision = globalConversationRevision.current;
       try {
         const response = await fetch("/api/supervisor/conversation", { cache: "no-store" });
         if (!response.ok) return;
@@ -229,15 +235,17 @@ export default function SupervisorDock({
           }>;
         };
         if (cancelled) return;
-        setGlobalMessages(
-          Array.isArray(payload.messages)
-            ? payload.messages.map((message) => ({
-                id: message.id,
-                role: message.role,
-                content: message.content,
-                ...(message.workspaceId ? { workspaceId: message.workspaceId } : {}),
-              }))
-            : [],
+        setGlobalMessages((current) =>
+          globalConversationRevision.current === requestRevision
+            ? Array.isArray(payload.messages)
+              ? payload.messages.map((message) => ({
+                  id: message.id,
+                  role: message.role,
+                  content: message.content,
+                  ...(message.workspaceId ? { workspaceId: message.workspaceId } : {}),
+                }))
+              : []
+            : current,
         );
         globalConversationLoaded.current = true;
       } catch {

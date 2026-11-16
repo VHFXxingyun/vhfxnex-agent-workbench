@@ -10,6 +10,43 @@ function parseToolInput(schema, input, message) {
   return parsed.data;
 }
 
+function parseHandoffInput(schema, input, fallback, send) {
+  const parsed = schema.safeParse(input);
+  if (parsed.success) {
+    if (fallback && parsed.data.workspaceId && parsed.data.workspaceId !== fallback.workspaceId) {
+      if (
+        !send({
+          type: "status",
+          message: "交接目标与当前工作区不一致，已按当前工作区和你的原始要求继续交接。",
+        })
+      )
+        throw new DOMException("请求已取消", "AbortError");
+      return fallback;
+    }
+    return parsed.data;
+  }
+
+  if (fallback) {
+    if (
+      !send({
+        type: "status",
+        message: "交接参数格式异常，已按当前工作区和你的原始要求继续交接。",
+      })
+    )
+      throw new DOMException("请求已取消", "AbortError");
+    return fallback;
+  }
+
+  const invalidFields = new Set(parsed.error.issues.map((issue) => issue.path[0]));
+  if (invalidFields.has("workspaceId"))
+    throw new Error("交接未创建：对话 Agent 没有选定有效工作区。请先选择目标工作区后重试。");
+  if (invalidFields.has("instruction"))
+    throw new Error(
+      "交接未创建：对话 Agent 没有生成有效执行指令。请重试或在目标工作区直接发送要求。",
+    );
+  throw new Error("交接未创建：对话 Agent 返回的信息格式不完整，请重试。");
+}
+
 /** Consume the public text/tool events emitted by the supervisor model. */
 export async function consumeSupervisorModelStream({
   fullStream,
@@ -17,6 +54,7 @@ export async function consumeSupervisorModelStream({
   isCancelled,
   send,
   schemas,
+  handoffFallback = null,
 }) {
   let answer = "";
   let handoff = null;
@@ -31,11 +69,7 @@ export async function consumeSupervisorModelStream({
         throw new DOMException("请求已取消", "AbortError");
       }
     } else if (part.type === "tool-call" && part.toolName === "handoff_to_workbench") {
-      handoff = parseToolInput(
-        schemas.handoff,
-        part.input,
-        "对话 Agent 生成的工作交接信息无效，请重试。",
-      );
+      handoff = parseHandoffInput(schemas.handoff, part.input, handoffFallback, send);
     } else if (part.type === "tool-call" && part.toolName === "open_user_tool") {
       userToolLaunch = parseToolInput(
         schemas.userTool,

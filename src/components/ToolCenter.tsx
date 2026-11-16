@@ -647,19 +647,10 @@ export default function ToolCenter({
   async function importProjectFiles(fileList?: FileList | null) {
     const selected = Array.from(fileList || []);
     if (!selected.length) return;
-    if (selected.length > 40) {
-      setProjectStatus("一次最多导入 40 个代码文件。");
-      return;
-    }
     const supported =
       /\.(?:html?|css|m?js|cjs|tsx?|jsx?|json|md|txt|py|java|go|rs|sql|ya?ml|toml|sh)$/iu;
     if (selected.some((file) => !supported.test(file.name))) {
       setProjectStatus("导入项目暂支持 HTML、CSS、JS/TS、JSON、Markdown 和常见源码文件。");
-      return;
-    }
-    const totalBytes = selected.reduce((total, file) => total + file.size, 0);
-    if (selected.some((file) => file.size > 80_000) || totalBytes > 120_000) {
-      setProjectStatus("导入源码总量上限为 120 KB，单个文件不能超过 80 KB。");
       return;
     }
     setProjectBusy(true);
@@ -684,12 +675,6 @@ export default function ToolCenter({
         if (existingIndex >= 0) merged[existingIndex] = incoming;
         else merged.push(incoming);
       }
-      if (merged.length > 40) throw new Error("导入后项目文件超过 40 个，请先移除无用文件。");
-      const mergedBytes = merged.reduce(
-        (total, file) => total + file.path.length + file.content.length,
-        0,
-      );
-      if (mergedBytes > 120_000) throw new Error("合并后项目超过 120 KB，请先移除无用文件。");
       markDraftSaving();
       setFiles(merged);
       setActivePath(imported[0].path);
@@ -1077,13 +1062,8 @@ export default function ToolCenter({
       ].join("\n\n");
     }
 
-    const contentBytes = new TextEncoder().encode(content).byteLength;
     if (!content.trim()) {
       setCollaborationStatus("当前工具还没有可分享的内容。");
-      return;
-    }
-    if (content.length > 100_000 || contentBytes > 180_000) {
-      setCollaborationStatus("当前内容较大，未发送。请先拆分或缩小草稿，再交给总控 Agent。");
       return;
     }
     setCollaborationStatus("");

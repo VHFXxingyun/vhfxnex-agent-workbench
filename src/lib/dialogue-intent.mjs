@@ -57,8 +57,10 @@ export function classifyExplicitWorkbenchExecution(message) {
   const text = typeof message === "string" ? message.trim() : "";
   if (
     !text ||
-    text.length > 360 ||
-    /[?？]|(?:吗|么|是否|好不好|值不值得|该不该|能不能|可不可以)\s*[。！!]?$/u.test(text)
+    text.length > 4_000 ||
+    /[?？]|^(?:为什么|怎么|如何|是什么|是不是|能不能|可不可以|请问|你觉得)|(?:吗|么|是否|好不好|值不值得|该不该|能不能|可不可以)\s*[。！!]?$/u.test(
+      text,
+    )
   )
     return null;
 
@@ -72,7 +74,10 @@ export function classifyExplicitWorkbenchExecution(message) {
     ) ||
     /^(?:(?:开始|继续)(?:按当前路线|执行|制作|开发|推进|实现|把项目做完)(?:吧|即可|下去)?[。！!]?)$/u.test(
       command,
-    );
+    ) ||
+    (/^(?:请|麻烦(?:你)?|帮我|帮我们|直接|马上|立即|现在|开始|继续|接着|恢复|按(?:照)?|照着|把|给我|我要求你|我需要你|我要你|我想让你|你现在)/u.test(
+      text,
+    ) && /(?:开始|继续|恢复|执行|推进|制作|开发|实现|生成|产出|输出|交付|修复|整理|编写|安排|制定|完成|做完)/u.test(text));
 
   return explicitCommand ? { instruction: text } : null;
 }

@@ -18,6 +18,31 @@ const SAME_PROJECT_TOPIC_FAMILIES = [
   /(?:日历|日程|calendar|schedule)/i,
   /(?:计算器|calculator)/i,
 ];
+const EXPLICIT_PROJECT_DRAFT_RESTART =
+  /(?:放弃|丢弃|废弃|清空|不要继续|停止继续).{0,100}(?:代码项目|代码批次|批次|草稿)|(?:重新开始|从头开始|另起新批次|从新批次)/i;
+const NEGATED_NEW_PROJECT_INTENT =
+  /(?:不要|别|无需|不需要|不必|不要再).{0,48}(?:创建|生成|转成|做成|输出|交付|代码项目|源码项目|软件项目|Python.{0,12}(?:项目|代码)|DOCX.{0,12}(?:项目|代码))/i;
+const PROJECT_DRAFT_CONTINUATION =
+  /(?:继续|接着|恢复|完成(?:剩余|后续|当前)?|补齐|追加|修复|完善|打包|构建|运行|编译|代码项目|项目代码|源码|README|source\s*code|package|build|compile|run)/i;
+
+/** @param {string} input */
+export function requestsProjectDraftRestart(input) {
+  return EXPLICIT_PROJECT_DRAFT_RESTART.test(String(input || ""));
+}
+
+/**
+ * A staged code draft must not make unrelated work in the same workspace
+ * require a code artifact. Resume it only for a software workspace when the
+ * current continuation actually refers to continuing that project.
+ * @param {{ hasDraft?: boolean; isContinuation?: boolean; isSoftwareWorkspace?: boolean; input?: string; projectIntent?: "create" | "update" | null }} context
+ */
+export function shouldResumeProjectDraft(context = {}) {
+  if (!context.hasDraft || !context.isSoftwareWorkspace) return false;
+  if (context.projectIntent === "update") return true;
+  return Boolean(
+    context.isContinuation && PROJECT_DRAFT_CONTINUATION.test(String(context.input || "")),
+  );
+}
 
 function refersToExistingProjectTopic(input, existingProjectContext) {
   if (!existingProjectContext) return false;
@@ -51,6 +76,11 @@ export function classifyProjectIntent(input, context = {}) {
   if (context.isContinuation && context.hasExistingProject && EXISTING_PROJECT_TARGET.test(text)) {
     if (PROJECT_CHANGE_ACTION.test(text) || PROJECT_FAILURE.test(text)) return "update";
   }
+
+  // A non-software workspace can mention code while explicitly ruling out a
+  // code deliverable (for example, a document request that says not to turn it
+  // into a Python project). Do not let those words create a project draft.
+  if (NEGATED_NEW_PROJECT_INTENT.test(text) || context.isSoftwareWorkspace === false) return null;
 
   // A selected software route already contains the project intent. Short follow-ups such as
   // “开始制作吧” should start creating the deliverable instead of being treated as a no-op.

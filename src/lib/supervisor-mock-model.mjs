@@ -34,6 +34,14 @@ function toolResponse(toolName, input) {
 
 function responsesFor(scenario, workspaceId, directToolId) {
   if (scenario === "reply") return [textResponse(["模拟模型已通过管理员 API ", "流式回复。"])];
+  if (scenario === "handoff-invalid") {
+    return [
+      toolResponse("handoff_to_workbench", {
+        workspaceId: "invalid-workspace-id",
+        instruction: "模拟模型的目标标识格式错误。",
+      }),
+    ];
+  }
   if (scenario === "handoff" || scenario === "handoff-unauthorized") {
     return [
       toolResponse("handoff_to_workbench", {

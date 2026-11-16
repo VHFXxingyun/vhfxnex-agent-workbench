@@ -20,7 +20,11 @@ import {
 import { getUser } from "@/lib/auth";
 import { readJsonObject } from "@/lib/request";
 import { isGoalPlan, isRouteOption, WORKSPACE_LIMITS } from "@/lib/workspace-validation";
-import { isExecutionContinuation, missingInitialAgentOutputs } from "@/lib/agent-validation.mjs";
+import {
+  isExecutionContinuation,
+  missingInitialAgentOutputs,
+  requiresDocumentDeliverable,
+} from "@/lib/agent-validation.mjs";
 import { availableCapacity, keepWithinLimit } from "@/lib/workspace-capacity.mjs";
 import { BUDGET_AMOUNT_LIMIT, normalizeBudgetItems } from "@/lib/budget-validation.mjs";
 import {
@@ -57,8 +61,14 @@ import {
   updateExistingWorkspaceForUser,
 } from "@/lib/workspace-store";
 import { isSupportedImageDataUrl } from "@/lib/image";
+import { isDocxTemplateDataUrl, saveDocxTemplateForUser } from "@/lib/docx-template.mjs";
 import { prepareProjectDeliveryBatch } from "@/lib/project-delivery.mjs";
-import { classifyProjectIntent } from "@/lib/project-intent.mjs";
+import {
+  classifyProjectIntent,
+  requestsProjectDraftRestart,
+  shouldResumeProjectDraft,
+} from "@/lib/project-intent.mjs";
+import { describeIncompleteCodeProjectFailure } from "@/lib/project-output-failure.mjs";
 import {
   attachProjectReviewStatus,
   finalizeExecutionSummary,
@@ -68,6 +78,7 @@ import { searchDuckDuckGo } from "@/lib/web-search.mjs";
 import { classifySearchIntent } from "@/lib/search-intent.mjs";
 import {
   buildExecutionCheckpointMessage,
+  buildExecutionProjectFileContext,
   buildExecutionRecentUserInstructions,
   buildExecutionSystemPrompt,
 } from "@/lib/execution-prompt.mjs";
@@ -76,13 +87,16 @@ import { compactToolFailure } from "@/lib/tool-failure.mjs";
 import { isAbortError } from "@/lib/errors";
 import { mergeExecutionCheckpoint } from "@/lib/execution-checkpoint.mjs";
 import {
-  shouldRetryNoProgressProjectRepair,
+  shouldRetryNoProgressRequiredToolRepair,
   snapshotExecutionRepairProgress,
 } from "@/lib/execution-repair-progress.mjs";
 import { normalizeThinkingMode } from "@/lib/thinking-mode.mjs";
 import { validateExecutionFeasibility } from "@/lib/feasibility-validation.mjs";
 import {
+  canDeliverWithUnverifiedFeasibility,
+  describeExecutionFeasibilityFailure,
   latestDraftDocumentEventIndex,
+  latestExecutionFeasibilityReview,
   nextExecutionFeasibilityTool,
 } from "@/lib/execution-feasibility-gate.mjs";
 import {
@@ -119,6 +133,7 @@ function applyTool(
     existingProjectTitle: string;
     existingProjectDescription: string;
     projectDraft: ProjectDraft | null;
+    sourceTemplateId?: string;
   },
 ): string {
   const name = call.function.name;
@@ -322,6 +337,7 @@ function applyTool(
       title,
       description: "Agent 生成的初版方案",
       content: markPlanChecklistItemsPending(args.content.slice(0, 12000)),
+      ...(state.sourceTemplateId ? { templateId: state.sourceTemplateId } : {}),
     });
     state.events.push({
       id: crypto.randomUUID(),
@@ -406,6 +422,7 @@ function applyTool(
         description: args.description,
         mode: typeof args.mode === "string" ? args.mode : undefined,
         complete: args.complete !== false,
+        restartDraft: args.restartDraft === true,
         files: args.files,
         deleteFiles: Array.isArray(args.deleteFiles) ? args.deleteFiles : undefined,
       },
@@ -637,12 +654,38 @@ export async function POST(request: NextRequest) {
         attachmentTextBytes += new TextEncoder().encode(item.content).byteLength;
         if (item.content.length > 120_000 || attachmentTextBytes > 200_000)
           return NextResponse.json({ error: "文本附件总量不能超过 200 KB。" }, { status: 400 });
+        if (
+          item.sourceDataUrl !== undefined &&
+          (typeof item.sourceDataUrl !== "string" ||
+            !isDocxTemplateDataUrl(item.name, item.mimeType, item.sourceDataUrl))
+        )
+          return NextResponse.json(
+            { error: "DOCX 模板附件格式无效或超过 1 MB。" },
+            { status: 400 },
+          );
+        if (
+          item.templateId !== undefined &&
+          (typeof item.templateId !== "string" || !/^[0-9a-f-]{36}$/i.test(item.templateId))
+        )
+          return NextResponse.json({ error: "DOCX 模板标识无效。" }, { status: 400 });
+        let templateId = typeof item.templateId === "string" ? item.templateId : undefined;
+        if (typeof item.sourceDataUrl === "string") {
+          try {
+            templateId = saveDocxTemplateForUser(user.id, item.sourceDataUrl);
+          } catch (error) {
+            return NextResponse.json(
+              { error: error instanceof Error ? error.message : "DOCX 模板保存失败。" },
+              { status: 400 },
+            );
+          }
+        }
         attachments.push({
           id: crypto.randomUUID(),
           name: item.name,
           mimeType: item.mimeType.slice(0, 100),
           kind: "text",
           content: item.content,
+          ...(templateId ? { templateId } : {}),
         });
       } else {
         return NextResponse.json({ error: "附件类型无效。" }, { status: 400 });
@@ -808,6 +851,11 @@ export async function POST(request: NextRequest) {
       : [];
     const existingProjectDescription =
       existingCodeProject?.description.replace(/ · \d+ 个源文件$/, "") || "";
+    const isSoftwareWorkspace =
+      /软件|开发|编程|software|development/i.test(plan.category) &&
+      /桌宠|桌面.{0,12}(?:定时器|工具|应用|程序|软件)|定时器|网页|网站|应用|小程序|程序|代码|源码|插件|游戏|脚本|app|web app|prototype|website|software/i.test(
+        prompt,
+      );
     const projectIntent = classifyProjectIntent(requestedWork, {
       isContinuation,
       hasExistingProject: existingProjectFiles.length > 0,
@@ -819,13 +867,18 @@ export async function POST(request: NextRequest) {
         existingCodeProject?.title || "",
         existingProjectDescription,
       ].join("\n"),
-      isSoftwareWorkspace:
-        /软件|开发|编程|software|development/i.test(plan.category) &&
-        /桌宠|桌面.{0,12}(?:定时器|工具|应用|程序|软件)|定时器|网页|网站|应用|小程序|程序|代码|源码|插件|游戏|脚本|app|web app|prototype|website|software/i.test(
-          prompt,
-        ),
+      isSoftwareWorkspace,
     });
-    const needsProject = projectIntent !== null || persistedProjectDraft !== null;
+    const activeProjectDraft = shouldResumeProjectDraft({
+      hasDraft: persistedProjectDraft !== null,
+      isContinuation,
+      isSoftwareWorkspace,
+      input: requestedWork,
+      projectIntent,
+    })
+      ? persistedProjectDraft
+      : null;
+    const needsProject = projectIntent !== null || activeProjectDraft !== null;
 
     const leaseToken = crypto.randomUUID();
     const lease = acquireWorkspaceExecutionLease(user.id, persistedWorkspace.id, leaseToken);
@@ -974,11 +1027,12 @@ export async function POST(request: NextRequest) {
       existingProjectDescription: string;
       projectDraft: ProjectDraft | null;
       feasibilityReview: { valid: boolean; eventIndex: number } | null;
+      sourceTemplateId?: string;
     } = {
       tasks: currentTasks,
       milestones: currentMilestones,
-      artifacts: [] as Artifact[],
-      events: [] as ToolEvent[],
+      artifacts: isContinuation ? [...(persistedWorkspace.result?.artifacts || [])] : [],
+      events: isContinuation ? [...(persistedWorkspace.result?.events || [])] : [],
       toolFailures: [],
       budget:
         currentBudget ||
@@ -991,12 +1045,25 @@ export async function POST(request: NextRequest) {
       existingProjectFiles,
       existingProjectTitle: existingCodeProject?.title || "",
       existingProjectDescription,
-      projectDraft: persistedProjectDraft,
-      feasibilityReview: null,
+      projectDraft: activeProjectDraft,
+      feasibilityReview: isContinuation
+        ? latestExecutionFeasibilityReview(persistedWorkspace.result?.events || [])
+        : null,
+      sourceTemplateId:
+        attachments.find((attachment) => attachment.templateId)?.templateId ||
+        persistedWorkspace.result?.artifacts.find((artifact) => artifact.type === "document")
+          ?.templateId,
       taskLimit: mustAddTask
         ? Math.min(WORKSPACE_LIMITS.executionTasks, currentTasks.length + 1)
         : WORKSPACE_LIMITS.executionTasks,
     };
+    if (state.feasibilityReview && !state.feasibilityReview.valid) {
+      const latestReviewEvent = state.events[state.feasibilityReview.eventIndex];
+      state.toolFailures.push({
+        name: "validate_feasibility",
+        detail: latestReviewEvent?.detail || "上次可行性复核发现冲突，需要先修订方案。",
+      });
+    }
     if (updateBudget && state.budget) {
       state.budget.limit =
         extractBudgetLimit(instruction) ?? state.budget.limit ?? extractBudgetLimit(goal);
@@ -1008,6 +1075,7 @@ export async function POST(request: NextRequest) {
       /日程|作息|每天|每日|时间表|时间安排|安排.{0,6}时间|时间.{0,6}安排|安排.{0,6}(?:一天|一周)|行程|旅行|旅游|出行|活动流程|流程表|议程|agenda|itinerary|schedule/i.test(
         isContinuation ? instruction : goal,
       );
+    const needsDocument = requiresDocumentDeliverable(requestedWork, { isContinuation });
     const attachedFeasibilityContext = [
       requestedWork,
       ...attachments.filter((attachment) => attachment.kind === "text").map((item) => item.content),
@@ -1054,13 +1122,21 @@ export async function POST(request: NextRequest) {
       persistedWorkspace.conversation || [],
       [goal, instruction, displayMessage, prompt, requestedWork],
     );
-    const projectInstructions = state.projectDraft
-      ? "工作区里已有未完成的代码项目批次。必须调用 create_project 的 mode='append' 继续，只提交新增或要修正的文件，不要重复未修改的文件；未结束时 complete=false，全部文件齐备且通过检查时 complete=true。最终项目仍需包含 README.md 和可运行入口。"
-      : projectIntent === "update"
-        ? "用户要求修改已有代码项目：必须调用 create_project，设置 mode='patch'，只返回本轮确需修改或新增的文件；删除文件时填写 deleteFiles。服务端会保留其他文件，因此不要重复输出未修改文件。未被要求修改的页面、功能和项目名都要保留。"
-        : needsProject
-          ? "用户明确要求代码产物：必须调用 create_project 交付完整代码。能一次完成时用 mode='full', complete=true；较大项目可按工具说明分批，第一批 mode='full', complete=false，后续 mode='append'，最后 complete=true。完整交付必须包含 README 和可运行入口；只给计划或伪代码不算完成。"
-          : "";
+    const restartProjectDraft =
+      Boolean(state.projectDraft) && requestsProjectDraftRestart(requestedWork);
+    let restartProjectDraftPending = restartProjectDraft;
+    // Old recovery messages often contain staged-file counts from earlier batches.
+    // The saved draft below is authoritative, so don't re-inject stale counts.
+    const recentUserInstructions = state.projectDraft ? [] : conversationHistory;
+    const projectInstructions = restartProjectDraft
+      ? "用户明确要求放弃未完成的旧代码批次并从新批次重新开始。首次调用 create_project 时使用 mode='full'、restartDraft=true，只提交第一批完整文件；首次工具返回成功后，后续每次必须使用 mode='append'、restartDraft=false 续写，每批提交一个完整文件，直到最终 complete=true。restartDraft 只能调用一次，绝不能在后续批次重复 full/restart，也不能重复旧批次。最终项目需包含 README 与可运行入口。"
+      : state.projectDraft
+        ? "工作区里已有未完成的代码项目批次。必须调用 create_project 的 mode='append' 继续，只提交新增或要修正的文件，不要重复未修改的文件；未结束时 complete=false，全部文件齐备且通过检查时 complete=true。最终项目仍需包含 README.md 和可运行入口。"
+        : projectIntent === "update"
+          ? "用户要求修改已有代码项目：必须调用 create_project，设置 mode='patch'，只返回本轮确需修改或新增的文件；删除文件时填写 deleteFiles。服务端会保留其他文件，因此不要重复输出未修改文件。未被要求修改的页面、功能和项目名都要保留。"
+          : needsProject
+            ? "用户明确要求代码产物：必须调用 create_project 交付完整代码。能一次完成时用 mode='full', complete=true；较大项目可按工具说明分批，第一批 mode='full', complete=false，后续 mode='append'，最后 complete=true。完整交付必须包含 README 和可运行入口；只给计划或伪代码不算完成。"
+            : "";
     const messages: Record<string, unknown>[] = [
       {
         role: "system",
@@ -1070,6 +1146,7 @@ export async function POST(request: NextRequest) {
           needsSpreadsheet,
           needsPresentation,
           needsPdf,
+          sourceTemplateAvailable: Boolean(state.sourceTemplateId),
           searchPolicy: searchIntent.explicitlyDisabled
             ? "disabled"
             : needsSearch
@@ -1077,7 +1154,7 @@ export async function POST(request: NextRequest) {
               : "optional",
         }),
       },
-      ...conversationHistory.map((content) => ({ role: "user", content })),
+      ...recentUserInstructions.map((content) => ({ role: "user", content })),
       {
         role: "user",
         content: [
@@ -1107,7 +1184,10 @@ export async function POST(request: NextRequest) {
               userProvidedImages: attachments
                 .filter((attachment) => attachment.kind === "image")
                 .map(({ name, mimeType }) => ({ name, mimeType })),
-              existingProjectFiles,
+              ...buildExecutionProjectFileContext({
+                existingProjectFiles: restartProjectDraftPending ? [] : existingProjectFiles,
+                projectDraft: restartProjectDraftPending ? null : persistedProjectDraft,
+              }),
             }),
           },
           ...attachments
@@ -1204,12 +1284,13 @@ export async function POST(request: NextRequest) {
             // A disconnected browser has already cancelled the stream.
           }
         };
-        const isComplete = () => {
+        let feasibilityDisclosure = "";
+        const isDeliverableComplete = () => {
           const hasSearch = state.events.some((event) => event.name === "search_web");
           const hasCore =
             state.tasks.length > 0 &&
             state.milestones.length > 0 &&
-            (isContinuation || state.artifacts.some((item) => item.type === "document"));
+            (!needsDocument || state.artifacts.some((item) => item.type === "document"));
           const hasBudget =
             state.artifacts.some((item) => item.type === "budget") &&
             state.budget?.status !== "over";
@@ -1218,12 +1299,6 @@ export async function POST(request: NextRequest) {
           const hasSpreadsheet = state.artifacts.some((item) => item.type === "spreadsheet");
           const hasPresentation = state.artifacts.some((item) => item.type === "presentation");
           const hasPdf = state.artifacts.some((item) => item.type === "pdf");
-          const hasCurrentFeasibilityReview =
-            nextExecutionFeasibilityTool({
-              required: needsFeasibilityValidation,
-              review: state.feasibilityReview,
-              latestDocumentIndex: latestDraftDocumentEventIndex(state.events),
-            }) === null;
           return (
             hasCore &&
             (!needsSearch || hasSearch) &&
@@ -1233,8 +1308,18 @@ export async function POST(request: NextRequest) {
             (!needsProject || hasProject) &&
             (!needsSpreadsheet || hasSpreadsheet) &&
             (!needsPresentation || hasPresentation) &&
-            (!needsPdf || hasPdf) &&
-            hasCurrentFeasibilityReview
+            (!needsPdf || hasPdf)
+          );
+        };
+        const isComplete = () => {
+          if (!isDeliverableComplete()) return false;
+          const latestDocumentIndex = latestDraftDocumentEventIndex(state.events);
+          return (
+            nextExecutionFeasibilityTool({
+              required: needsFeasibilityValidation,
+              review: state.feasibilityReview,
+              latestDocumentIndex,
+            }) === null
           );
         };
         const requiredFeasibilityTool = () =>
@@ -1255,6 +1340,11 @@ export async function POST(request: NextRequest) {
             if (mustAddTask) return "create_tasks";
             if (needsSchedule && !hasSchedule) return "build_schedule";
             if (budgetToolMissing) return "calculate_budget";
+            if (
+              needsDocument &&
+              !state.artifacts.some((item) => item.type === "document")
+            )
+              return "draft_document";
             if (needsProject && !state.artifacts.some((item) => item.type === "code"))
               return "create_project";
             if (needsSpreadsheet && !state.artifacts.some((item) => item.type === "spreadsheet"))
@@ -1283,6 +1373,33 @@ export async function POST(request: NextRequest) {
           const feasibilityTool = requiredFeasibilityTool();
           if (feasibilityTool) return feasibilityTool;
           return null;
+        };
+        const missingRequiredDeliverables = () => {
+          const missing = [
+            state.tasks.length === 0 ? "行动任务" : "",
+            state.milestones.length === 0 ? "执行阶段" : "",
+            needsDocument && !state.artifacts.some((item) => item.type === "document")
+              ? "文档文件"
+              : "",
+            needsSchedule && !state.events.some((event) => event.name === "build_schedule")
+              ? "日程表"
+              : "",
+            needsBudget &&
+            (!state.artifacts.some((item) => item.type === "budget") || state.budget?.status === "over")
+              ? "预算核算"
+              : "",
+            needsProject && !state.artifacts.some((item) => item.type === "code")
+              ? "可运行代码项目"
+              : "",
+            needsSpreadsheet && !state.artifacts.some((item) => item.type === "spreadsheet")
+              ? "电子表格文件"
+              : "",
+            needsPresentation && !state.artifacts.some((item) => item.type === "presentation")
+              ? "演示文稿文件"
+              : "",
+            needsPdf && !state.artifacts.some((item) => item.type === "pdf") ? "PDF 文件" : "",
+          ].filter(Boolean);
+          return missing;
         };
         const buildCompactStepMessages = (requiredTool: string | null): ModelMessage[] => {
           const sourceTool =
@@ -1349,9 +1466,11 @@ export async function POST(request: NextRequest) {
               : documentArtifacts;
           const projectFiles =
             requiredTool === "create_project"
-              ? state.projectDraft?.mode === "full"
-                ? state.projectDraft.files
-                : state.existingProjectFiles
+              ? restartProjectDraftPending
+                ? []
+                : state.projectDraft?.mode === "full"
+                  ? state.projectDraft.files
+                  : state.existingProjectFiles
               : [];
           const checkpoint = {
             checkpoint: true,
@@ -1359,7 +1478,7 @@ export async function POST(request: NextRequest) {
             goal,
             instruction,
             route: route.title,
-            recentUserInstructions: conversationHistory,
+            recentUserInstructions,
             constraints: plan.constraints.slice(0, 20),
             knowledge: Array.isArray(plan.sources)
               ? plan.sources.slice(0, 3).map((source) => ({
@@ -1396,18 +1515,23 @@ export async function POST(request: NextRequest) {
             recentToolFailures: state.toolFailures.slice(-4),
             documentArtifacts: feasibilityDocuments,
             existingProject:
-              requiredTool === "create_project" && (state.projectDraft || existingCodeProject)
+              requiredTool === "create_project" &&
+              !restartProjectDraftPending &&
+              (state.projectDraft || existingCodeProject)
                 ? {
                     name: state.projectDraft?.title || existingCodeProject?.title || "",
                     description:
                       state.projectDraft?.description || existingCodeProject?.description || "",
                   }
                 : null,
-            existingProjectFiles: projectFiles,
-            stagedProjectFiles:
-              requiredTool === "create_project" ? state.projectDraft?.files || [] : [],
-            stagedProjectDeletes:
-              requiredTool === "create_project" ? state.projectDraft?.deleteFiles || [] : [],
+            ...buildExecutionProjectFileContext({
+              existingProjectFiles: restartProjectDraftPending ? [] : projectFiles,
+              projectDraft:
+                requiredTool === "create_project" && !restartProjectDraftPending
+                  ? state.projectDraft
+                  : null,
+            }),
+            projectDraftRestartPending: restartProjectDraftPending,
           };
           return [
             buildExecutionCheckpointMessage({
@@ -1611,6 +1735,14 @@ export async function POST(request: NextRequest) {
                                 string,
                                 unknown
                               >;
+                              if (
+                                name === "create_project" &&
+                                (args as { restartDraft?: unknown }).restartDraft === true &&
+                                !("error" in output) &&
+                                (output.inProgress === true || output.completed === true)
+                              ) {
+                                restartProjectDraftPending = false;
+                              }
                               if (
                                 name === "validate_feasibility" &&
                                 typeof output.valid === "boolean"
@@ -2097,7 +2229,7 @@ export async function POST(request: NextRequest) {
                       /did not contain a call to the required tool/i.test(error.message);
                     if (
                       !missingRequiredToolCall ||
-                      !shouldRetryNoProgressProjectRepair({
+                      !shouldRetryNoProgressRequiredToolRepair({
                         requiredTool,
                         repairAttempt,
                         cancelled: executionSignal.aborted,
@@ -2115,7 +2247,7 @@ export async function POST(request: NextRequest) {
                     snapshotExecutionRepairProgress(state) === progressBeforeRepair
                   ) {
                     if (
-                      shouldRetryNoProgressProjectRepair({
+                      shouldRetryNoProgressRequiredToolRepair({
                         requiredTool,
                         repairAttempt,
                         cancelled: executionSignal.aborted,
@@ -2131,10 +2263,36 @@ export async function POST(request: NextRequest) {
                   }
                 }
               }
-              if (requiredFeasibilityTool())
+              const missingDeliverables = missingRequiredDeliverables();
+              if (missingDeliverables.length) {
                 throw new Error(
-                  "可行性复核仍未通过；冲突或未复核部分已保留为待处理，没有将方案标为完成。",
+                  `本轮还缺少${missingDeliverables.join("、")}，尚未形成要求的完整交付物；阶段成果已保存，可继续补齐。`,
                 );
+              }
+              if (requiredFeasibilityTool()) {
+                const feasibilityFailure = describeExecutionFeasibilityFailure({
+                  required: needsFeasibilityValidation,
+                  review: state.feasibilityReview,
+                  latestDocumentIndex: latestDraftDocumentEventIndex(state.events),
+                  failures: state.toolFailures.filter(
+                    (failure) => failure.name === "validate_feasibility",
+                  ),
+                });
+                const latestDocumentIndex = latestDraftDocumentEventIndex(state.events);
+                if (
+                  !canDeliverWithUnverifiedFeasibility({
+                    deliverablesComplete: isDeliverableComplete(),
+                    review: state.feasibilityReview,
+                    latestDocumentIndex,
+                  })
+                )
+                  throw new Error(
+                    feasibilityFailure || "可行性复核发现尚未解决的冲突，方案没有被标为完成。",
+                  );
+                feasibilityDisclosure =
+                  "可行性复核未取得当前版本的有效结果；本轮成果已交付但状态为未核验，正式执行前请人工复核。";
+                send({ type: "status", message: feasibilityDisclosure });
+              }
               if (mustAddTask && state.tasks.length === currentTaskCount) {
                 throw new Error(
                   "Agent 未能新增你指定的任务，请修改描述后重试；现有工作区未被更改。",
@@ -2163,30 +2321,21 @@ export async function POST(request: NextRequest) {
                   `Agent 未能完成${missingOutputs.join("、")}，请重试。${failureHint}`,
                 );
               }
+              if (needsDocument && !state.artifacts.some((item) => item.type === "document"))
+                throw new Error("Agent 未能生成可下载的方案文档，请重试并保留当前工作区内容。");
               if (needsProject && !state.artifacts.some((item) => item.type === "code")) {
                 const projectToolFailure = [...state.toolFailures]
                   .reverse()
                   .find((failure) => failure.name === "create_project");
-                if (projectIntent === "update" && existingCodeProject) {
-                  const draftDetail = state.projectDraft
-                    ? `本轮补丁已暂存 ${state.projectDraft.files.length} 个文件。`
-                    : "";
-                  const failureDetail = projectToolFailure
-                    ? `最近一次代码校验反馈：${projectToolFailure.detail}。`
-                    : "";
-                  throw new Error(
-                    `本轮未能完成现有代码项目更新。${draftDetail}${failureDetail}原有项目文件和已保存阶段成果均已保留。可以继续推进，或缩小本轮修改范围。`,
-                  );
-                }
-                if (projectToolFailure)
-                  throw new Error(
-                    `代码项目生成校验未通过：${projectToolFailure.detail}。已保存的其他阶段成果仍保留。`,
-                  );
-                if (state.projectDraft)
-                  throw new Error(
-                    `代码项目仍在分批生成，已暂存 ${state.projectDraft.files.length} 个文件，但尚未形成可下载项目。阶段成果已保存，可继续完成剩余文件。`,
-                  );
-                throw new Error("Agent 未生成可下载的代码项目，请重试或缩小实现范围。");
+                throw new Error(
+                  describeIncompleteCodeProjectFailure({
+                    intent: projectIntent,
+                    hasExistingProject: Boolean(existingCodeProject),
+                    existingProjectTitle: existingCodeProject?.title,
+                    draftFileCount: state.projectDraft?.files.length,
+                    toolFailure: projectToolFailure?.detail,
+                  }),
+                );
               }
               if (needsSpreadsheet && !state.artifacts.some((item) => item.type === "spreadsheet"))
                 throw new Error("Agent 未生成可下载的 Excel 工作簿，请重试并缩小表格范围。");
@@ -2213,11 +2362,15 @@ export async function POST(request: NextRequest) {
               )
                 state.budget = undefined;
               const execution: ExecutionResult = {
-                summary:
+                summary: [
                   finalText ||
-                  (state.events.length
-                    ? `已按「${route.title}」完成 ${state.events.length} 次工具操作，并生成本轮可交付成果。`
-                    : "我检查了这条补充指示，没有发现需要改动任务、时间线、方案或预算的内容；现有工作区已保留。"),
+                    (state.events.length
+                      ? `已按「${route.title}」完成 ${state.events.length} 次工具操作，并生成本轮可交付成果。`
+                      : "我检查了这条补充指示，没有发现需要改动任务、时间线、方案或预算的内容；现有工作区已保留。"),
+                  feasibilityDisclosure,
+                ]
+                  .filter(Boolean)
+                  .join("\n\n"),
                 tasks: state.tasks,
                 milestones: state.milestones,
                 artifacts: state.artifacts,

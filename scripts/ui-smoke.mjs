@@ -966,6 +966,34 @@ try {
   const directToolLaunchInstruction = "请把这段数据整理成合法 JSON";
   const longSupervisorReply =
     "管理员长回复滚动回归段落，用于确认新内容会跟随到聊天区底部。\n".repeat(180);
+  const mockedSupervisorConversation = [];
+  await page.route("**/api/supervisor/conversation", async (route) => {
+    if (route.request().method() !== "GET") {
+      await route.continue();
+      return;
+    }
+    await route.fulfill({ status: 200, json: { messages: mockedSupervisorConversation } });
+  });
+  const fulfillMockedSupervisorReply = async (route, body, answer, extraEvents = []) => {
+    if (!body.workspaceId) {
+      const turn = mockedSupervisorConversation.length / 2;
+      mockedSupervisorConversation.push(
+        { id: `ui-smoke-user-${turn}`, role: "user", content: body.question },
+        { id: `ui-smoke-assistant-${turn}`, role: "assistant", content: answer },
+      );
+    }
+    await route.fulfill({
+      status: 200,
+      headers: { "content-type": "text/event-stream; charset=utf-8" },
+      body: [
+        { type: "text", text: answer },
+        ...extraEvents,
+        { type: "result", data: { kind: "reply", answer } },
+      ]
+        .map((event) => `data: ${JSON.stringify(event)}\n\n`)
+        .join(""),
+    });
+  };
   let releaseAlphaWorkspaceReply;
   let markAlphaWorkspaceRequestStarted;
   const alphaWorkspaceReplyGate = new Promise((resolve) => {
@@ -980,71 +1008,24 @@ try {
     if (body.question === alphaWorkspaceQuestion) {
       markAlphaWorkspaceRequestStarted();
       await alphaWorkspaceReplyGate;
-      await route.fulfill({
-        status: 200,
-        headers: { "content-type": "text/event-stream; charset=utf-8" },
-        body: [
-          { type: "text", text: alphaWorkspaceReply },
-          {
-            type: "result",
-            data: { kind: "reply", answer: alphaWorkspaceReply },
-          },
-        ]
-          .map((event) => `data: ${JSON.stringify(event)}\n\n`)
-          .join(""),
-      });
+      await fulfillMockedSupervisorReply(route, body, alphaWorkspaceReply);
       return;
     }
     if (body.question === longSupervisorReplyQuestion) {
-      await route.fulfill({
-        status: 200,
-        headers: { "content-type": "text/event-stream; charset=utf-8" },
-        body: [
-          { type: "text", text: longSupervisorReply },
-          {
-            type: "result",
-            data: { kind: "reply", answer: longSupervisorReply },
-          },
-        ]
-          .map((event) => `data: ${JSON.stringify(event)}\n\n`)
-          .join(""),
-      });
+      await fulfillMockedSupervisorReply(route, body, longSupervisorReply);
       return;
     }
     if (body.question === directToolLaunchQuestion) {
-      await route.fulfill({
-        status: 200,
-        headers: { "content-type": "text/event-stream; charset=utf-8" },
-        body: [
-          { type: "text", text: "我已打开 JSON 工坊。" },
-          {
-            type: "launch_tool",
-            tool: "json",
-            instruction: directToolLaunchInstruction,
-          },
-          {
-            type: "result",
-            data: { kind: "reply", answer: "我已打开 JSON 工坊。" },
-          },
-        ]
-          .map((event) => `data: ${JSON.stringify(event)}\n\n`)
-          .join(""),
-      });
+      await fulfillMockedSupervisorReply(route, body, "我已打开 JSON 工坊。", [
+        {
+          type: "launch_tool",
+          tool: "json",
+          instruction: directToolLaunchInstruction,
+        },
+      ]);
       return;
     }
-    await route.fulfill({
-      status: 200,
-      headers: { "content-type": "text/event-stream; charset=utf-8" },
-      body: [
-        { type: "text", text: "我已收到代码工坊的源码，可继续帮你处理。" },
-        {
-          type: "result",
-          data: { kind: "reply", answer: "我已收到代码工坊的源码，可继续帮你处理。" },
-        },
-      ]
-        .map((event) => `data: ${JSON.stringify(event)}\n\n`)
-        .join(""),
-    });
+    await fulfillMockedSupervisorReply(route, body, "我已收到代码工坊的源码，可继续帮你处理。");
   });
   await page.getByRole("button", { name: "把当前内容交给总控" }).click();
   await page.locator(".supervisor-pending-attachments").waitFor();
@@ -3043,13 +3024,25 @@ try {
   assert.doesNotMatch(initialCanvasTransform || "", /scale\(/);
   const canvasBounds = await flowCanvas.boundingBox();
   assert.ok(canvasBounds);
-  await page.mouse.move(
-    canvasBounds.x + canvasBounds.width - 14,
-    canvasBounds.y + canvasBounds.height - 20,
+  const visibleCanvasBounds = await page.evaluate(
+    (bounds) => ({
+      left: Math.max(bounds.x, 0),
+      right: Math.min(bounds.x + bounds.width, window.innerWidth),
+      top: Math.max(bounds.y, 0),
+      bottom: Math.min(bounds.y + bounds.height, window.innerHeight),
+    }),
+    canvasBounds,
   );
+  assert.ok(visibleCanvasBounds.right > visibleCanvasBounds.left);
+  assert.ok(visibleCanvasBounds.bottom > visibleCanvasBounds.top);
+  const flowDragStart = {
+    x: visibleCanvasBounds.right - 30,
+    y: visibleCanvasBounds.bottom - 20,
+  };
+  await page.mouse.move(flowDragStart.x, flowDragStart.y);
   await page.mouse.down();
   await page.mouse.move(
-    canvasBounds.x + canvasBounds.width - 54,
+    canvasBounds.x + canvasBounds.width - 70,
     canvasBounds.y + canvasBounds.height - 72,
     {
       steps: 5,
@@ -3065,8 +3058,8 @@ try {
     .locator(".flow-canvas-board")
     .getAttribute("style");
   await page.mouse.move(
-    canvasBounds.x + canvasBounds.width / 2,
-    canvasBounds.y + canvasBounds.height / 2,
+    (visibleCanvasBounds.left + visibleCanvasBounds.right) / 2,
+    (visibleCanvasBounds.top + visibleCanvasBounds.bottom) / 2,
   );
   await page.mouse.wheel(0, 120);
   await page.waitForFunction(
@@ -3135,6 +3128,8 @@ try {
   await preferenceReload.close();
   check(true, "Auto-collapse the navigation in workspaces and remember the home-page preference");
 
+  await page.setViewportSize(workspaceViewport);
+  await settleViewport(page, workspaceViewport);
   const actionScrollport = page.locator(".workspace-side-panel .execution");
   try {
     await actionScrollport.waitFor({ state: "visible", timeout: 10_000 });
@@ -3169,28 +3164,7 @@ try {
     overflowY: getComputedStyle(element).overflowY,
     scrollHeight: element.scrollHeight,
     clientHeight: element.clientHeight,
-    chain: [
-      ".workspace",
-      ".workspace-layout",
-      ".workspace-side-panel",
-      ".workspace-details",
-      ".workspace-side-panel .execution",
-    ].map((selector) => {
-      const parent = document.querySelector(selector);
-      if (!parent) return { selector, missing: true };
-      const style = getComputedStyle(parent);
-      const bounds = parent.getBoundingClientRect();
-      return {
-        selector,
-        bounds: [bounds.top, bounds.bottom, bounds.height],
-        cssHeight: style.height,
-        minHeight: style.minHeight,
-        maxHeight: style.maxHeight,
-        display: style.display,
-        flex: style.flex,
-        overflowY: style.overflowY,
-      };
-    }),
+    viewport: [window.innerWidth, window.innerHeight],
   }));
   assert.equal(actionScrollMetrics.overflowY, "auto");
   assert.ok(

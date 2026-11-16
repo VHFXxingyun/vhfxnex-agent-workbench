@@ -2,6 +2,7 @@ const SEARCH_REQUEST_PATTERN =
   /联网|网页搜索|网络搜索|网上搜|搜索|查一下|查一查|查找|找资料|最新|现行|官网|来源|verify|web search|search online|look up|latest|current rules/i;
 
 const NEGATIVE_SEARCH_PATTERNS = [
+  /(?:不要|不需要|无需|不用|不必|别|禁止)(?:再|去)?(?:做|进行)?(?:网页|网上|网络|联网)(?:调查|调研|研究|搜索|搜查)/gi,
   /(?:不要|不需要|无需|不用|不必|别|禁止)(?:再|为我|在|到|去)?(?:联网|互联网|上网|网上|网络|网页)?(?:去|进行)?(?:搜索|搜|查询|查找|查资料|找资料)/gi,
   /(?:不要|不需要|无需|不用|不必|别|禁止)(?:再|在|到|去)?(?:联网|互联网|上网|网上|网络|网页)/gi,
   /(?:do not|don't|dont|no need to|without|no)\s+(?:(?:search|browse|look up)(?:\s+(?:the\s+)?(?:web|internet|online))?|go online)/gi,

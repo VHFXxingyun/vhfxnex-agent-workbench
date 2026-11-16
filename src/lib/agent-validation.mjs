@@ -8,6 +8,19 @@ export function isExecutionContinuation(input = {}) {
   return input.explicitContinuation === true || input.previousResult != null;
 }
 
+/**
+ * Require a fresh document artifact on a continuation only when the current
+ * instruction explicitly asks to produce, revise, or deliver one.
+ * @param {string} input
+ * @param {{ isContinuation?: boolean }} [options]
+ */
+export function requiresDocumentDeliverable(input, { isContinuation = false } = {}) {
+  if (!isContinuation) return true;
+  return /(?:生成|制作|输出|交付|导出|下载|写入|更新|修订|改写|按.{0,4}模板|使用.{0,4}模板|完成|重做).{0,32}(?:\.docx|docx|word|文档|策划书|方案书|计划书|报告|提案)|(?:\.docx|docx|word|文档|策划书|方案书|计划书|报告|提案).{0,32}(?:生成|制作|输出|交付|导出|下载|写入|更新|修订|改写|完成|可下载)/i.test(
+    String(input || ""),
+  );
+}
+
 export function missingInitialAgentOutputs(output) {
   if (output.isContinuation) return [];
 

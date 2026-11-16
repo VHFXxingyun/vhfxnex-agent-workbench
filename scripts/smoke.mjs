@@ -33,7 +33,8 @@ import {
   normalizeProjectPath,
   projectPathKey,
 } from "../src/lib/project-path.mjs";
-import { classifyProjectIntent } from "../src/lib/project-intent.mjs";
+import { classifyProjectIntent, requestsProjectDraftRestart } from "../src/lib/project-intent.mjs";
+import { mergeProjectBatch } from "../src/lib/project-batch.mjs";
 import { createCalendarExport, inspectCalendarSchedule } from "../src/lib/calendar-export.mjs";
 import {
   estimateDeepSeekFlashCost,
@@ -58,6 +59,7 @@ import { fuseKnowledgeSources } from "../src/lib/knowledge-ranking.mjs";
 import { selectKnowledgeChunkIndexes } from "../src/lib/knowledge-chunks.mjs";
 import { KNOWLEDGE_EMBEDDING_VERSION } from "../src/lib/knowledge-embeddings-core.mjs";
 import {
+  buildExecutionProjectFileContext,
   buildExecutionSystemPrompt,
   EXECUTION_PROMPT_STABLE_PREFIX,
 } from "../src/lib/execution-prompt.mjs";
@@ -73,6 +75,8 @@ import {
   shouldReviewExistingExecutionFeasibility,
 } from "../src/lib/feasibility-intent.mjs";
 import {
+  canDeliverWithUnverifiedFeasibility,
+  describeExecutionFeasibilityFailure,
   latestDraftDocumentEventIndex,
   nextExecutionFeasibilityTool,
 } from "../src/lib/execution-feasibility-gate.mjs";
@@ -523,13 +527,63 @@ function checkWorkbenchRetryPolicy() {
     outcome: "retry",
   });
   assert.equal(classifyWorkbenchFailure({ error: new TypeError("fetch failed") }).retryable, true);
+  assert.deepEqual(
+    classifyWorkbenchFailure({ error: new Error("SqliteError: database is locked") }),
+    {
+      retryable: true,
+      retryAfterMs: 15_000,
+      outcome: "retry",
+    },
+  );
+  assert.equal(
+    classifyWorkbenchFailure({ error: new Error("SqliteError: database or disk is full") })
+      .retryable,
+    false,
+  );
   assert.equal(classifyWorkbenchFailure({ error: new Error("参数格式无效") }).retryable, false);
   assert.deepEqual(
     classifyWorkbenchFailure({ error: new Error("Agent 未生成可下载的代码项目，请重试") }),
     { retryable: true, retryAfterMs: 15_000, maxAttempts: 2, outcome: "retry" },
   );
+  assert.deepEqual(
+    classifyWorkbenchFailure({
+      error: new Error("Agent 未能完成任务、时间线、行动方案、可运行代码项目，请重试。"),
+    }),
+    { retryable: true, retryAfterMs: 15_000, maxAttempts: 2, outcome: "retry" },
+  );
+  assert.deepEqual(
+    classifyWorkbenchFailure({ error: new Error("Agent 未能完成行动方案，请重试") }),
+    { retryable: true, retryAfterMs: 15_000, maxAttempts: 2, outcome: "retry" },
+  );
+  assert.deepEqual(
+    classifyWorkbenchFailure({ error: new Error("Agent 未能新增你指定的任务，请修改描述后重试") }),
+    { retryable: true, retryAfterMs: 15_000, maxAttempts: 2, outcome: "retry" },
+  );
+  assert.deepEqual(
+    classifyWorkbenchFailure({ error: new Error("Agent 未能补齐必需产物，请重试") }),
+    { retryable: true, retryAfterMs: 15_000, maxAttempts: 2, outcome: "retry" },
+  );
+  assert.deepEqual(
+    classifyWorkbenchFailure({
+      error: new Error("AI_NoOutputGeneratedError: did not contain a call to the required tool"),
+    }),
+    { retryable: true, retryAfterMs: 15_000, maxAttempts: 2, outcome: "retry" },
+  );
+  for (const error of [
+    "本轮未取得可行性复核结果；这不代表系统已判定方案存在冲突。",
+    "可行性复核发现尚未解决的冲突，方案未完成修订。",
+    "方案在上次通过复核后又有修改；最新版本尚未重新复核。",
+    "上次复核发现冲突，但之后的方案修改尚未通过重新复核。",
+  ]) {
+    assert.deepEqual(classifyWorkbenchFailure({ error: new Error(error) }), {
+      retryable: true,
+      retryAfterMs: 15_000,
+      maxAttempts: 2,
+      outcome: "retry",
+    });
+  }
   assert.equal(
-    classifyWorkbenchFailure({ error: new Error("Agent 未能完成行动方案，请重试") }).retryable,
+    classifyWorkbenchFailure({ error: new Error("Agent 未能解释这个概念") }).retryable,
     false,
   );
   assert.equal(classifyWorkbenchFailure({ cancelled: true }).outcome, "cancelled");
@@ -1002,9 +1056,9 @@ try {
   assert.equal(Object.keys(toolSchemas).length, 11);
   assert.equal(agentOutputTokenBudget("create_tasks"), 2000);
   assert.equal(agentOutputTokenBudget("validate_feasibility"), 1800);
-  assert.equal(agentOutputTokenBudget("draft_document"), 3600);
+  assert.equal(agentOutputTokenBudget("draft_document"), 12_000);
   assert.equal(agentOutputTokenBudget("generate_pdf"), 12_000);
-  assert.equal(agentOutputTokenBudget("create_project"), 12_000);
+  assert.equal(agentOutputTokenBudget("create_project"), 32_000);
   assert.equal(agentOutputTokenBudget(null), 1200);
   check(true, "Bound each Agent step's output tokens to the selected tool's actual needs");
 
@@ -1014,26 +1068,29 @@ try {
         issues: [
           {
             path: ["files"],
-            message: "项目源文件不能超过 45 KB",
+            message: "单次代码工具调用的内容不能超过 45000 字符；请按完整文件分批续写",
           },
         ],
       }),
     }),
   });
-  assert.equal(compactToolFailure(sourceHeavyToolError), "files：项目源文件不能超过 45 KB");
+  assert.equal(
+    compactToolFailure(sourceHeavyToolError),
+    "files：单次代码工具调用的内容不能超过 45000 字符；请按完整文件分批续写",
+  );
   assert.equal(
     compactToolFailure(
       new Error("AI_InvalidToolInputError: AI_JSONParseError: JSON parsing failed"),
     ),
-    "工具参数 JSON 不完整或被截断；请缩小本次产物范围后重新生成。",
+    "工具参数 JSON 不完整或被截断；请保留全部功能与文件，将本次工具调用拆成更小的完整批次后继续。",
   );
   assert.equal(
     compactToolFailure(
       new Error(
-        `AI_InvalidToolInputError: AI_TypeValidationError: Type validation failed: Value: ${"<source>".repeat(2_000)}.\nError message: files：项目源文件不能超过 45 KB`,
+        `AI_InvalidToolInputError: AI_TypeValidationError: Type validation failed: Value: ${"<source>".repeat(2_000)}.\nError message: files：单次代码工具调用的内容不能超过 45000 字符；请按完整文件分批续写`,
       ),
     ),
-    "files：项目源文件不能超过 45 KB",
+    "files：单次代码工具调用的内容不能超过 45000 字符；请按完整文件分批续写",
   );
   check(true, "Keep tool repair feedback concise and preserve the actual schema issue");
 
@@ -1173,6 +1230,10 @@ try {
     requiresSearch: false,
     explicitlyDisabled: true,
   });
+  assert.deepEqual(classifySearchIntent("项目需要全局搜索筛选，无需网页研究"), {
+    requiresSearch: false,
+    explicitlyDisabled: true,
+  });
   assert.deepEqual(classifySearchIntent("请搜索官方文档，但不要搜索论坛"), {
     requiresSearch: true,
     explicitlyDisabled: false,
@@ -1216,6 +1277,22 @@ try {
   assert.match(executionPromptVariants[1], /必须调用 generate_pdf/);
   assert.match(executionPromptVariants[1], /必须先调用 search_web/);
   assert.match(executionPromptVariants[2], /search_web 工具已禁用/);
+  const projectFileContext = buildExecutionProjectFileContext({
+    existingProjectFiles: [{ path: "old/app.py", content: "old project" }],
+    projectDraft: {
+      files: [{ path: "app.py", content: "staged application" }],
+      deleteFiles: ["obsolete.py"],
+    },
+  });
+  assert.deepEqual(projectFileContext, {
+    existingProjectFiles: [{ path: "old/app.py", content: "old project" }],
+    stagedProjectFiles: [{ path: "app.py", content: "staged application" }],
+    stagedProjectDeletes: ["obsolete.py"],
+  });
+  assert.deepEqual(
+    buildExecutionProjectFileContext({ existingProjectFiles: [], projectDraft: null }),
+    { existingProjectFiles: [], stagedProjectFiles: [], stagedProjectDeletes: [] },
+  );
   assert.match(EXECUTION_PROMPT_STABLE_PREFIX, /路线与产物一致性/);
   assert.match(EXECUTION_PROMPT_STABLE_PREFIX, /不能安排同一人同时负责两个岗位/);
   assert.match(
@@ -1374,10 +1451,9 @@ try {
       JSON.stringify({
         name: "桌面小伙伴",
         description: "一个能运行的桌宠演示",
-        files: [
-          { path: "index.html", content: "<!doctype html><title>pet</title>" },
-          { path: "README.md", content: "# 运行\n直接打开 index.html" },
-        ],
+        mode: "full",
+        complete: false,
+        files: [{ path: "index.html", content: "<!doctype html><title>pet</title>" }],
       }),
     ).ok,
     true,
@@ -1388,10 +1464,9 @@ try {
       JSON.stringify({
         name: "unsafe",
         description: "不安全路径必须被拦截",
-        files: [
-          { path: "../index.html", content: "x" },
-          { path: "README.md", content: "x" },
-        ],
+        mode: "full",
+        complete: false,
+        files: [{ path: "../index.html", content: "x" }],
       }),
     ).ok,
     false,
@@ -1410,9 +1485,9 @@ try {
     JSON.stringify({
       name: "中文文件名项目",
       description: "文件名可按使用者语言组织",
+      mode: "append",
+      complete: false,
       files: [
-        { path: "README.md", content: "运行 npm run dev" },
-        { path: "index.html", content: "<!doctype html><title>demo</title>" },
         { path: "src/活动 页面/入口 文件.tsx", content: "export default function Page() {}" },
       ],
     }),
@@ -1423,15 +1498,147 @@ try {
     JSON.stringify({
       name: "规范化重复路径",
       description: "拒绝视觉相同的重复文件名",
+      mode: "append",
+      complete: false,
       files: [
-        { path: "README.md", content: "运行 npm run dev" },
-        { path: "index.html", content: "<!doctype html><title>demo</title>" },
         { path: "docs/café.md", content: "a" },
         { path: "docs/cafe\u0301.md", content: "b" },
       ],
     }),
   );
   assert.equal(normalizedDuplicateProject.ok, false);
+  assert.equal(
+    parseToolArguments(
+      "create_project",
+      JSON.stringify({
+        name: "多文件批次",
+        description: "单批可交付多个完整文件",
+        mode: "append",
+        complete: false,
+        files: [
+          { path: "one.py", content: "x" },
+          { path: "two.py", content: "y" },
+        ],
+      }),
+    ).ok,
+    true,
+  );
+  assert.equal(
+    parseToolArguments(
+      "create_project",
+      JSON.stringify({
+        name: "完整文件参数",
+        description: "允许超过原有的小字符阈值",
+        mode: "append",
+        complete: false,
+        files: [{ path: "main.py", content: "x".repeat(7001) }],
+      }),
+    ).ok,
+    true,
+  );
+  assert.equal(
+    parseToolArguments(
+      "create_project",
+      JSON.stringify({
+        name: "批次传输上限",
+        description: "大项目通过完整文件批次续写",
+        mode: "append",
+        complete: false,
+        files: [
+          { path: "one.py", content: "x".repeat(23_000) },
+          { path: "two.py", content: "y".repeat(23_000) },
+        ],
+      }),
+    ).ok,
+    false,
+  );
+  const restartProjectDraftInput = parseToolArguments(
+    "create_project",
+    JSON.stringify({
+      name: "精简版项目",
+      description: "明确放弃无法续写的旧批次后重新开始",
+      mode: "full",
+      restartDraft: true,
+      complete: false,
+      files: [{ path: "src/main.js", content: "console.log('new batch')" }],
+    }),
+  );
+  assert.equal(restartProjectDraftInput.ok, true);
+  assert.equal(
+    parseToolArguments(
+      "create_project",
+      JSON.stringify({
+        name: "无效重启",
+        description: "重启不能使用 append",
+        mode: "append",
+        restartDraft: true,
+        complete: false,
+        files: [{ path: "src/main.js", content: "console.log('invalid')" }],
+      }),
+    ).ok,
+    false,
+  );
+  const oversizedOldDraft = {
+    mode: "full",
+    title: "旧批次",
+    description: "已失败且不能续写的旧批次",
+    files: Array.from({ length: 34 }, (_, index) => ({
+      path: `src/old-${index}.js`,
+      content: "x".repeat(2_800),
+    })),
+  };
+  assert.equal(
+    mergeProjectBatch({
+      mode: "full",
+      draft: oversizedOldDraft,
+      existingFiles: [],
+      files: [{ path: "README.md", content: "new project" }],
+      name: "新项目",
+      description: "未请求重启时保护旧草稿",
+    }).error,
+    "已有未完成的代码批次，请使用 append 继续，或明确要求从新批次重新开始。",
+  );
+  const restartedProjectFirstBatch = mergeProjectBatch({
+    mode: "full",
+    restartDraft: true,
+    complete: false,
+    draft: oversizedOldDraft,
+    existingFiles: [],
+    files: [{ path: "index.html", content: "<!doctype html><title>new</title>" }],
+    name: "精简版项目",
+    description: "只包含新批次内容",
+  });
+  const restartedProjectBatch = mergeProjectBatch({
+    mode: "append",
+    draft: {
+      mode: restartedProjectFirstBatch.mode,
+      title: restartedProjectFirstBatch.title,
+      description: restartedProjectFirstBatch.description,
+      files: restartedProjectFirstBatch.draftFiles,
+    },
+    existingFiles: [],
+    files: [{ path: "README.md", content: "# New project\nOpen index.html" }],
+    name: "精简版项目",
+    description: "追加交付说明",
+  });
+  assert.equal(restartedProjectFirstBatch.error, undefined);
+  assert.equal(restartedProjectBatch.error, undefined);
+  assert.equal(restartedProjectBatch.complete, true);
+  assert.deepEqual(
+    restartedProjectBatch.files.map((file) => file.path),
+    ["index.html", "README.md"],
+  );
+  assert.equal(
+    requestsProjectDraftRestart(
+      "放弃继续那个 34 文件、JSON 截断的旧代码批次，使用 create_project 从新批次重新生成。",
+    ),
+    true,
+  );
+  assert.equal(requestsProjectDraftRestart("继续补齐旧批次尚未生成的文件"), false);
+  check(
+    true,
+    "Recover a deliberately abandoned code draft with a bounded full restart while preserving ordinary append behavior",
+  );
   const validGeneratedProject = validateGeneratedProject([
     { path: "README.md", content: "运行 npm run dev" },
     {
@@ -1897,6 +2104,61 @@ try {
     nextExecutionFeasibilityTool({ required: true, review: null, latestDocumentIndex: -1 }),
     "validate_feasibility",
     "a required feasibility gate cannot be skipped when no review exists",
+  );
+  assert.equal(
+    canDeliverWithUnverifiedFeasibility({
+      deliverablesComplete: true,
+      review: null,
+      latestDocumentIndex: 0,
+    }),
+    true,
+    "complete deliverables may be returned with an explicit unverified status when review is unavailable",
+  );
+  assert.equal(
+    canDeliverWithUnverifiedFeasibility({
+      deliverablesComplete: false,
+      review: null,
+      latestDocumentIndex: 0,
+    }),
+    false,
+    "missing deliverables must still block completion",
+  );
+  assert.equal(
+    canDeliverWithUnverifiedFeasibility({
+      deliverablesComplete: true,
+      review: { valid: false, eventIndex: 2 },
+      latestDocumentIndex: 1,
+    }),
+    false,
+    "a current review with a concrete conflict must block delivery as complete",
+  );
+  assert.match(
+    describeExecutionFeasibilityFailure({
+      required: true,
+      review: null,
+      latestDocumentIndex: 0,
+    }),
+    /未取得可行性复核结果.*不代表系统已判定方案存在冲突/,
+    "a missing review result must not be reported as a detected plan conflict",
+  );
+  assert.match(
+    describeExecutionFeasibilityFailure({
+      required: true,
+      review: { valid: false, eventIndex: 2 },
+      latestDocumentIndex: 2,
+      failures: [{ detail: "同一志愿者被安排到两个站点" }],
+    }),
+    /上次复核发现冲突.*同一志愿者被安排到两个站点/,
+    "a failed review followed by an edited document must say that revalidation is still needed",
+  );
+  assert.match(
+    describeExecutionFeasibilityFailure({
+      required: true,
+      review: { valid: true, eventIndex: 1 },
+      latestDocumentIndex: 2,
+    }),
+    /上次通过复核后又有修改/,
+    "a document edit after a passing review must be identified as a stale review",
   );
   assert.equal(
     nextExecutionFeasibilityTool({ required: false, review: null, latestDocumentIndex: -1 }),
@@ -3443,7 +3705,7 @@ try {
       .find((artifact) => artifact.id === unicodeCodeArtifact.id)
       .files.some((file) => file.path === "src/活动 页面/入口 文件.tsx"),
   );
-  const unicodeOversizedWorkspace = {
+  const unicodeLargeWorkspace = {
     ...workspace,
     id: crypto.randomUUID(),
     result: {
@@ -3459,17 +3721,21 @@ try {
       }),
     },
   };
-  const unicodeSerialized = JSON.stringify(unicodeOversizedWorkspace);
-  assert.ok(unicodeSerialized.length < 250_000);
+  const unicodeSerialized = JSON.stringify(unicodeLargeWorkspace);
   assert.ok(Buffer.byteLength(unicodeSerialized, "utf8") > 250_000);
-  const unicodeOversizedSave = await request("/api/workspaces", {
+  assert.ok(Buffer.byteLength(unicodeSerialized, "utf8") < 20_000_000);
+  const unicodeLargeSave = await request("/api/workspaces", {
     method: "POST",
     cookie: sessionCookie,
-    body: { workspace: unicodeOversizedWorkspace },
+    body: { workspace: unicodeLargeWorkspace },
   });
-  assert.equal(unicodeOversizedSave.response.status, 400);
-  assert.match(unicodeOversizedSave.payload?.error || "", /250 KB/);
-  check(true, "Enforce workspace size in UTF-8 bytes for multibyte content");
+  assert.equal(unicodeLargeSave.response.status, 200, unicodeLargeSave.payload?.error);
+  const deleteUnicodeLargeWorkspace = await request(
+    `/api/workspaces/${unicodeLargeWorkspace.id}`,
+    { method: "DELETE", cookie: sessionCookie },
+  );
+  assert.equal(deleteUnicodeLargeWorkspace.response.status, 200);
+  check(true, "Persist complete multibyte workspace outputs above the old 250 KB limit");
   const history = await request("/api/workspaces", { cookie: sessionCookie });
   assert.equal(history.response.status, 200);
   assert.ok(history.payload?.workspaces?.some((item) => item.id === workspace.id));
@@ -3623,18 +3889,26 @@ try {
     ...event,
     id: "0".repeat(36),
   }));
-  assert.ok(sourceWorkspaceBytes <= 250_000 && sourceWorkspaceBytes > 240_000);
-  assert.ok(Buffer.byteLength(JSON.stringify(remappedWorkspace), "utf8") > 250_000);
-  const rekeyOversizedImport = await request("/api/account/import", {
+  assert.ok(sourceWorkspaceBytes > 240_000);
+  assert.ok(Buffer.byteLength(JSON.stringify(remappedWorkspace), "utf8") < 20_000_000);
+  const rekeyLargeImport = await request("/api/account/import", {
     method: "POST",
     cookie: sessionCookie,
     body: { ...accountExport.payload, workspaces: [rekeyBoundaryWorkspace], knowledge: [] },
   });
-  assert.equal(rekeyOversizedImport.response.status, 400);
-  assert.match(rekeyOversizedImport.payload?.error || "", /重新映射 ID 后/);
+  assert.equal(rekeyLargeImport.response.status, 201, rekeyLargeImport.payload?.error);
+  assert.deepEqual(rekeyLargeImport.payload?.imported, { workspaces: 1, knowledge: 0 });
   const afterRejectedRekeyImport = await request("/api/workspaces", { cookie: sessionCookie });
-  assert.equal(afterRejectedRekeyImport.payload?.workspaces?.length, 1);
-  check(true, "Reject a backup that would exceed the byte cap after IDs are remapped");
+  const importedLargeWorkspace = afterRejectedRekeyImport.payload?.workspaces?.find(
+    (item) => item.id !== workspace.id,
+  );
+  assert.ok(importedLargeWorkspace, "large workspace should survive ID remapping");
+  const removeLargeImportedWorkspace = await request(
+    `/api/workspaces/${importedLargeWorkspace.id}`,
+    { method: "DELETE", cookie: sessionCookie },
+  );
+  assert.equal(removeLargeImportedWorkspace.response.status, 200);
+  check(true, "Import large workspaces without rejecting valid content after ID remapping");
   const importedBackup = await request("/api/account/import", {
     method: "POST",
     cookie: sessionCookie,

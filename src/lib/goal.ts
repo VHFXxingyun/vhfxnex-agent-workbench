@@ -71,6 +71,10 @@ export type ChatAttachment = {
   mimeType: string;
   kind: "text" | "image";
   content: string;
+  /** Transient source bytes for DOCX templates; converted to a private server-side file before handoff. */
+  sourceDataUrl?: string;
+  /** Opaque, user-scoped ID for a preserved DOCX template. */
+  templateId?: string;
 };
 export type Artifact = {
   id: string;
@@ -79,6 +83,7 @@ export type Artifact = {
   description: string;
   content: string;
   files?: ProjectFile[];
+  templateId?: string;
 };
 export type SearchSource = { title: string; url: string; snippet: string };
 export type ToolEvent = {

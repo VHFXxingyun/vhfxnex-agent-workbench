@@ -124,6 +124,14 @@ assert.equal(
 );
 assert.equal(classifyExplicitWorkbenchExecution("继续开发这会不会太复杂？"), null);
 assert.equal(classifyExplicitWorkbenchExecution("我们可以继续讨论一下路线吗"), null);
+assert.equal(
+  classifyExplicitWorkbenchExecution(
+    "请立即恢复当前消防活动策划执行，直接调用工作台产出可下载的最终 DOCX；完成后检查标题与模板一致。",
+  )?.instruction,
+  "请立即恢复当前消防活动策划执行，直接调用工作台产出可下载的最终 DOCX；完成后检查标题与模板一致。",
+  "a clear execution request with an attached template should bypass fragile intent routing",
+);
+assert.equal(classifyExplicitWorkbenchExecution("请问这个活动方案为什么会中断"), null);
 assert.equal(buildCapabilityCatalogAnswer("你能用哪些工具？")?.includes("代码工坊"), true);
 assert.equal(buildCapabilityCatalogAnswer("刚才的代码怎么回事？"), null);
 assert.deepEqual(userDirectToolIds, [

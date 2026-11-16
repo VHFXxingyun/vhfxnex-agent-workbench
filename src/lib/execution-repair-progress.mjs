@@ -31,14 +31,16 @@ export function snapshotExecutionRepairProgress(input) {
 }
 
 /**
- * Allow one additional constrained attempt when code generation made no
- * durable progress. The attempt is limited to project generation because the
- * model can use the saved tool-validation feedback to correct its output.
- * Other missing-tool repairs stop immediately to avoid duplicate API spend.
+ * Allow one additional constrained attempt when the required tool produced no
+ * durable progress. This covers document and structured-file delivery too:
+ * otherwise a single missed tool call can strand a completed workspace.
  * @param {{ requiredTool?: string | null; repairAttempt?: number; cancelled?: boolean }} input
  */
-export function shouldRetryNoProgressProjectRepair(input = {}) {
+export function shouldRetryNoProgressRequiredToolRepair(input = {}) {
   return (
-    input.requiredTool === "create_project" && input.repairAttempt === 0 && input.cancelled !== true
+    typeof input.requiredTool === "string" &&
+    input.requiredTool.length > 0 &&
+    input.repairAttempt === 0 &&
+    input.cancelled !== true
   );
 }

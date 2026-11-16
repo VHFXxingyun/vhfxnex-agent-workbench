@@ -14,7 +14,7 @@ function makeDraft(batch, title, description) {
 
 /**
  * Apply and validate one generated project batch without mutating workspace state.
- * @param {{args: {name:string;description:string;mode?:string;complete?:boolean;files:unknown[];deleteFiles?:unknown[]}; draft: unknown; existingFiles: {path:string;content:string}[]; existingTitle?:string; existingDescription?:string}} input
+ * @param {{args: {name:string;description:string;mode?:string;complete?:boolean;restartDraft?:boolean;files:unknown[];deleteFiles?:unknown[]}; draft: unknown; existingFiles: {path:string;content:string}[]; existingTitle?:string; existingDescription?:string}} input
  */
 export function prepareProjectDeliveryBatch(input) {
   const { args } = input;
@@ -29,6 +29,7 @@ export function prepareProjectDeliveryBatch(input) {
   const batch = mergeProjectBatch({
     mode,
     complete: args.complete !== false,
+    restartDraft: args.restartDraft === true,
     draft: input.draft,
     existingFiles: input.existingFiles,
     files: updatedFiles,

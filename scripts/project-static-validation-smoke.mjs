@@ -17,7 +17,11 @@ import {
 } from "../src/lib/agent-validation.mjs";
 import { mergeExecutionCheckpoint } from "../src/lib/execution-checkpoint.mjs";
 import {
-  shouldRetryNoProgressProjectRepair,
+  latestExecutionFeasibilityReview,
+  nextExecutionFeasibilityTool,
+} from "../src/lib/execution-feasibility-gate.mjs";
+import {
+  shouldRetryNoProgressRequiredToolRepair,
   snapshotExecutionRepairProgress,
 } from "../src/lib/execution-repair-progress.mjs";
 import {
@@ -26,6 +30,8 @@ import {
   parseProjectReview,
 } from "../src/lib/project-review.mjs";
 import { classifyProjectIntent } from "../src/lib/project-intent.mjs";
+import { shouldResumeProjectDraft } from "../src/lib/project-intent.mjs";
+import { requiresDocumentDeliverable } from "../src/lib/agent-validation.mjs";
 
 const projectWithDeclaredDependencies = [
   {
@@ -97,6 +103,58 @@ assert.equal(
   }),
   "create",
 );
+assert.equal(
+  classifyProjectIntent(
+    "立即继续完成消防活动策划，并交付模板 DOCX；不要把文档任务转成 Python/DOCX 工具链代码项目。",
+    { isContinuation: true, hasExistingProject: false, isSoftwareWorkspace: false },
+  ),
+  null,
+);
+assert.equal(
+  classifyProjectIntent("不要创建代码项目，只需要完成并交付这份 DOCX 文档。", {
+    isContinuation: true,
+    hasExistingProject: false,
+    isSoftwareWorkspace: true,
+  }),
+  null,
+);
+assert.equal(
+  shouldResumeProjectDraft({
+    hasDraft: true,
+    isContinuation: true,
+    isSoftwareWorkspace: false,
+    input: "继续完成消防活动策划并交付 DOCX",
+  }),
+  false,
+);
+assert.equal(
+  shouldResumeProjectDraft({
+    hasDraft: true,
+    isContinuation: true,
+    isSoftwareWorkspace: true,
+    input: "继续",
+  }),
+  true,
+);
+assert.equal(
+  shouldResumeProjectDraft({
+    hasDraft: true,
+    isContinuation: true,
+    isSoftwareWorkspace: true,
+    input: "解释一下 API 命中率",
+  }),
+  false,
+);
+assert.equal(
+  requiresDocumentDeliverable("最终交付可下载的 DOCX，并按模板保留标题和样式", {
+    isContinuation: true,
+  }),
+  true,
+);
+assert.equal(
+  requiresDocumentDeliverable("做到哪里了？", { isContinuation: true }),
+  false,
+);
 const repairProgressFixture = {
   tasks: [{ id: "task-1", title: "实现计时逻辑", status: "pending" }],
   milestones: [],
@@ -127,23 +185,36 @@ assert.notEqual(
   noProgressSnapshot,
 );
 assert.equal(
-  shouldRetryNoProgressProjectRepair({ requiredTool: "create_project", repairAttempt: 0 }),
+  shouldRetryNoProgressRequiredToolRepair({ requiredTool: "create_project", repairAttempt: 0 }),
   true,
 );
 assert.equal(
-  shouldRetryNoProgressProjectRepair({ requiredTool: "create_project", repairAttempt: 1 }),
+  shouldRetryNoProgressRequiredToolRepair({ requiredTool: "create_project", repairAttempt: 1 }),
   false,
 );
 assert.equal(
-  shouldRetryNoProgressProjectRepair({
+  shouldRetryNoProgressRequiredToolRepair({
     requiredTool: "create_project",
     repairAttempt: 0,
   }),
   true,
 );
 assert.equal(
-  shouldRetryNoProgressProjectRepair({ requiredTool: "draft_document", repairAttempt: 0 }),
-  false,
+  shouldRetryNoProgressRequiredToolRepair({ requiredTool: "draft_document", repairAttempt: 0 }),
+  true,
+);
+const resumedReview = latestExecutionFeasibilityReview([
+  { name: "draft_document", title: "方案已起草", status: "done" },
+  { name: "validate_feasibility", title: "可行性检查发现冲突", status: "done" },
+]);
+assert.deepEqual(resumedReview, { valid: false, eventIndex: 1 });
+assert.equal(
+  nextExecutionFeasibilityTool({
+    required: true,
+    review: resumedReview,
+    latestDocumentIndex: 2,
+  }),
+  "validate_feasibility",
 );
 
 const firstProjectBatch = mergeProjectBatch({
@@ -260,10 +331,7 @@ const initialPatchBatch = prepareProjectDeliveryBatch({
     description: "后续传入说明",
     mode: "patch",
     complete: false,
-    files: [
-      { path: "index.html", content: "<!doctype html><h1>Patched</h1>" },
-      { path: "src/added.js", content: "export const added = true;" },
-    ],
+    files: [{ path: "index.html", content: "<!doctype html><h1>Patched</h1>" }],
     deleteFiles: ["src/obsolete.js"],
   },
   draft: null,
@@ -275,6 +343,21 @@ const initialPatchBatch = prepareProjectDeliveryBatch({
   existingDescription: "原项目说明",
 });
 assert.equal(initialPatchBatch.status, "staged");
+const appendedPatchBatch = prepareProjectDeliveryBatch({
+  args: {
+    name: "后续名称",
+    description: "后续说明",
+    mode: "append",
+    complete: false,
+    files: [{ path: "src/added.js", content: "export const added = true;" }],
+  },
+  draft: initialPatchBatch.draft,
+  existingFiles: [
+    ...completedProjectBatch.files,
+    { path: "src/obsolete.js", content: "export const obsolete = true;" },
+  ],
+});
+assert.equal(appendedPatchBatch.status, "staged");
 const completedPatchDelivery = prepareProjectDeliveryBatch({
   args: {
     name: "仍不应覆盖名称",
@@ -283,7 +366,7 @@ const completedPatchDelivery = prepareProjectDeliveryBatch({
     complete: true,
     files: [{ path: "src/final.js", content: "export const final = true;" }],
   },
-  draft: initialPatchBatch.draft,
+  draft: appendedPatchBatch.draft,
   existingFiles: [
     ...completedProjectBatch.files,
     { path: "src/obsolete.js", content: "export const obsolete = true;" },
@@ -371,50 +454,70 @@ let oversizedFileDraft = mergeProjectBatch({
   name: "文件超限",
   description: "说明",
 });
-for (let index = PROJECT_BATCH_LIMITS.batchFiles; index < PROJECT_BATCH_LIMITS.files; index += 20) {
-  oversizedFileDraft = mergeProjectBatch({
+let expandedProject = oversizedFileDraft;
+for (let start = PROJECT_BATCH_LIMITS.batchFiles; start < 60; start += PROJECT_BATCH_LIMITS.batchFiles) {
+  expandedProject = mergeProjectBatch({
     mode: "append",
     complete: false,
-    draft: oversizedFileDraft,
+    draft: expandedProject,
     existingFiles: [],
-    files: Array.from({ length: 20 }, (_, offset) => ({
-      path: `src/file-${index + offset}.js`,
+    files: Array.from({ length: PROJECT_BATCH_LIMITS.batchFiles }, (_, offset) => ({
+      path: `src/file-${start + offset}.js`,
       content: "export {};",
     })),
     name: "追加批次",
     description: "说明",
   });
 }
-const tooManyProjectFiles = mergeProjectBatch({
+expandedProject = mergeProjectBatch({
   mode: "append",
   complete: true,
-  draft: oversizedFileDraft,
+  draft: expandedProject,
   existingFiles: [],
   files: [{ path: "src/file-60.js", content: "export {};" }],
-  name: "文件超限",
-  description: "说明",
+  name: "超过原文件数上限",
+  description: "项目文件数不应限制完整交付",
 });
-assert.match(tooManyProjectFiles.error, /最多保留 60 个文件/);
-const oversizedProject = mergeProjectBatch({
+assert.equal(expandedProject.error, undefined);
+assert.equal(expandedProject.files.length, 61);
+
+const oversizedBatch = mergeProjectBatch({
   mode: "full",
   complete: true,
   draft: null,
   existingFiles: [],
-  files: [{ path: "index.html", content: "x".repeat(100_001) }],
-  name: "超限项目",
-  description: "说明",
+  files: [
+    { path: "src/one.js", content: "x".repeat(23_000) },
+    { path: "src/two.js", content: "y".repeat(23_000) },
+  ],
+  name: "单批工具参数超限",
+  description: "调用参数按批次交付",
 });
-assert.match(oversizedProject.error, /单批源码不能超过/);
-const oversizedUtf8Project = mergeProjectBatch({
+assert.match(oversizedBatch.error, /单批源码不能超过/);
+
+let largeProject = mergeProjectBatch({
   mode: "full",
-  complete: true,
+  complete: false,
   draft: null,
   existingFiles: [],
-  files: [{ path: "README.md", content: "中".repeat(34_000) }],
-  name: "UTF-8 超限项目",
+  files: [{ path: "src/part-0.js", content: "x".repeat(40_000) }],
+  name: "完整源码不设总量上限",
   description: "说明",
 });
-assert.match(oversizedUtf8Project.error, /UTF-8 大小不能超过/);
+for (let index = 1; index < 3; index += 1) {
+  largeProject = mergeProjectBatch({
+    mode: "append",
+    complete: index === 2,
+    draft: largeProject,
+    existingFiles: [],
+    files: [{ path: `src/part-${index}.js`, content: "y".repeat(40_000) }],
+    name: "追加完整源码",
+    description: "说明",
+  });
+}
+assert.equal(largeProject.error, undefined);
+assert.equal(largeProject.complete, true);
+assert.ok(largeProject.files.reduce((total, file) => total + file.content.length, 0) > 100_000);
 assert.equal(
   parseToolArguments(
     "create_project",

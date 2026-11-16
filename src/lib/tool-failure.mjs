@@ -29,7 +29,7 @@ export function compactToolFailure(value) {
         ? String(current.message)
         : String(current || "工具参数未通过校验"));
   if (/AI_JSONParseError|JSON parsing failed|Unexpected end of JSON input/i.test(message))
-    return "工具参数 JSON 不完整或被截断；请缩小本次产物范围后重新生成。";
+    return "工具参数 JSON 不完整或被截断；请保留全部功能与文件，将本次工具调用拆成更小的完整批次后继续。";
   const validationReason = message.match(
     /Type validation failed(?: for [^:]+)?: Value:[\s\S]*?\nError message:\s*([\s\S]*)$/i,
   )?.[1];

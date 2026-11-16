@@ -8,6 +8,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { userDirectToolIds } from "../src/lib/capability-catalog.mjs";
+import { describeIncompleteCodeProjectFailure } from "../src/lib/project-output-failure.mjs";
 import { buildWorkbenchHandoffResultMessage } from "../src/lib/supervisor-handoff-result.mjs";
 import { classifyWorkbenchFailure, WORKBENCH_MAX_ATTEMPTS } from "../src/lib/workbench-retry.mjs";
 
@@ -168,6 +169,7 @@ async function chat(
   workspaceId,
   modelWorkspaceId = workspaceId,
   directToolId = "pdf",
+  attachments = [],
 ) {
   const response = await fetch(new URL("/api/chat", baseUrl), {
     method: "POST",
@@ -181,7 +183,11 @@ async function chat(
       "x-vhfxnex-supervisor-test-tool": directToolId,
       ...(modelWorkspaceId ? { "x-vhfxnex-supervisor-test-workspace": modelWorkspaceId } : {}),
     },
-    body: JSON.stringify({ question, ...(workspaceId ? { workspaceId } : {}) }),
+    body: JSON.stringify({
+      question,
+      ...(workspaceId ? { workspaceId } : {}),
+      ...(attachments.length ? { attachments } : {}),
+    }),
     signal: AbortSignal.timeout(45_000),
   });
   const contentType = response.headers.get("content-type") || "";
@@ -241,14 +247,57 @@ assert.equal(classifyWorkbenchFailure({ status: 401 }).retryable, false);
 assert.equal(classifyWorkbenchFailure({ status: 429 }).retryable, true);
 assert.equal(classifyWorkbenchFailure({ status: 503 }).retryable, true);
 assert.equal(classifyWorkbenchFailure({ error: new TypeError("fetch failed") }).retryable, true);
+assert.equal(
+  classifyWorkbenchFailure({ error: new Error("SqliteError: database table is locked") }).retryable,
+  true,
+);
+assert.equal(classifyWorkbenchFailure({ error: new Error("SQLITE_FULL") }).retryable, false);
 assert.equal(classifyWorkbenchFailure({ error: new Error("参数格式无效") }).retryable, false);
 assert.equal(
   classifyWorkbenchFailure({ error: new Error("Agent 未生成可下载的代码项目") }).maxAttempts,
   2,
 );
+const incompleteUpdateMessage = describeIncompleteCodeProjectFailure({
+  intent: "update",
+  existingProjectTitle: "VHFXNEX 桌面计时器 v1.0 完整源码",
+  hasExistingProject: true,
+  draftFileCount: 5,
+});
+assert.match(incompleteUpdateMessage, /旧版本.*仍可下载/u);
+assert.match(incompleteUpdateMessage, /已暂存 5 个文件改动/u);
+assert.equal(
+  classifyWorkbenchFailure({ error: new Error(incompleteUpdateMessage) }).maxAttempts,
+  2,
+);
+const incompleteNewProjectMessage = describeIncompleteCodeProjectFailure({
+  intent: "create",
+  existingProjectTitle: "VHFXNEX 桌面计时器 v1.0 完整源码",
+  hasExistingProject: true,
+});
+assert.match(incompleteNewProjectMessage, /本轮未能生成新的可下载代码项目/u);
+assert.equal(
+  classifyWorkbenchFailure({ error: new Error(incompleteNewProjectMessage) }).maxAttempts,
+  2,
+);
+assert.equal(
+  classifyWorkbenchFailure({
+    error: new Error("Agent 未能完成任务、时间线、行动方案、可运行代码项目，请重试。"),
+  }).maxAttempts,
+  2,
+);
 assert.equal(
   classifyWorkbenchFailure({ error: new Error("Agent 未能完成行动方案，请重试") }).retryable,
-  false,
+  true,
+);
+assert.equal(
+  classifyWorkbenchFailure({ error: new Error("Agent 未能补齐必需产物，请重试") }).maxAttempts,
+  2,
+);
+assert.equal(
+  classifyWorkbenchFailure({
+    error: new Error("AI_NoOutputGeneratedError: did not contain a call to the required tool"),
+  }).retryable,
+  true,
 );
 assert.match(
   buildWorkbenchHandoffResultMessage({
@@ -454,6 +503,70 @@ try {
   const queued = await fetchJson("/api/handoffs", { cookie });
   assert.equal(queued.response.status, 200);
   assert.ok(queued.payload?.handoffs?.some((item) => item.id === handoffEvent.handoffId));
+
+  const originalRequest =
+    "请严格按附件中的标题和版式完成活动策划，只替换正文内容，并交付可下载文件。";
+  const modelRoutedRequest = "我已经选好路线，请把活动策划交给工作台完成，模板在附件。";
+  const referenceAttachment = {
+    name: "活动格式参考.md",
+    mimeType: "text/markdown",
+    kind: "text",
+    content: "# 活动策划书\n\n## 一、活动主题\n\n保留标题，替换内容。",
+  };
+  const recoveredHandoff = await chat(
+    cookie,
+    "handoff-invalid",
+    modelRoutedRequest,
+    workspace.id,
+    workspace.id,
+    "pdf",
+    [referenceAttachment],
+  );
+  assert.ok(
+    recoveredHandoff.events.some(
+      (event) =>
+        event.type === "status" && /按当前工作区和你的原始要求继续交接/u.test(event.message),
+    ),
+    `invalid tool arguments should recover using the original request: ${JSON.stringify(recoveredHandoff.events)}`,
+  );
+  const recoveredEvent = recoveredHandoff.events.find((event) => event.type === "handoff");
+  assert.ok(
+    recoveredEvent,
+    `expected invalid handoff recovery to enqueue a job: ${JSON.stringify(recoveredHandoff.events)}`,
+  );
+  assert.equal(recoveredEvent?.workspaceId, workspace.id);
+  const recoveredDb = new Database(databasePath, { readonly: true });
+  try {
+    const recoveredRow = recoveredDb
+      .prepare("SELECT instruction, attachments_json, status FROM workbench_handoffs WHERE id = ?")
+      .get(recoveredEvent.handoffId);
+    assert.equal(recoveredRow?.instruction, modelRoutedRequest);
+    assert.equal(recoveredRow?.status, "pending");
+    const savedAttachments = JSON.parse(recoveredRow?.attachments_json || "[]");
+    assert.deepEqual(
+      savedAttachments.map(({ name, content }) => ({ name, content })),
+      [{ name: referenceAttachment.name, content: referenceAttachment.content }],
+    );
+  } finally {
+    recoveredDb.close();
+  }
+  const recoveredClaim = await fetchJson("/api/handoffs", {
+    method: "PATCH",
+    cookie,
+    body: { action: "claim", id: recoveredEvent.handoffId },
+  });
+  assert.equal(recoveredClaim.payload?.status, "claimed");
+  const recoveredCancellation = await fetchJson("/api/handoffs", {
+    method: "PATCH",
+    cookie,
+    body: {
+      action: "cancel",
+      id: recoveredEvent.handoffId,
+      token: recoveredClaim.payload.token,
+    },
+  });
+  assert.deepEqual(recoveredCancellation.payload, { ok: true });
+
   const workspaceHandoffClaim = await fetchJson("/api/handoffs", {
     method: "PATCH",
     cookie,
@@ -535,6 +648,55 @@ try {
   } finally {
     rateLimitDb.close();
   }
+  const explicitAttachmentHandoff = await chat(
+    cookie,
+    "reply",
+    originalRequest,
+    workspace.id,
+    workspace.id,
+    "pdf",
+    [referenceAttachment],
+  );
+  const explicitHandoffEvent = explicitAttachmentHandoff.events.find(
+    (event) => event.type === "handoff",
+  );
+  assert.ok(
+    explicitHandoffEvent,
+    `clear work requests with attachments should route without a model intent call: ${JSON.stringify(explicitAttachmentHandoff.events)}`,
+  );
+  const explicitHandoffDb = new Database(databasePath, { readonly: true });
+  try {
+    const explicitHandoffRow = explicitHandoffDb
+      .prepare("SELECT instruction, attachments_json FROM workbench_handoffs WHERE id = ?")
+      .get(explicitHandoffEvent.handoffId);
+    assert.equal(explicitHandoffRow?.instruction, originalRequest);
+    assert.deepEqual(
+      JSON.parse(explicitHandoffRow?.attachments_json || "[]").map(({ name, content }) => ({
+        name,
+        content,
+      })),
+      [{ name: referenceAttachment.name, content: referenceAttachment.content }],
+      "direct task routing must preserve the attached template for the workbench agent",
+    );
+  } finally {
+    explicitHandoffDb.close();
+  }
+  const explicitHandoffClaim = await fetchJson("/api/handoffs", {
+    method: "PATCH",
+    cookie,
+    body: { action: "claim", id: explicitHandoffEvent.handoffId },
+  });
+  assert.equal(explicitHandoffClaim.payload?.status, "claimed");
+  const explicitHandoffCancellation = await fetchJson("/api/handoffs", {
+    method: "PATCH",
+    cookie,
+    body: {
+      action: "cancel",
+      id: explicitHandoffEvent.handoffId,
+      token: explicitHandoffClaim.payload.token,
+    },
+  });
+  assert.deepEqual(explicitHandoffCancellation.payload, { ok: true });
   const globalHandoff = await chat(
     cookie,
     "handoff",
@@ -629,7 +791,7 @@ try {
   );
 
   console.log(
-    "✓ Isolated API smoke passed legacy queue migration, bounded handoff retries, permanent-failure handling, complete-project gating, mock supervisor replies, global persistence, direct-tool dispatch, new-goal dispatch, fixture search, handoff source persistence, invalid-secret gate, and workspace-access rejection without provider calls.",
+    "✓ Isolated API smoke passed legacy queue migration, bounded handoff retries, permanent-failure handling, complete-project gating, mock supervisor replies, malformed-handoff recovery with attachment persistence, global persistence, direct-tool dispatch, new-goal dispatch, fixture search, invalid-secret gate, and workspace-access rejection without provider calls.",
   );
 } catch (error) {
   if (serverOutput.trim()) console.error(`\n隔离服务日志：\n${serverOutput}`);

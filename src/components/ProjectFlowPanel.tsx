@@ -3,6 +3,7 @@
 import { useRef, useState, type KeyboardEvent, type PointerEvent, type WheelEvent } from "react";
 import { motion, useReducedMotion } from "motion/react";
 import { Check, Circle, GitBranch, PackageCheck, Target } from "lucide-react";
+import FrameTrace from "@/components/FrameTrace";
 import type { Task } from "@/lib/goal";
 
 function workflowTitle(category: string) {
@@ -93,6 +94,7 @@ export default function ProjectFlowPanel({
 
   return (
     <aside id="project-flow-panel" className="workspace-flow-panel" aria-label={title}>
+      <FrameTrace delay={0.12} />
       <header className="workspace-flow-head">
         <div className="workspace-flow-title">
           <span className="workspace-flow-icon">

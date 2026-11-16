@@ -1,5 +1,5 @@
 export function snapshotExecutionRepairProgress(state: unknown): string;
-export function shouldRetryNoProgressProjectRepair(input?: {
+export function shouldRetryNoProgressRequiredToolRepair(input?: {
   requiredTool?: string | null;
   repairAttempt?: number;
   cancelled?: boolean;

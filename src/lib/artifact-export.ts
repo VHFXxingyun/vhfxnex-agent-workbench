@@ -9,7 +9,11 @@ function parseContent<T>(content: string): T {
   return JSON.parse(content) as T;
 }
 
-async function toWordBlob(title: string, markdown: string): Promise<Blob> {
+async function toWordBlob(
+  artifact: Artifact,
+  markdown: string,
+  workspaceId?: string,
+): Promise<Blob> {
   const {
     BorderStyle,
     Document,
@@ -251,9 +255,26 @@ async function toWordBlob(title: string, markdown: string): Promise<Blob> {
       new Paragraph({ children: inline(paragraph.join(" ")), spacing: { after: 90, line: 300 } }),
     );
   }
+  if (artifact.templateId) {
+    if (!workspaceId) throw new Error("无法确认当前工作区，不能读取 DOCX 模板。");
+    const response = await fetch("/api/artifacts/document", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        workspaceId,
+        artifactId: artifact.id,
+        content: markdown,
+      }),
+    });
+    if (!response.ok) {
+      const error = (await response.json().catch(() => null)) as { error?: string } | null;
+      throw new Error(error?.error || "无法依据原 DOCX 模板生成 Word 文档。");
+    }
+    return response.blob();
+  }
   const document = new Document({
     creator: "VHFXNEX Agent",
-    title,
+    title: artifact.title,
     description: "Agent 生成的可编辑文档",
     sections: [{ properties: {}, children }],
   });
@@ -407,6 +428,7 @@ export async function createArtifactDownload(
   artifact: Artifact,
   content: string,
   format: "primary" | "markdown" = "primary",
+  workspaceId?: string,
 ): Promise<{ blob: Blob; extension: string; message: string }> {
   if (format === "markdown") {
     return {
@@ -417,7 +439,7 @@ export async function createArtifactDownload(
   }
   if (artifact.type === "document") {
     return {
-      blob: await toWordBlob(artifact.title, content),
+      blob: await toWordBlob(artifact, content, workspaceId),
       extension: "docx",
       message: "Word 文档已开始下载。",
     };

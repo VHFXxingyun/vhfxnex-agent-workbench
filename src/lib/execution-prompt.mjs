@@ -44,6 +44,24 @@ export function buildExecutionCheckpointMessage({ textAttachments = [], images =
   };
 }
 
+/**
+ * Keep completed project files separate from the files in an unfinished batch.
+ * Both lists must be sent to the execution agent so it can safely append without
+ * guessing what the server has already staged.
+ *
+ * @param {{existingProjectFiles?: Array<{path:string;content:string}>; projectDraft?: {files?: Array<{path:string;content:string}>; deleteFiles?: string[]}|null}} input
+ */
+export function buildExecutionProjectFileContext({
+  existingProjectFiles = [],
+  projectDraft = null,
+}) {
+  return {
+    existingProjectFiles: Array.isArray(existingProjectFiles) ? existingProjectFiles : [],
+    stagedProjectFiles: Array.isArray(projectDraft?.files) ? projectDraft.files : [],
+    stagedProjectDeletes: Array.isArray(projectDraft?.deleteFiles) ? projectDraft.deleteFiles : [],
+  };
+}
+
 const MAX_RECENT_USER_INSTRUCTIONS = 3;
 const MAX_RECENT_USER_INSTRUCTION_CHARS = 800;
 
@@ -85,6 +103,7 @@ export function buildExecutionRecentUserInstructions(conversation, currentTurnCo
  *   needsSpreadsheet?: boolean;
  *   needsPresentation?: boolean;
  *   needsPdf?: boolean;
+ *   sourceTemplateAvailable?: boolean;
  *   searchPolicy: SearchPolicy;
  * }} options
  */
@@ -95,6 +114,9 @@ export function buildExecutionSystemPrompt(options) {
 
   const requestedOutputs = [
     options.projectInstructions,
+    options.sourceTemplateAvailable
+      ? "用户上传了 DOCX 模板并要求以它为唯一格式依据：必须调用 draft_document 写入完整正文，由服务端基于原模板生成 DOCX；保留原模板标题、编号、顺序、层级和样式，只替换允许修改的内容。不要把文档转换成 Python/代码项目，不要调用 create_project 来代替文档交付。"
+      : "",
     options.needsSpreadsheet
       ? "用户明确要求电子表格：必须调用 generate_spreadsheet 交付有列名和数据行的结构化工作簿。"
       : "",

@@ -3,6 +3,7 @@ import type { ChatAttachment } from "@/lib/goal";
 import { getUser } from "@/lib/auth";
 import { readJsonObject } from "@/lib/request";
 import { isSupportedImageDataUrl } from "@/lib/image";
+import { isDocxTemplateDataUrl, saveDocxTemplateForUser } from "@/lib/docx-template.mjs";
 import { appendWorkbenchCompletionForUser } from "@/lib/supervisor-store";
 import {
   cancelWorkbenchHandoffForUser,
@@ -52,12 +53,20 @@ function parseAttachments(value: unknown): ChatAttachment[] | string {
       textBytes += new TextEncoder().encode(item.content).byteLength;
       if (item.content.length > 120_000 || textBytes > 200_000)
         return "文本附件总量不能超过 200 KB。";
+      if (
+        item.sourceDataUrl !== undefined &&
+        (typeof item.sourceDataUrl !== "string" ||
+          !isDocxTemplateDataUrl(item.name, item.mimeType, item.sourceDataUrl))
+      )
+        return "DOCX 模板附件格式无效或超过 1 MB。";
       attachments.push({
         id: crypto.randomUUID(),
         name: item.name,
         mimeType: item.mimeType.slice(0, 100),
         kind: "text",
         content: item.content,
+        ...(typeof item.sourceDataUrl === "string" ? { sourceDataUrl: item.sourceDataUrl } : {}),
+        ...(typeof item.templateId === "string" ? { templateId: item.templateId } : {}),
       });
     } else {
       return "附件类型无效。";
@@ -97,13 +106,28 @@ export async function POST(request: NextRequest) {
   if (typeof attachments === "string")
     return NextResponse.json({ error: attachments }, { status: 400 });
 
+  const retainedAttachments: ChatAttachment[] = [];
+  try {
+    for (const attachment of attachments) {
+      const { sourceDataUrl, ...safeAttachment } = attachment;
+      const templateId = sourceDataUrl
+        ? saveDocxTemplateForUser(user.id, sourceDataUrl)
+        : safeAttachment.templateId;
+      retainedAttachments.push({ ...safeAttachment, ...(templateId ? { templateId } : {}) });
+    }
+  } catch (error) {
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : "DOCX 模板保存失败。" },
+      { status: 400 },
+    );
+  }
   const result = enqueueWorkbenchHandoffForUser(user.id, {
     id: crypto.randomUUID(),
     workspaceId,
     instruction,
     userMessageId,
     userMessage,
-    attachments,
+    attachments: retainedAttachments,
   });
   if (result.status === "missing")
     return NextResponse.json({ error: "目标工作区已不存在。" }, { status: 404 });

@@ -6,6 +6,7 @@ export type ProjectDeliveryInput = {
     description: string;
     mode?: string;
     complete?: boolean;
+    restartDraft?: boolean;
     files: unknown[];
     deleteFiles?: unknown[];
   };
