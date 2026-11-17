@@ -40,7 +40,7 @@ yarn-error.log*
 !.env.example
 /data/
 /backups/
-/tmp/pdfs/
+/tmp/
 /output/
 
 # Python artifacts produced by downloadable code-project examples

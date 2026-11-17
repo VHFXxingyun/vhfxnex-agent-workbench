@@ -85,7 +85,7 @@ npm run smoke
 
 `npm run smoke:container` 静态检查 Dockerfile、Compose 和 `.dockerignore`：验证密钥与本地数据不会进入构建上下文、容器使用非 root 用户、SQLite 走命名卷、应用端口默认仅绑定本机且健康检查/worker 启动配置存在。此检查不代替 Docker 实际构建、启动或公网部署验收。
 
-GitHub Actions 还配置了 Docker Engine 集成检查：用唯一临时数据卷和独立端口实际构建镜像、等待容器健康，并核对容器以非 root 用户运行。该工作流的结果须等代码推送后再看；它不验证公网 HTTPS 或实际评审账号。
+GitHub Actions 已通过 Docker Engine 集成检查：提交 `03ae6e5` 的运行 [#43839469284](https://github.com/VHFXxingyun/vhfxnex-agent-workbench/actions/runs/43839469284) 构建并启动生产镜像，健康端点和非 root worker 检查均通过。该结果验证 CI 隔离环境，不代表阿里云主机公网 HTTPS、持久化或评审账号已验收。
 
 `npm run smoke:desktop-timer` 会对比桌面计时器源码目录与提交 ZIP 的文件清单和逐文件内容，并运行 5 项 Python 状态机单元测试；需要 Python 3.10+，不调用模型。
 

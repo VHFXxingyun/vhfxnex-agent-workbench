@@ -14,5 +14,6 @@ coverage
 docs
 deliverables
 output
+tmp
 scripts/*smoke*.mjs
 scripts/fixtures

@@ -276,7 +276,7 @@ def draw_page(canvas, document):
     canvas.line(LEFT, 12 * mm, PAGE_WIDTH - RIGHT, 12 * mm)
     canvas.setFont("NotoSansSC", 7.2)
     canvas.setFillColor(colors.HexColor("#716B78"))
-    canvas.drawString(LEFT, 8 * mm, "2026-11-17 · 仍需补齐报名团队信息与正式演示材料")
+    canvas.drawString(LEFT, 8 * mm, "2026-11-18 · 仍需补齐团队信息与正式演示材料")
     canvas.drawRightString(PAGE_WIDTH - RIGHT, 8 * mm, f"{page}")
     canvas.restoreState()
 
