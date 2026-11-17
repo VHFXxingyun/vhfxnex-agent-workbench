@@ -10,6 +10,7 @@ backups
 coverage
 *.tsbuildinfo
 .github
+.acceptance
 docs
 deliverables
 output

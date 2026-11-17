@@ -27,6 +27,8 @@ import {
 } from "@/lib/agent-validation.mjs";
 import { availableCapacity, keepWithinLimit } from "@/lib/workspace-capacity.mjs";
 import { BUDGET_AMOUNT_LIMIT, normalizeBudgetItems } from "@/lib/budget-validation.mjs";
+import { explicitlyClearsBudgetLimit, normalizeLegacyBudgetLimit } from "@/lib/budget-limit.mjs";
+import { hasFreshExecutionEvent } from "@/lib/execution-deliverable-freshness.mjs";
 import {
   findScheduleConflict,
   normalizeScheduleDay,
@@ -336,7 +338,7 @@ function applyTool(
       type: "document",
       title,
       description: "Agent 生成的初版方案",
-      content: markPlanChecklistItemsPending(args.content.slice(0, 12000)),
+      content: markPlanChecklistItemsPending(args.content),
       ...(state.sourceTemplateId ? { templateId: state.sourceTemplateId } : {}),
     });
     state.events.push({
@@ -732,26 +734,31 @@ export async function POST(request: NextRequest) {
       !Array.isArray(body.currentBudget)
         ? (body.currentBudget as Record<string, unknown>)
         : undefined;
+    const normalizedBudgetLimit = rawBudget
+      ? normalizeLegacyBudgetLimit(rawBudget.limit, rawBudget.status)
+      : undefined;
     const currentBudget =
       rawBudget &&
       typeof rawBudget.total === "number" &&
       Number.isFinite(rawBudget.total) &&
       rawBudget.total >= 0 &&
       rawBudget.total <= BUDGET_AMOUNT_LIMIT &&
-      (rawBudget.limit === null ||
-        (typeof rawBudget.limit === "number" &&
-          Number.isFinite(rawBudget.limit) &&
-          rawBudget.limit >= 0 &&
-          rawBudget.limit <= BUDGET_AMOUNT_LIMIT))
+      (normalizedBudgetLimit === null ||
+        (typeof normalizedBudgetLimit === "number" &&
+          Number.isFinite(normalizedBudgetLimit) &&
+          normalizedBudgetLimit >= 0 &&
+          normalizedBudgetLimit <= BUDGET_AMOUNT_LIMIT))
         ? {
-            limit: rawBudget.limit as number | null,
+            limit: normalizedBudgetLimit as number | null,
             total: rawBudget.total,
             remaining:
-              rawBudget.limit === null ? null : (rawBudget.limit as number) - rawBudget.total,
+              normalizedBudgetLimit === null
+                ? null
+                : (normalizedBudgetLimit as number) - rawBudget.total,
             status:
-              rawBudget.limit === null
+              normalizedBudgetLimit === null
                 ? ("unknown" as const)
-                : rawBudget.total > (rawBudget.limit as number)
+                : rawBudget.total > (normalizedBudgetLimit as number)
                   ? ("over" as const)
                   : ("within" as const),
           }
@@ -1057,6 +1064,9 @@ export async function POST(request: NextRequest) {
         ? Math.min(WORKSPACE_LIMITS.executionTasks, currentTasks.length + 1)
         : WORKSPACE_LIMITS.executionTasks,
     };
+    const previousEventIds = new Set(state.events.map((event) => event.id));
+    const hasFreshToolEvent = (name: string) =>
+      hasFreshExecutionEvent(state.events, name, previousEventIds);
     if (state.feasibilityReview && !state.feasibilityReview.valid) {
       const latestReviewEvent = state.events[state.feasibilityReview.eventIndex];
       state.toolFailures.push({
@@ -1065,8 +1075,9 @@ export async function POST(request: NextRequest) {
       });
     }
     if (updateBudget && state.budget) {
-      state.budget.limit =
-        extractBudgetLimit(instruction) ?? state.budget.limit ?? extractBudgetLimit(goal);
+      state.budget.limit = explicitlyClearsBudgetLimit(instruction)
+        ? null
+        : (extractBudgetLimit(instruction) ?? state.budget.limit ?? extractBudgetLimit(goal));
     }
     const needsBudget = isContinuation
       ? updateBudget
@@ -1290,10 +1301,13 @@ export async function POST(request: NextRequest) {
           const hasCore =
             state.tasks.length > 0 &&
             state.milestones.length > 0 &&
-            (!needsDocument || state.artifacts.some((item) => item.type === "document"));
+            (!needsDocument ||
+              (state.artifacts.some((item) => item.type === "document") &&
+                hasFreshToolEvent("draft_document")));
           const hasBudget =
             state.artifacts.some((item) => item.type === "budget") &&
-            state.budget?.status !== "over";
+            state.budget?.status !== "over" &&
+            (!needsBudget || hasFreshToolEvent("calculate_budget"));
           const hasSchedule = state.events.some((event) => event.name === "build_schedule");
           const hasProject = state.artifacts.some((item) => item.type === "code");
           const hasSpreadsheet = state.artifacts.some((item) => item.type === "spreadsheet");
@@ -1335,17 +1349,22 @@ export async function POST(request: NextRequest) {
           const budgetToolMissing =
             needsBudget &&
             (!state.artifacts.some((item) => item.type === "budget") ||
-              state.budget?.status === "over");
+              state.budget?.status === "over" ||
+              !hasFreshToolEvent("calculate_budget"));
           if (isContinuation) {
             if (mustAddTask) return "create_tasks";
             if (needsSchedule && !hasSchedule) return "build_schedule";
             if (budgetToolMissing) return "calculate_budget";
             if (
               needsDocument &&
-              !state.artifacts.some((item) => item.type === "document")
+              (!state.artifacts.some((item) => item.type === "document") ||
+                !hasFreshToolEvent("draft_document"))
             )
               return "draft_document";
-            if (needsProject && !state.artifacts.some((item) => item.type === "code"))
+            if (
+              needsProject &&
+              (projectIntent === "update" || !state.artifacts.some((item) => item.type === "code"))
+            )
               return "create_project";
             if (needsSpreadsheet && !state.artifacts.some((item) => item.type === "spreadsheet"))
               return "generate_spreadsheet";
@@ -1360,9 +1379,16 @@ export async function POST(request: NextRequest) {
           if (!state.tasks.length) return "create_tasks";
           if (!state.milestones.length) return "build_timeline";
           if (needsSchedule && !hasSchedule) return "build_schedule";
-          if (!state.artifacts.some((item) => item.type === "document")) return "draft_document";
+          if (
+            !state.artifacts.some((item) => item.type === "document") ||
+            !hasFreshToolEvent("draft_document")
+          )
+            return "draft_document";
           if (budgetToolMissing) return "calculate_budget";
-          if (needsProject && !state.artifacts.some((item) => item.type === "code"))
+          if (
+            needsProject &&
+            (projectIntent === "update" || !state.artifacts.some((item) => item.type === "code"))
+          )
             return "create_project";
           if (needsSpreadsheet && !state.artifacts.some((item) => item.type === "spreadsheet"))
             return "generate_spreadsheet";
@@ -1378,14 +1404,18 @@ export async function POST(request: NextRequest) {
           const missing = [
             state.tasks.length === 0 ? "行动任务" : "",
             state.milestones.length === 0 ? "执行阶段" : "",
-            needsDocument && !state.artifacts.some((item) => item.type === "document")
+            needsDocument &&
+            (!state.artifacts.some((item) => item.type === "document") ||
+              !hasFreshToolEvent("draft_document"))
               ? "文档文件"
               : "",
             needsSchedule && !state.events.some((event) => event.name === "build_schedule")
               ? "日程表"
               : "",
             needsBudget &&
-            (!state.artifacts.some((item) => item.type === "budget") || state.budget?.status === "over")
+            (!state.artifacts.some((item) => item.type === "budget") ||
+              state.budget?.status === "over" ||
+              !hasFreshToolEvent("calculate_budget"))
               ? "预算核算"
               : "",
             needsProject && !state.artifacts.some((item) => item.type === "code")
@@ -1702,7 +1732,6 @@ export async function POST(request: NextRequest) {
                               type: "function",
                               function: { name, arguments: JSON.stringify(args) },
                             };
-                            const eventCountBefore = state.events.length;
                             const previousProject =
                               name === "create_project"
                                 ? {
@@ -1968,7 +1997,12 @@ export async function POST(request: NextRequest) {
                             }
                             const event = [...state.events]
                               .reverse()
-                              .find((item) => item.name === name);
+                              .find(
+                                (item) =>
+                                  item.name === name &&
+                                  item.status === "done" &&
+                                  !previousEventIds.has(item.id),
+                              );
                             if ("error" in output) {
                               const detail = compactToolFailure(output.error);
                               state.toolFailures.push({ name, detail });
@@ -1984,7 +2018,7 @@ export async function POST(request: NextRequest) {
                               });
                             } else {
                               toolSpan.setAttribute("goalflow.outcome", "success");
-                              if (event?.name === name && state.events.length > eventCountBefore) {
+                              if (event) {
                                 persistExecutionCheckpoint();
                                 send({
                                   type: "tool",
@@ -2265,8 +2299,12 @@ export async function POST(request: NextRequest) {
               }
               const missingDeliverables = missingRequiredDeliverables();
               if (missingDeliverables.length) {
+                const toolFailureDetails = state.toolFailures
+                  .slice(-4)
+                  .map(({ name, detail }) => `${name}: ${detail}`)
+                  .join("；");
                 throw new Error(
-                  `本轮还缺少${missingDeliverables.join("、")}，尚未形成要求的完整交付物；阶段成果已保存，可继续补齐。`,
+                  `本轮还缺少${missingDeliverables.join("、")}，尚未形成要求的完整交付物；阶段成果已保存，可继续补齐。${toolFailureDetails ? ` 工具失败原因：${toolFailureDetails}` : ""}`,
                 );
               }
               if (requiredFeasibilityTool()) {

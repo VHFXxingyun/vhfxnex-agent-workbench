@@ -26,6 +26,7 @@ for (const [pattern, description] of [
   [/^data\/?$/m, "local database and model data must be excluded"],
   [/^backups\/?$/m, "database backups must be excluded"],
   [/^deliverables\/?$/m, "competition deliverables must not enter image build layers"],
+  [/^\.acceptance\/?$/m, "local Agent acceptance copies must not enter the image build context"],
   [/^docs\/?$/m, "development documents must not enter image build layers"],
   [/^output\/?$/m, "generated smoke output must not enter the build context"],
   [/^scripts\/fixtures\/?$/m, "smoke fixtures must not enter the build context"],

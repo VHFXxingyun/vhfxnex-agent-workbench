@@ -7,7 +7,13 @@ export interface FeasibilityBlock {
   unlistedOnsiteCount?: number;
   venueCapacity?: number;
   staff?: { name: string; role: string }[];
-  resources?: { name: string; required: number; available: number; reusable?: boolean }[];
+  resources?: {
+    name: string;
+    required: number;
+    available: number;
+    reusable?: boolean;
+    fallback?: string;
+  }[];
 }
 
 export interface FeasibilityIssue {

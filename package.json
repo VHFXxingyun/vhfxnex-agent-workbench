@@ -17,6 +17,7 @@
     "smoke:container": "node scripts/container-static-smoke.mjs",
     "smoke:desktop-timer": "node scripts/desktop-timer-smoke.mjs",
     "smoke:agent-prefix": "node scripts/agent-prompt-cache-smoke.mjs",
+    "smoke:execution-budget": "node scripts/execution-budget-freshness-smoke.mjs",
     "smoke:supervisor-model": "node scripts/supervisor-model-stream-smoke.mjs",
     "smoke:supervisor-api": "node scripts/supervisor-api-smoke.mjs",
     "smoke:deepseek-connectivity": "node scripts/deepseek-connectivity-smoke.mjs",

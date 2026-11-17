@@ -1,0 +1,2 @@
+# Optional dependency for rebuilding the competition technical-report PDF.
+reportlab==5.1.0

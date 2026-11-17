@@ -13,6 +13,7 @@ const eslintConfig = defineConfig([
     ".next-dev/**",
     ".next-dev-webpack/**",
     ".next-smoke-*/**",
+    ".acceptance/**",
     "tmp/**",
     "out/**",
     "build/**",

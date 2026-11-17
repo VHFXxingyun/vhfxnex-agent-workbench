@@ -24,6 +24,20 @@ export function validateExecutionFeasibility(input) {
   const blocks = Array.isArray(input?.blocks) ? input.blocks : [];
   const issues = [];
   const pendingByBlock = [];
+  const addResourceFallbackPending = (entries, name, required, available) => {
+    const fallbackEntries = entries.filter((entry) => entry.required > 0);
+    if (!fallbackEntries.length || fallbackEntries.some((entry) => !entry.fallback)) return false;
+    for (const entry of fallbackEntries) {
+      let pending = pendingByBlock.find((item) => item.block === entry.index + 1);
+      if (!pending) {
+        pending = { block: entry.index + 1, activity: entry.activity, checks: [] };
+        pendingByBlock.push(pending);
+      }
+      const check = `「${name}」库存不足（需 ${required}、有 ${available}），使用替代方案：${entry.fallback}；活动前确认替代方案可用。`;
+      if (!pending.checks.includes(check)) pending.checks.push(check);
+    }
+    return true;
+  };
   const parsedBlocks = blocks.map((block, index) => {
     const time = toMinutes(block?.time);
     const date = typeof block?.date === "string" ? block.date.trim() : "";
@@ -168,6 +182,7 @@ export function validateExecutionFeasibility(input) {
         required: resource.required,
         available: resource.available,
         reusable: resource.reusable === true,
+        fallback: typeof resource.fallback === "string" ? resource.fallback.trim() : "",
         name,
       });
     }
@@ -188,6 +203,7 @@ export function validateExecutionFeasibility(input) {
       const required = entries.reduce((total, entry) => total + entry.required, 0);
       const available = Math.min(...entries.map((entry) => entry.available));
       if (required > available) {
+        if (addResourceFallbackPending(entries, entries[0].name, required, available)) continue;
         issues.push({
           type: "resource_capacity",
           blocks: entries.map((entry) => entry.index + 1),
@@ -207,6 +223,8 @@ export function validateExecutionFeasibility(input) {
       const required = concurrent.reduce((total, entry) => total + entry.required, 0);
       const available = Math.min(...concurrent.map((entry) => entry.available));
       if (required > available) {
+        if (addResourceFallbackPending(concurrent, concurrent[0].name, required, available))
+          continue;
         issues.push({
           type: "resource_capacity",
           blocks: concurrent.map((entry) => entry.index + 1),

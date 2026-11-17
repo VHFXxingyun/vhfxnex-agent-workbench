@@ -593,6 +593,24 @@ try {
   await page.getByRole("button", { name: /探索入口/ }).click();
   await page.locator(".home-primary").waitFor({ state: "visible" });
   await page.getByRole("heading", { name: /接下来/ }).waitFor();
+  await page.locator(".home-primary").evaluate(async (element) => {
+    const entranceAnimations = element
+      .getAnimations({ subtree: true })
+      .filter((animation) => animation.effect?.getTiming().iterations !== Infinity);
+    await Promise.all(entranceAnimations.map((animation) => animation.finished.catch(() => {})));
+  });
+  const homeHeadlineVisible = await page.locator(".hero h1 .home-title-line").evaluateAll((lines) =>
+    lines.every((line) => {
+      const style = getComputedStyle(line);
+      const bounds = line.getBoundingClientRect();
+      return Number(style.opacity) > 0.99 && bounds.width > 0 && bounds.height > 0;
+    }),
+  );
+  assert.equal(
+    homeHeadlineVisible,
+    true,
+    "home headline must remain visible with reduced motion enabled",
+  );
   assert.equal(await page.locator(".error-banner:visible").count(), 0);
   await assertAccessible(page, "signed-in home");
   await page.screenshot({ path: path.join(screenshots, "home-desktop.png"), fullPage: true });
@@ -3408,6 +3426,18 @@ try {
   await page.waitForFunction(() => document.querySelectorAll(".chat-attachment-chip").length === 0);
   await page.setViewportSize({ width: 320, height: 720 });
   await page.waitForFunction(() => window.innerWidth === 320 && window.innerHeight === 720);
+  const compactWorkspaceActions = await page
+    .locator(".workspace-head-action-compact:visible")
+    .allTextContents();
+  assert.deepEqual(compactWorkspaceActions, ["共享", "导出", "新建目标"]);
+  const workspaceActionsFit = await page
+    .locator(".workspace-head-actions")
+    .evaluate((container) =>
+      Array.from(container.querySelectorAll("button")).every(
+        (button) => button.scrollWidth <= button.clientWidth + 1,
+      ),
+    );
+  assert.equal(workspaceActionsFit, true, "compact workspace actions must not wrap or overflow");
   const mobileToolbox = page.locator(".chat-capabilities");
   await mobileToolbox.scrollIntoViewIfNeeded();
   await mobileToolbox.locator("summary").click();

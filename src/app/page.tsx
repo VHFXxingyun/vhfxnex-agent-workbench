@@ -74,6 +74,7 @@ import { createProjectZip } from "@/lib/project-zip";
 import { isSupportedChatTextFile, readChatDocument } from "@/lib/attachment-reader";
 import { createArtifactDownload } from "@/lib/artifact-export";
 import { createVideoContactSheet, isVideoFile } from "@/lib/video-contact-sheet";
+import { normalizeLegacyBudgetLimit } from "@/lib/budget-limit.mjs";
 
 const SIDEBAR_COLLAPSED_PREFERENCE_KEY = "nexora:sidebar-collapsed:v1";
 const SIDEBAR_PREFERENCE_EVENT = "nexora:sidebar-preference-change";
@@ -88,9 +89,7 @@ function SidebarActiveMarker() {
       className="side-nav-active-marker"
       layoutId="vhfxnex-sidebar-active-marker"
       transition={
-        prefersReducedMotion
-          ? { duration: 0.01 }
-          : { type: "spring", stiffness: 520, damping: 38 }
+        prefersReducedMotion ? { duration: 0.01 } : { type: "spring", stiffness: 520, damping: 38 }
       }
       aria-hidden="true"
     />
@@ -1915,7 +1914,10 @@ export default function Home() {
       ...(result?.budget
         ? [
             `- 预计总额：¥${result.budget.total.toLocaleString("zh-CN")}`,
-            `- 预算上限：${result.budget.limit === null ? "未设置" : `¥${result.budget.limit.toLocaleString("zh-CN")}`}`,
+            `- 预算上限：${(() => {
+              const limit = normalizeLegacyBudgetLimit(result.budget.limit, result.budget.status);
+              return typeof limit === "number" ? `¥${limit.toLocaleString("zh-CN")}` : "未设置";
+            })()}`,
             `- 预算状态：${result.budget.status === "within" ? "范围内" : result.budget.status === "over" ? "超出上限" : "待确认"}`,
             ...(result.budget.remaining === null
               ? []
@@ -3961,1647 +3963,1717 @@ export default function Home() {
                   : { duration: 0.24, ease: [0.22, 1, 0.36, 1] }
               }
             >
-          {view === "home" && (
-            <section className="home">
-              <div className="home-glow" />
-              <div className="home-primary">
-                <div className="home-top">
-                  <span>
-                    <i className="pulse" /> AN INTELLIGENT SPACE FOR WHAT&apos;S NEXT
-                  </span>
-                  <span>YOUR NEXT CHAPTER STARTS HERE ↘</span>
-                </div>
-                <div className="hero">
-                  <p>
-                    <Sparkles size={16} /> 你的想法，值得被认真执行
-                  </p>
-                  <h1>
-                    <span className="home-title-line home-title-first">接下来，</span>
-                    <em className="home-title-line home-title-second">我们做什么？</em>
-                  </h1>
-                  <div>
-                    把目标告诉 Agent。它会理解方向、提出路线、调用工具，与你一起把事情推进到底。
-                  </div>
-                </div>
-                <form
-                  className="composer"
-                  onSubmit={(event) => {
-                    event.preventDefault();
-                    analyze();
-                  }}
-                >
-                  <FrameTrace />
-                  <div className="composer-top">
-                    <span>✦ &nbsp; NEW MISSION</span>
-                    <span>CTRL / ⌘ + ENTER</span>
-                  </div>
-                  <textarea
-                    aria-label="描述你想完成的目标"
-                    value={prompt}
-                    onChange={(event) => setPrompt(event.target.value)}
-                    onKeyDown={(event) => {
-                      if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+              {view === "home" && (
+                <section className="home">
+                  <div className="home-glow" />
+                  <div className="home-primary">
+                    <div className="home-top">
+                      <span>
+                        <i className="pulse" /> AN INTELLIGENT SPACE FOR WHAT&apos;S NEXT
+                      </span>
+                      <span>YOUR NEXT CHAPTER STARTS HERE ↘</span>
+                    </div>
+                    <div className="hero">
+                      <p>
+                        <Sparkles size={16} /> 你的想法，值得被认真执行
+                      </p>
+                      <h1>
+                        <span className="home-title-line home-title-first">接下来，</span>
+                        <em className="home-title-line home-title-second">我们做什么？</em>
+                      </h1>
+                      <div>
+                        把目标告诉 Agent。它会理解方向、提出路线、调用工具，与你一起把事情推进到底。
+                      </div>
+                    </div>
+                    <form
+                      className="composer"
+                      onSubmit={(event) => {
                         event.preventDefault();
                         analyze();
-                      }
-                    }}
-                    placeholder="描述你想完成的事。无论是一次活动、一周安排，还是一个复杂项目…"
-                    maxLength={4000}
-                  />
-                  <div className="composer-attachments">
-                    {useDemo || !aiConfigured ? (
-                      <button
-                        type="button"
-                        className="image-attach image-attach-disabled"
-                        disabled
-                        title="图片理解需要配置 Key 并关闭演示模式"
-                      >
-                        <ImagePlus size={16} /> 添加截图
-                      </button>
-                    ) : (
-                      <label className="image-attach">
-                        <ImagePlus size={16} /> 添加截图或参考图
-                        <input
-                          className="plan-image-input"
-                          type="file"
-                          accept="image/jpeg,image/png,image/gif,image/webp,video/mp4,video/webm,video/quicktime,.mp4,.webm,.mov"
-                          onChange={(event) => {
-                            attachImage(event.target.files?.[0]);
-                            event.currentTarget.value = "";
-                          }}
-                        />
-                      </label>
-                    )}
-                    {useDemo || !aiConfigured ? (
-                      <button
-                        type="button"
-                        className="image-attach image-attach-disabled"
-                        disabled
-                        title="资料提取需要配置 Key 并关闭演示模式"
-                      >
-                        <FileText size={16} /> 添加资料
-                      </button>
-                    ) : (
-                      <label className="image-attach">
-                        <FileText size={16} /> 添加资料
-                        <input
-                          className="plan-document-input"
-                          type="file"
-                          multiple
-                          accept=".txt,.md,.markdown,.csv,.tsv,.json,.xml,.html,.htm,.css,.js,.jsx,.ts,.tsx,.mjs,.cjs,.py,.java,.go,.rs,.sql,.yaml,.yml,.toml,.sh,.log,.env.example,.docx,.xlsx,.pptx,.pdf"
-                          onChange={(event) => {
-                            void attachPlanFiles(Array.from(event.target.files || []));
-                            event.currentTarget.value = "";
-                          }}
-                        />
-                      </label>
-                    )}
-                    {imageName && (
-                      <span className="image-chip">
-                        {imageName}
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setImage("");
-                            setImageName("");
-                          }}
-                          aria-label="移除图片"
-                        >
-                          <X size={13} />
-                        </button>
-                      </span>
-                    )}
-                    {planAttachments.length > 0 && (
-                      <div className="plan-attachment-list" aria-label="本次规划资料">
-                        {planAttachments.map((attachment) => (
-                          <span
-                            className="image-chip plan-attachment-chip"
-                            key={attachment.id}
-                            title={attachment.name}
+                      }}
+                    >
+                      <FrameTrace />
+                      <div className="composer-top">
+                        <span>✦ &nbsp; NEW MISSION</span>
+                        <span>CTRL / ⌘ + ENTER</span>
+                      </div>
+                      <textarea
+                        aria-label="描述你想完成的目标"
+                        value={prompt}
+                        onChange={(event) => setPrompt(event.target.value)}
+                        onKeyDown={(event) => {
+                          if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+                            event.preventDefault();
+                            analyze();
+                          }
+                        }}
+                        placeholder="描述你想完成的事。无论是一次活动、一周安排，还是一个复杂项目…"
+                        maxLength={4000}
+                      />
+                      <div className="composer-attachments">
+                        {useDemo || !aiConfigured ? (
+                          <button
+                            type="button"
+                            className="image-attach image-attach-disabled"
+                            disabled
+                            title="图片理解需要配置 Key 并关闭演示模式"
                           >
-                            {attachment.name}
+                            <ImagePlus size={16} /> 添加截图
+                          </button>
+                        ) : (
+                          <label className="image-attach">
+                            <ImagePlus size={16} /> 添加截图或参考图
+                            <input
+                              className="plan-image-input"
+                              type="file"
+                              accept="image/jpeg,image/png,image/gif,image/webp,video/mp4,video/webm,video/quicktime,.mp4,.webm,.mov"
+                              onChange={(event) => {
+                                attachImage(event.target.files?.[0]);
+                                event.currentTarget.value = "";
+                              }}
+                            />
+                          </label>
+                        )}
+                        {useDemo || !aiConfigured ? (
+                          <button
+                            type="button"
+                            className="image-attach image-attach-disabled"
+                            disabled
+                            title="资料提取需要配置 Key 并关闭演示模式"
+                          >
+                            <FileText size={16} /> 添加资料
+                          </button>
+                        ) : (
+                          <label className="image-attach">
+                            <FileText size={16} /> 添加资料
+                            <input
+                              className="plan-document-input"
+                              type="file"
+                              multiple
+                              accept=".txt,.md,.markdown,.csv,.tsv,.json,.xml,.html,.htm,.css,.js,.jsx,.ts,.tsx,.mjs,.cjs,.py,.java,.go,.rs,.sql,.yaml,.yml,.toml,.sh,.log,.env.example,.docx,.xlsx,.pptx,.pdf"
+                              onChange={(event) => {
+                                void attachPlanFiles(Array.from(event.target.files || []));
+                                event.currentTarget.value = "";
+                              }}
+                            />
+                          </label>
+                        )}
+                        {imageName && (
+                          <span className="image-chip">
+                            {imageName}
                             <button
                               type="button"
-                              onClick={() =>
-                                setPlanAttachments((current) =>
-                                  current.filter((item) => item.id !== attachment.id),
-                                )
-                              }
-                              aria-label={`移除资料 ${attachment.name}`}
+                              onClick={() => {
+                                setImage("");
+                                setImageName("");
+                              }}
+                              aria-label="移除图片"
                             >
                               <X size={13} />
                             </button>
                           </span>
-                        ))}
-                      </div>
-                    )}
-                    <span className={useDemo || !aiConfigured ? "mode-hint" : undefined}>
-                      {!aiConfigured
-                        ? "未配置 DeepSeek Key · 正在使用演示数据"
-                        : useDemo
-                          ? "演示模式不处理图片和资料"
-                          : "图片与资料只用于本次目标规划"}
-                    </span>
-                    <button
-                      type="button"
-                      className={`demo-toggle ${useDemo ? "on" : ""}`}
-                      onClick={() => {
-                        setUseDemo(!useDemo);
-                        setImage("");
-                        setImageName("");
-                        setPlanAttachments([]);
-                      }}
-                    >
-                      {useDemo ? "演示模式已开启" : "切换演示模式"}
-                    </button>
-                  </div>
-                  <div className="composer-bottom">
-                    <span>
-                      <i /> 不用先选功能，Agent 会理解你的意图
-                    </span>
-                    <div className="composer-actions">
-                      <button className="button-primary" disabled={busy === "analyze"}>
-                        {busy === "analyze" ? "正在理解目标…" : "开始探索"}
-                        <ArrowUpRight size={18} />
-                      </button>
-                      {busy === "analyze" && (
-                        <button
-                          type="button"
-                          className="button-outline"
-                          onClick={stopAgentRequest}
-                          aria-label="停止目标分析"
-                        >
-                          停止
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                </form>
-              </div>
-              <aside className="home-examples" aria-label="目标示例">
-                <div className="example-header">
-                  <span>从这些目标开始</span>
-                  <span>选择一个方向，内容还可继续修改</span>
-                </div>
-                <div className="example-grid">
-                  {examples.map((item, index) => (
-                    <button
-                      key={item.tag}
-                      onClick={() => {
-                        setPrompt(item.text);
-                      }}
-                    >
-                      <span className="example-number">0{index + 1}</span>
-                      <item.icon size={24} strokeWidth={1.5} />
-                      <small>{item.tag}</small>
-                      <strong>{item.title}</strong>
-                      <ArrowUpRight size={19} className="example-arrow" />
-                    </button>
-                  ))}
-                </div>
-              </aside>
-            </section>
-          )}
-          {view === "workspace" && workspace && (
-            <section className="workspace">
-              <div className="workspace-head">
-                <div>
-                  <p className="eyebrow">
-                    <span className="pulse" /> ACTIVE MISSION <span className="line" />{" "}
-                    {workspace.plan.category}
-                    {activeWorkspaceAccess !== "owner" && (
-                      <span className="workspace-access-pill">
-                        共享 · {activeWorkspaceAccess === "editor" ? "可编辑" : "只读"}
-                      </span>
-                    )}
-                  </p>
-                  <h1>{workspace.plan.title}</h1>
-                  <p>{workspace.plan.summary}</p>
-                </div>
-                <div className="workspace-head-actions">
-                  {activeWorkspaceAccess === "owner" && (
-                    <button className="button-outline" onClick={openSharing}>
-                      <Share2 size={16} /> 共享工作区
-                    </button>
-                  )}
-                  <button
-                    className="button-outline"
-                    onClick={exportWorkspace}
-                    aria-label="导出完整工作区"
-                  >
-                    <Download size={16} /> 导出完整工作区
-                  </button>
-                  <button className="button-outline" onClick={() => navigate("home")}>
-                    <Plus size={16} /> 新建目标
-                  </button>
-                  <span className="sr-only" role="status" aria-live="polite">
-                    {workspaceExportNotice}
-                  </span>
-                </div>
-              </div>
-              {workspaceExecution && (
-                <div
-                  className={`workspace-live-progress ${workspaceExecution.state}`}
-                  role="status"
-                  aria-live="polite"
-                >
-                  <span className="workspace-live-progress-icon" aria-hidden="true">
-                    {workspaceExecution.state === "running" ? (
-                      <LoaderCircle className="chat-spinner" size={18} />
-                    ) : workspaceExecution.state === "completed" ? (
-                      <Check size={18} />
-                    ) : (
-                      <CircleAlert size={18} />
-                    )}
-                  </span>
-                  <span className="workspace-live-progress-copy">
-                    <strong>
-                      {workspaceExecution.state === "running"
-                        ? `Agent 正在推进 · 已完成 ${workspaceExecution.completedToolCalls ?? completedToolCalls} 项工具操作`
-                        : workspaceExecution.state === "completed"
-                          ? `本轮执行完成 · 共完成 ${workspaceExecution.completedToolCalls ?? completedToolCalls} 项工具操作`
-                          : "本轮执行中断"}
-                    </strong>
-                    <small>{workspaceExecution.message || workspaceExecution.activity}</small>
-                  </span>
-                  {workspaceExecution.state === "running" && (
-                    <span className="workspace-live-progress-track" aria-hidden="true">
-                      <i />
-                    </span>
-                  )}
-                </div>
-              )}
-              <div className="goal-strip">
-                <Target size={17} />
-                <span>{workspace.prompt}</span>
-                <b className={workspace.mode === "demo" ? "demo" : "live"}>
-                  {workspace.mode === "demo" ? "演示模式" : "实时 AI"}
-                </b>
-              </div>
-              {workspace.plan.sources?.length > 0 && (
-                <div className="source-strip">
-                  <BookOpen size={17} />
-                  <span>{workspace.mode === "demo" ? "知识库检索命中" : "本次规划参考了"}</span>
-                  {workspace.plan.sources.map((source) => (
-                    <span className="source-pill" key={source.id} title={source.excerpt}>
-                      {source.title}
-                    </span>
-                  ))}
-                </div>
-              )}
-              <div className="workspace-layout">
-                <ProjectFlowPanel
-                  category={workspace.plan.category}
-                  prompt={workspace.prompt}
-                  tasks={workspace.result?.tasks || workspace.plan.tasks}
-                  artifactCount={workspace.result?.artifacts.length || 0}
-                />
-                <div className="workspace-chat-column">
-                  <WorkspaceChat
-                    workspace={workspace}
-                    readOnly={activeWorkspaceAccess === "viewer"}
-                    route={
-                      workspace.plan.routes.find((item) => item.id === workspace.selectedRouteId) ||
-                      workspace.plan.routes[0]
-                    }
-                    draft={instruction}
-                    busy={
-                      visibleExecution?.workspaceId === workspace.id &&
-                      visibleExecution.state === "running"
-                    }
-                    blockedByOtherExecution={
-                      visibleExecution?.state === "running" &&
-                      visibleExecution.workspaceId !== workspace.id
-                        ? {
-                            title: visibleExecution.workspaceTitle,
-                            activity: visibleExecution.activity,
-                          }
-                        : null
-                    }
-                    streamedText={
-                      visibleExecution?.workspaceId === workspace.id ? executionStreamText : ""
-                    }
-                    pendingExecutionContent={
-                      visibleExecution?.workspaceId === workspace.id &&
-                      visibleExecution.state === "running"
-                        ? pendingExecutionContent
-                        : ""
-                    }
-                    questionBusy={questionBusy && questionWorkspaceId === workspace.id}
-                    pendingQuestion={questionWorkspaceId === workspace.id ? pendingQuestion : ""}
-                    questionStreamText={
-                      questionWorkspaceId === workspace.id ? questionStreamText : ""
-                    }
-                    questionError={questionWorkspaceId === workspace.id ? questionError : ""}
-                    queuedHandoffCount={queuedHandoffCount}
-                    error={
-                      visibleExecution?.workspaceId === workspace.id &&
-                      visibleExecution.state === "failed"
-                        ? visibleExecution.message || visibleExecution.activity
-                        : error
-                    }
-                    onDraftChange={setInstruction}
-                    onSelectRoute={(routeId) => {
-                      void save({ ...workspace, selectedRouteId: routeId }).catch((cause) =>
-                        setError(cause instanceof Error ? cause.message : "路线保存失败"),
-                      );
-                    }}
-                    onSend={() => execute()}
-                    onAsk={chatWithDialogAgent}
-                    onStop={stopAgentRequest}
-                    onOpenArtifact={openArtifact}
-                    attachments={chatAttachments}
-                    onAttachFiles={attachChatFiles}
-                    onRemoveAttachment={(id) =>
-                      setChatAttachments((current) => current.filter((item) => item.id !== id))
-                    }
-                    thinkingMode={thinkingMode}
-                    onThinkingModeChange={setThinkingMode}
-                  />
-                </div>
-                <aside className="workspace-side-panel" aria-label="行动计划">
-                  <div className="workspace-details">
-                    <FrameTrace delay={0.28} />
-                    <div className="workspace-details-head">
-                      <span>行动计划</span>
-                      <small>
-                        {workspace.result
-                          ? `${workspace.result.tasks.filter((task) => task.status === "done").length}/${workspace.result.tasks.length} 项完成`
-                          : `${workspace.plan.tasks.length} 项待确认任务`}
-                      </small>
-                    </div>
-                    {!workspace.result ? (
-                      <div
-                        className="pending-action-plan"
-                        role="region"
-                        aria-label="待确认的行动计划"
-                        tabIndex={0}
-                      >
-                        {workspace.plan.routes.find(
-                          (item) => item.id === workspace.selectedRouteId,
-                        ) && (
-                          <AnimatePresence mode="wait" initial={false}>
-                            <motion.div
-                              className="plan-route-current"
-                              key={workspace.selectedRouteId}
-                              aria-label="当前选择的执行方向"
-                              initial={{ opacity: 0, x: 8 }}
-                              animate={{ opacity: 1, x: 0 }}
-                              exit={{ opacity: 0, x: -8 }}
-                              transition={{ duration: 0.18, ease: "easeOut" }}
-                            >
-                              <span className="plan-route-current-mark">
-                                <Check size={14} />
-                              </span>
-                              <div>
-                                <small>当前执行方向</small>
-                                <strong>
-                                  {
-                                    workspace.plan.routes.find(
-                                      (item) => item.id === workspace.selectedRouteId,
-                                    )?.title
-                                  }
-                                </strong>
-                              </div>
-                              <b>
-                                {
-                                  workspace.plan.routes.find(
-                                    (item) => item.id === workspace.selectedRouteId,
-                                  )?.fit
-                                }
-                                %
-                              </b>
-                            </motion.div>
-                          </AnimatePresence>
                         )}
-                        {workspace.mode === "live" && workspace.usage && (
-                          <div className="plan-usage-brief" aria-label="本次路线规划模型用量">
-                            <Sparkles size={15} />
-                            <span>
-                              {workspace.usage.model} · 规划阶段 · {workspace.usage.requests} 次请求
-                            </span>
-                            <strong>
-                              {workspace.usage.totalTokens.toLocaleString("zh-CN")} tokens ·{" "}
-                              {(workspace.usage.latencyMs / 1000).toFixed(1)} 秒
-                            </strong>
-                            <small
-                              className="plan-usage-brief-cache"
-                              title={`缓存命中率按供应商报告的缓存命中输入 Token ÷ 已统计输入 Token 计算。${workspaceCacheCoverage?.title ?? ""} 未报告缓存字段的请求不参与命中率。`}
-                            >
-                              输入 {workspace.usage.inputTokens.toLocaleString("zh-CN")} ·{" "}
-                              {workspace.usage.cacheMeasuredInputTokens &&
-                              workspace.usage.cacheMeasuredInputTokens > 0
-                                ? `缓存命中 ${workspace.usage.cacheMeasuredHitTokens?.toLocaleString("zh-CN") ?? 0} / 已统计 ${workspace.usage.cacheMeasuredInputTokens.toLocaleString("zh-CN")}（${(((workspace.usage.cacheMeasuredHitTokens || 0) / workspace.usage.cacheMeasuredInputTokens) * 100).toFixed(1)}%）· 覆盖 ${workspaceCacheCoverage?.percent.toFixed(1) ?? "0.0"}%`
-                                : "缓存命中暂无统计样本"}
-                              {` · 输出 ${workspace.usage.outputTokens.toLocaleString("zh-CN")}`}
-                              {` · 思考 Token ${workspace.usage.reasoningMeasuredRequests ? (workspace.usage.reasoningTokens ?? 0).toLocaleString("zh-CN") : "暂无样本"}${workspace.usage.reasoningMeasuredRequests ? `（已报告 ${workspace.usage.reasoningMeasuredRequests}/${workspace.usage.requests} 次，包含在输出中）` : ""}`}
-                            </small>
-                            {!workspace.result && currentWorkspaceFlashCostEstimate && (
-                              <small
-                                className="workspace-flash-cost-estimate"
-                                title="仅对当前目标已记录的 DeepSeek Flash 用量按当前公开美元价回算；不等于历史人民币账单，也不含未知模型或汇率。"
+                        {planAttachments.length > 0 && (
+                          <div className="plan-attachment-list" aria-label="本次规划资料">
+                            {planAttachments.map((attachment) => (
+                              <span
+                                className="image-chip plan-attachment-chip"
+                                key={attachment.id}
+                                title={attachment.name}
                               >
-                                当前价费用估值{" "}
-                                {formatEstimatedUsd(currentWorkspaceFlashCostEstimate.lowerUsd)} –{" "}
-                                {formatEstimatedUsd(currentWorkspaceFlashCostEstimate.upperUsd)}
-                              </small>
-                            )}
-                          </div>
-                        )}
-                        <div className="section-title planned-task-title">
-                          <span>
-                            <Target size={16} /> 行动计划{" "}
-                            <small>{workspace.plan.tasks.length}</small>
-                          </span>
-                          <span>确认后开始推进</span>
-                        </div>
-                        <div className="planned-task-list">
-                          {workspace.plan.tasks.map((task, index) => (
-                            <article key={`${task.title}-${index}`}>
-                              <span>{String(index + 1).padStart(2, "0")}</span>
-                              <div>
-                                <strong>{task.title}</strong>
-                                <small>
-                                  {task.phase} · {task.detail}
-                                </small>
-                              </div>
-                            </article>
-                          ))}
-                        </div>
-                      </div>
-                    ) : (
-                      <div
-                        className="execution"
-                        role="region"
-                        aria-label="行动计划、任务与时间线"
-                        tabIndex={0}
-                      >
-                        <section className="execution-main">
-                          <div className="section-title">
-                            <span>
-                              <Target size={17} /> 行动计划{" "}
-                              <small>
-                                {
-                                  workspace.result.tasks.filter((item) => item.status === "done")
-                                    .length
-                                }
-                                /{workspace.result.tasks.length}
-                              </small>
-                            </span>
-                            <span>点击任务标记完成</span>
-                          </div>
-                          <div className="progress-overview">
-                            <div>
-                              <span>任务确认进度</span>
-                              <strong>
-                                {workspace.result.tasks.length
-                                  ? Math.round(
-                                      (workspace.result.tasks.filter(
-                                        (item) => item.status === "done",
-                                      ).length /
-                                        workspace.result.tasks.length) *
-                                        100,
+                                {attachment.name}
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setPlanAttachments((current) =>
+                                      current.filter((item) => item.id !== attachment.id),
                                     )
-                                  : 0}
-                                %
-                              </strong>
-                            </div>
-                            <div className="progress-track">
-                              <i
-                                style={{
-                                  width: `${workspace.result.tasks.length ? (workspace.result.tasks.filter((item) => item.status === "done").length / workspace.result.tasks.length) * 100 : 0}%`,
-                                }}
-                              />
-                            </div>
-                          </div>
-                          {workspace.mode === "live" && workspace.usage && (
-                            <div
-                              className="usage-strip workspace-plan-usage"
-                              aria-label="当前目标累计模型用量"
-                            >
-                              <div>
-                                <span>当前目标累计用量</span>
-                                <strong>
-                                  {workspace.usage.totalTokens.toLocaleString("zh-CN")} tokens
-                                </strong>
-                              </div>
-                              <small>
-                                输入 {workspace.usage.inputTokens.toLocaleString("zh-CN")}
-                                {workspace.usage.cacheMeasuredInputTokens &&
-                                workspace.usage.cacheMeasuredInputTokens > 0
-                                  ? `（缓存命中 ${workspace.usage.cacheMeasuredHitTokens?.toLocaleString("zh-CN") ?? 0} / 已统计输入 ${workspace.usage.cacheMeasuredInputTokens.toLocaleString("zh-CN")}）`
-                                  : "（缓存命中暂无统计样本）"}
-                                {" · 输出 "}
-                                {workspace.usage.outputTokens.toLocaleString("zh-CN")}
-                                {workspace.usage.reasoningMeasuredRequests
-                                  ? ` · 思考 ${(
-                                      workspace.usage.reasoningTokens ?? 0
-                                    ).toLocaleString(
-                                      "zh-CN",
-                                    )}（输出内，已报告 ${workspace.usage.reasoningMeasuredRequests}/${workspace.usage.requests} 次）`
-                                  : " · 思考 Token 暂无样本"}
-                              </small>
-                              {workspace.usage.cacheMeasuredInputTokens !== undefined &&
-                              workspace.usage.cacheMeasuredInputTokens > 0 ? (
-                                <small
-                                  title={`命中率 = 供应商报告的缓存命中输入 Token ÷ 已统计输入 Token。${workspaceCacheCoverage?.title ?? ""} 按 Token 加权，不是命中请求占比；未提供统计的请求不参与。缓存只影响输入费，不影响输出费。`}
+                                  }
+                                  aria-label={`移除资料 ${attachment.name}`}
                                 >
-                                  输入 Token 缓存命中率{" "}
-                                  {(
-                                    ((workspace.usage.cacheMeasuredHitTokens || 0) /
-                                      workspace.usage.cacheMeasuredInputTokens) *
-                                    100
-                                  ).toFixed(1)}
-                                  % · {workspaceCacheCoverage?.label}（
-                                  {workspaceCacheCoverage?.measured.toLocaleString("zh-CN")}/
-                                  {workspaceCacheCoverage?.total.toLocaleString("zh-CN")}）
-                                </small>
-                              ) : (
-                                <small
-                                  title={`供应商未提供缓存统计字段，无法计算输入缓存命中率。${workspaceCacheCoverage?.title ?? ""}`}
-                                >
-                                  输入 Token 缓存命中率暂无样本 · {workspaceCacheCoverage?.label}（
-                                  {workspaceCacheCoverage?.measured.toLocaleString("zh-CN")}/
-                                  {workspaceCacheCoverage?.total.toLocaleString("zh-CN")}）
-                                </small>
-                              )}
-                              {currentWorkspaceFlashCostEstimate && (
-                                <small
-                                  className="workspace-flash-cost-estimate"
-                                  title="仅对当前目标已记录的 DeepSeek Flash 用量按当前公开美元价回算；不等于历史人民币账单，也不含未知模型或汇率。"
-                                >
-                                  Flash 当前价费用估值：
-                                  {formatEstimatedUsd(currentWorkspaceFlashCostEstimate.lowerUsd)} –
-                                  {formatEstimatedUsd(currentWorkspaceFlashCostEstimate.upperUsd)}
-                                </small>
-                              )}
-                              <small>
-                                {workspace.usage.model} · {workspace.usage.requests} 次请求 ·{" "}
-                                {(workspace.usage.latencyMs / 1000).toFixed(1)} 秒
-                              </small>
-                            </div>
-                          )}
-                          {workspace.result.budget && (
-                            <div
-                              className={`budget-control budget-${workspace.result.budget.status}`}
-                            >
-                              <div className="budget-control-head">
-                                <span>
-                                  <Target size={16} /> 预算约束核验
-                                </span>
-                                <strong>
-                                  {workspace.result.budget.status === "over"
-                                    ? "超过预算上限"
-                                    : workspace.result.budget.status === "within"
-                                      ? "预算范围内"
-                                      : "尚未设置上限"}
-                                </strong>
-                              </div>
-                              <div className="budget-control-values">
-                                <div>
-                                  <small>当前方案估算</small>
-                                  <b>¥{workspace.result.budget.total.toLocaleString("zh-CN")}</b>
-                                </div>
-                                <div>
-                                  <small>预算上限</small>
-                                  <b>
-                                    {workspace.result.budget.limit === null
-                                      ? "未提供"
-                                      : `¥${workspace.result.budget.limit.toLocaleString("zh-CN")}`}
-                                  </b>
-                                </div>
-                                {workspace.result.budget.remaining !== null && (
-                                  <div>
-                                    <small>
-                                      {workspace.result.budget.remaining < 0
-                                        ? "超出金额"
-                                        : "可用余额"}
-                                    </small>
-                                    <b>
-                                      {workspace.result.budget.remaining < 0 ? "−" : ""}¥
-                                      {Math.abs(workspace.result.budget.remaining).toLocaleString(
-                                        "zh-CN",
-                                      )}
-                                    </b>
-                                  </div>
-                                )}
-                              </div>
-                              <p>
-                                {workspace.result.budget.status === "over"
-                                  ? "这版费用估算高于你给出的上限。调整范围或补充优先级后，可以让 Agent 重新核算。"
-                                  : workspace.result.budget.status === "within"
-                                    ? "费用项目已与目标预算逐项比对；这是规划估算，实际支出仍需按现场报价确认。"
-                                    : "已汇总费用项目。补充预算上限后，Agent 可以在后续执行中检查是否超支。"}
-                              </p>
-                            </div>
-                          )}
-                          <div className="task-list" aria-busy={savingTaskId !== null}>
-                            {workspace.result.tasks.map((task, index) => (
-                              <motion.button
-                                key={task.id}
-                                className={task.status === "done" ? "done" : ""}
-                                aria-pressed={task.status === "done"}
-                                disabled={
-                                  activeWorkspaceAccess === "viewer" ||
-                                  busy !== null ||
-                                  savingTaskId !== null
-                                }
-                                onClick={() => toggleTask(task.id)}
-                                layout
-                                whileHover={
-                                  activeWorkspaceAccess !== "viewer" &&
-                                  busy === null &&
-                                  savingTaskId === null
-                                    ? { x: 2 }
-                                    : undefined
-                                }
-                                whileTap={
-                                  activeWorkspaceAccess !== "viewer" &&
-                                  busy === null &&
-                                  savingTaskId === null
-                                    ? { scale: 0.995 }
-                                    : undefined
-                                }
-                                transition={{ type: "spring", stiffness: 480, damping: 36 }}
-                              >
-                                <span className="task-check">
-                                  <AnimatePresence mode="wait" initial={false}>
-                                    {savingTaskId === task.id ? (
-                                      <motion.span
-                                        key="saving"
-                                        initial={{ opacity: 0, scale: 0.65 }}
-                                        animate={{ opacity: 1, scale: 1 }}
-                                        exit={{ opacity: 0, scale: 0.65 }}
-                                        transition={{ duration: 0.16 }}
-                                        aria-label="正在保存任务状态"
-                                      >
-                                        <LoaderCircle size={15} className="chat-spinner" />
-                                      </motion.span>
-                                    ) : task.status === "done" ? (
-                                      <motion.span
-                                        key="done"
-                                        initial={{ opacity: 0, scale: 0.65, rotate: -12 }}
-                                        animate={{ opacity: 1, scale: 1, rotate: 0 }}
-                                        exit={{ opacity: 0, scale: 0.65, rotate: 12 }}
-                                        transition={{ duration: 0.16 }}
-                                      >
-                                        <Check size={15} />
-                                      </motion.span>
-                                    ) : (
-                                      <motion.span
-                                        key="pending"
-                                        initial={{ opacity: 0, scale: 0.65 }}
-                                        animate={{ opacity: 1, scale: 1 }}
-                                        exit={{ opacity: 0, scale: 0.65 }}
-                                        transition={{ duration: 0.16 }}
-                                      >
-                                        <Circle size={17} />
-                                      </motion.span>
-                                    )}
-                                  </AnimatePresence>
-                                </span>
-                                <span className="task-index">
-                                  {String(index + 1).padStart(2, "0")}
-                                </span>
-                                <span className="task-copy">
-                                  <strong>{task.title}</strong>
-                                  <small>{task.detail}</small>
-                                </span>
-                                <span className="phase">{task.phase}</span>
-                              </motion.button>
+                                  <X size={13} />
+                                </button>
+                              </span>
                             ))}
                           </div>
-                          <div className="section-title timeline-title">
-                            <span>
-                              <Clock3 size={17} /> 推进时间线
-                            </span>
-                            {calendarScheduleInfo?.eventCount ? (
-                              <button
-                                className="timeline-export"
-                                type="button"
-                                onClick={requestCalendarExport}
-                              >
-                                <CalendarDays size={14} /> 导出日历
-                              </button>
-                            ) : (
-                              <span>Agent 整理的关键节点</span>
-                            )}
-                          </div>
-                          <div className="timeline">
-                            {sortMilestonesChronologically(workspace.result.milestones).map(
-                              (item, index) => (
-                                <div key={index}>
-                                  <span className="timeline-dot" />
-                                  <span className="timeline-date">{item.date}</span>
-                                  <span>
-                                    <strong>{item.label}</strong>
-                                    <small>{item.note}</small>
-                                  </span>
-                                </div>
-                              ),
-                            )}
-                            {workspace.result.milestones.length === 0 && (
-                              <p>补充日期后，可重新规划时间线。</p>
-                            )}
-                          </div>
-                          {calendarExportStatus && (
-                            <p
-                              className={`calendar-export-status ${calendarExportStatus.kind}`}
-                              role={calendarExportStatus.kind === "error" ? "alert" : "status"}
+                        )}
+                        <span className={useDemo || !aiConfigured ? "mode-hint" : undefined}>
+                          {!aiConfigured
+                            ? "未配置 DeepSeek Key · 正在使用演示数据"
+                            : useDemo
+                              ? "演示模式不处理图片和资料"
+                              : "图片与资料只用于本次目标规划"}
+                        </span>
+                        <button
+                          type="button"
+                          className={`demo-toggle ${useDemo ? "on" : ""}`}
+                          onClick={() => {
+                            setUseDemo(!useDemo);
+                            setImage("");
+                            setImageName("");
+                            setPlanAttachments([]);
+                          }}
+                        >
+                          {useDemo ? "演示模式已开启" : "切换演示模式"}
+                        </button>
+                      </div>
+                      <div className="composer-bottom">
+                        <span>
+                          <i /> 不用先选功能，Agent 会理解你的意图
+                        </span>
+                        <div className="composer-actions">
+                          <button className="button-primary" disabled={busy === "analyze"}>
+                            {busy === "analyze" ? "正在理解目标…" : "开始探索"}
+                            <ArrowUpRight size={18} />
+                          </button>
+                          {busy === "analyze" && (
+                            <button
+                              type="button"
+                              className="button-outline"
+                              onClick={stopAgentRequest}
+                              aria-label="停止目标分析"
                             >
-                              {calendarExportStatus.message}
-                            </p>
+                              停止
+                            </button>
                           )}
-                        </section>
+                        </div>
+                      </div>
+                    </form>
+                  </div>
+                  <aside className="home-examples" aria-label="目标示例">
+                    <div className="example-header">
+                      <span>从这些目标开始</span>
+                      <span>选择一个方向，内容还可继续修改</span>
+                    </div>
+                    <div className="example-grid">
+                      {examples.map((item, index) => (
+                        <button
+                          key={item.tag}
+                          onClick={() => {
+                            setPrompt(item.text);
+                          }}
+                        >
+                          <span className="example-number">0{index + 1}</span>
+                          <item.icon size={24} strokeWidth={1.5} />
+                          <small>{item.tag}</small>
+                          <strong>{item.title}</strong>
+                          <ArrowUpRight size={19} className="example-arrow" />
+                        </button>
+                      ))}
+                    </div>
+                  </aside>
+                </section>
+              )}
+              {view === "workspace" && workspace && (
+                <section className="workspace">
+                  <div className="workspace-head">
+                    <div>
+                      <p className="eyebrow">
+                        <span className="pulse" /> ACTIVE MISSION <span className="line" />{" "}
+                        {workspace.plan.category}
+                        {activeWorkspaceAccess !== "owner" && (
+                          <span className="workspace-access-pill">
+                            共享 · {activeWorkspaceAccess === "editor" ? "可编辑" : "只读"}
+                          </span>
+                        )}
+                      </p>
+                      <h1>{workspace.plan.title}</h1>
+                      <p>{workspace.plan.summary}</p>
+                    </div>
+                    <div className="workspace-head-actions">
+                      {activeWorkspaceAccess === "owner" && (
+                        <button
+                          className="button-outline workspace-head-action"
+                          onClick={openSharing}
+                          aria-label="共享工作区"
+                          title="共享工作区"
+                        >
+                          <Share2 size={16} />
+                          <span className="workspace-head-action-full">共享工作区</span>
+                          <span className="workspace-head-action-compact" aria-hidden="true">
+                            共享
+                          </span>
+                        </button>
+                      )}
+                      <button
+                        className="button-outline workspace-head-action"
+                        onClick={exportWorkspace}
+                        aria-label="导出完整工作区"
+                        title="导出完整工作区"
+                      >
+                        <Download size={16} />
+                        <span className="workspace-head-action-full">导出完整工作区</span>
+                        <span className="workspace-head-action-compact" aria-hidden="true">
+                          导出
+                        </span>
+                      </button>
+                      <button
+                        className="button-outline workspace-head-action"
+                        onClick={() => navigate("home")}
+                        aria-label="新建目标"
+                        title="新建目标"
+                      >
+                        <Plus size={16} />
+                        <span className="workspace-head-action-full">新建目标</span>
+                        <span className="workspace-head-action-compact" aria-hidden="true">
+                          新建目标
+                        </span>
+                      </button>
+                      <span className="sr-only" role="status" aria-live="polite">
+                        {workspaceExportNotice}
+                      </span>
+                    </div>
+                  </div>
+                  {workspaceExecution && (
+                    <div
+                      className={`workspace-live-progress ${workspaceExecution.state}`}
+                      role="status"
+                      aria-live="polite"
+                    >
+                      <span className="workspace-live-progress-icon" aria-hidden="true">
+                        {workspaceExecution.state === "running" ? (
+                          <LoaderCircle className="chat-spinner" size={18} />
+                        ) : workspaceExecution.state === "completed" ? (
+                          <Check size={18} />
+                        ) : (
+                          <CircleAlert size={18} />
+                        )}
+                      </span>
+                      <span className="workspace-live-progress-copy">
+                        <strong>
+                          {workspaceExecution.state === "running"
+                            ? `Agent 正在推进 · 已完成 ${workspaceExecution.completedToolCalls ?? completedToolCalls} 项工具操作`
+                            : workspaceExecution.state === "completed"
+                              ? `本轮执行完成 · 共完成 ${workspaceExecution.completedToolCalls ?? completedToolCalls} 项工具操作`
+                              : "本轮执行中断"}
+                        </strong>
+                        <small>{workspaceExecution.message || workspaceExecution.activity}</small>
+                      </span>
+                      {workspaceExecution.state === "running" && (
+                        <span className="workspace-live-progress-track" aria-hidden="true">
+                          <i />
+                        </span>
+                      )}
+                    </div>
+                  )}
+                  <div className="goal-strip">
+                    <Target size={17} />
+                    <span>{workspace.prompt}</span>
+                    <b className={workspace.mode === "demo" ? "demo" : "live"}>
+                      {workspace.mode === "demo" ? "演示模式" : "实时 AI"}
+                    </b>
+                  </div>
+                  {workspace.plan.sources?.length > 0 && (
+                    <div className="source-strip">
+                      <BookOpen size={17} />
+                      <span>{workspace.mode === "demo" ? "知识库检索命中" : "本次规划参考了"}</span>
+                      {workspace.plan.sources.map((source) => (
+                        <span className="source-pill" key={source.id} title={source.excerpt}>
+                          {source.title}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  <div className="workspace-layout">
+                    <ProjectFlowPanel
+                      category={workspace.plan.category}
+                      prompt={workspace.prompt}
+                      tasks={workspace.result?.tasks || workspace.plan.tasks}
+                      artifactCount={workspace.result?.artifacts.length || 0}
+                    />
+                    <div className="workspace-chat-column">
+                      <WorkspaceChat
+                        workspace={workspace}
+                        readOnly={activeWorkspaceAccess === "viewer"}
+                        route={
+                          workspace.plan.routes.find(
+                            (item) => item.id === workspace.selectedRouteId,
+                          ) || workspace.plan.routes[0]
+                        }
+                        draft={instruction}
+                        busy={
+                          visibleExecution?.workspaceId === workspace.id &&
+                          visibleExecution.state === "running"
+                        }
+                        blockedByOtherExecution={
+                          visibleExecution?.state === "running" &&
+                          visibleExecution.workspaceId !== workspace.id
+                            ? {
+                                title: visibleExecution.workspaceTitle,
+                                activity: visibleExecution.activity,
+                              }
+                            : null
+                        }
+                        streamedText={
+                          visibleExecution?.workspaceId === workspace.id ? executionStreamText : ""
+                        }
+                        pendingExecutionContent={
+                          visibleExecution?.workspaceId === workspace.id &&
+                          visibleExecution.state === "running"
+                            ? pendingExecutionContent
+                            : ""
+                        }
+                        questionBusy={questionBusy && questionWorkspaceId === workspace.id}
+                        pendingQuestion={
+                          questionWorkspaceId === workspace.id ? pendingQuestion : ""
+                        }
+                        questionStreamText={
+                          questionWorkspaceId === workspace.id ? questionStreamText : ""
+                        }
+                        questionError={questionWorkspaceId === workspace.id ? questionError : ""}
+                        queuedHandoffCount={queuedHandoffCount}
+                        error={
+                          visibleExecution?.workspaceId === workspace.id &&
+                          visibleExecution.state === "failed"
+                            ? visibleExecution.message || visibleExecution.activity
+                            : error
+                        }
+                        onDraftChange={setInstruction}
+                        onSelectRoute={(routeId) => {
+                          void save({ ...workspace, selectedRouteId: routeId }).catch((cause) =>
+                            setError(cause instanceof Error ? cause.message : "路线保存失败"),
+                          );
+                        }}
+                        onSend={() => execute()}
+                        onAsk={chatWithDialogAgent}
+                        onStop={stopAgentRequest}
+                        onOpenArtifact={openArtifact}
+                        attachments={chatAttachments}
+                        onAttachFiles={attachChatFiles}
+                        onRemoveAttachment={(id) =>
+                          setChatAttachments((current) => current.filter((item) => item.id !== id))
+                        }
+                        thinkingMode={thinkingMode}
+                        onThinkingModeChange={setThinkingMode}
+                      />
+                    </div>
+                    <aside className="workspace-side-panel" aria-label="行动计划">
+                      <div className="workspace-details">
+                        <FrameTrace delay={0.28} />
+                        <div className="workspace-details-head">
+                          <span>行动计划</span>
+                          <small>
+                            {workspace.result
+                              ? `${workspace.result.tasks.filter((task) => task.status === "done").length}/${workspace.result.tasks.length} 项完成`
+                              : `${workspace.plan.tasks.length} 项待确认任务`}
+                          </small>
+                        </div>
+                        {!workspace.result ? (
+                          <div
+                            className="pending-action-plan"
+                            role="region"
+                            aria-label="待确认的行动计划"
+                            tabIndex={0}
+                          >
+                            {workspace.plan.routes.find(
+                              (item) => item.id === workspace.selectedRouteId,
+                            ) && (
+                              <AnimatePresence mode="wait" initial={false}>
+                                <motion.div
+                                  className="plan-route-current"
+                                  key={workspace.selectedRouteId}
+                                  aria-label="当前选择的执行方向"
+                                  initial={{ opacity: 0, x: 8 }}
+                                  animate={{ opacity: 1, x: 0 }}
+                                  exit={{ opacity: 0, x: -8 }}
+                                  transition={{ duration: 0.18, ease: "easeOut" }}
+                                >
+                                  <span className="plan-route-current-mark">
+                                    <Check size={14} />
+                                  </span>
+                                  <div>
+                                    <small>当前执行方向</small>
+                                    <strong>
+                                      {
+                                        workspace.plan.routes.find(
+                                          (item) => item.id === workspace.selectedRouteId,
+                                        )?.title
+                                      }
+                                    </strong>
+                                  </div>
+                                  <b>
+                                    {
+                                      workspace.plan.routes.find(
+                                        (item) => item.id === workspace.selectedRouteId,
+                                      )?.fit
+                                    }
+                                    %
+                                  </b>
+                                </motion.div>
+                              </AnimatePresence>
+                            )}
+                            {workspace.mode === "live" && workspace.usage && (
+                              <div className="plan-usage-brief" aria-label="本次路线规划模型用量">
+                                <Sparkles size={15} />
+                                <span>
+                                  {workspace.usage.model} · 规划阶段 · {workspace.usage.requests}{" "}
+                                  次请求
+                                </span>
+                                <strong>
+                                  {workspace.usage.totalTokens.toLocaleString("zh-CN")} tokens ·{" "}
+                                  {(workspace.usage.latencyMs / 1000).toFixed(1)} 秒
+                                </strong>
+                                <small
+                                  className="plan-usage-brief-cache"
+                                  title={`缓存命中率按供应商报告的缓存命中输入 Token ÷ 已统计输入 Token 计算。${workspaceCacheCoverage?.title ?? ""} 未报告缓存字段的请求不参与命中率。`}
+                                >
+                                  输入 {workspace.usage.inputTokens.toLocaleString("zh-CN")} ·{" "}
+                                  {workspace.usage.cacheMeasuredInputTokens &&
+                                  workspace.usage.cacheMeasuredInputTokens > 0
+                                    ? `缓存命中 ${workspace.usage.cacheMeasuredHitTokens?.toLocaleString("zh-CN") ?? 0} / 已统计 ${workspace.usage.cacheMeasuredInputTokens.toLocaleString("zh-CN")}（${(((workspace.usage.cacheMeasuredHitTokens || 0) / workspace.usage.cacheMeasuredInputTokens) * 100).toFixed(1)}%）· 覆盖 ${workspaceCacheCoverage?.percent.toFixed(1) ?? "0.0"}%`
+                                    : "缓存命中暂无统计样本"}
+                                  {` · 输出 ${workspace.usage.outputTokens.toLocaleString("zh-CN")}`}
+                                  {` · 思考 Token ${workspace.usage.reasoningMeasuredRequests ? (workspace.usage.reasoningTokens ?? 0).toLocaleString("zh-CN") : "暂无样本"}${workspace.usage.reasoningMeasuredRequests ? `（已报告 ${workspace.usage.reasoningMeasuredRequests}/${workspace.usage.requests} 次，包含在输出中）` : ""}`}
+                                </small>
+                                {!workspace.result && currentWorkspaceFlashCostEstimate && (
+                                  <small
+                                    className="workspace-flash-cost-estimate"
+                                    title="仅对当前目标已记录的 DeepSeek Flash 用量按当前公开美元价回算；不等于历史人民币账单，也不含未知模型或汇率。"
+                                  >
+                                    当前价费用估值{" "}
+                                    {formatEstimatedUsd(currentWorkspaceFlashCostEstimate.lowerUsd)}{" "}
+                                    –{" "}
+                                    {formatEstimatedUsd(currentWorkspaceFlashCostEstimate.upperUsd)}
+                                  </small>
+                                )}
+                              </div>
+                            )}
+                            <div className="section-title planned-task-title">
+                              <span>
+                                <Target size={16} /> 行动计划{" "}
+                                <small>{workspace.plan.tasks.length}</small>
+                              </span>
+                              <span>确认后开始推进</span>
+                            </div>
+                            <div className="planned-task-list">
+                              {workspace.plan.tasks.map((task, index) => (
+                                <article key={`${task.title}-${index}`}>
+                                  <span>{String(index + 1).padStart(2, "0")}</span>
+                                  <div>
+                                    <strong>{task.title}</strong>
+                                    <small>
+                                      {task.phase} · {task.detail}
+                                    </small>
+                                  </div>
+                                </article>
+                              ))}
+                            </div>
+                          </div>
+                        ) : (
+                          <div
+                            className="execution"
+                            role="region"
+                            aria-label="行动计划、任务与时间线"
+                            tabIndex={0}
+                          >
+                            <section className="execution-main">
+                              <div className="section-title">
+                                <span>
+                                  <Target size={17} /> 行动计划{" "}
+                                  <small>
+                                    {
+                                      workspace.result.tasks.filter(
+                                        (item) => item.status === "done",
+                                      ).length
+                                    }
+                                    /{workspace.result.tasks.length}
+                                  </small>
+                                </span>
+                                <span>点击任务标记完成</span>
+                              </div>
+                              <div className="progress-overview">
+                                <div>
+                                  <span>任务确认进度</span>
+                                  <strong>
+                                    {workspace.result.tasks.length
+                                      ? Math.round(
+                                          (workspace.result.tasks.filter(
+                                            (item) => item.status === "done",
+                                          ).length /
+                                            workspace.result.tasks.length) *
+                                            100,
+                                        )
+                                      : 0}
+                                    %
+                                  </strong>
+                                </div>
+                                <div className="progress-track">
+                                  <i
+                                    style={{
+                                      width: `${workspace.result.tasks.length ? (workspace.result.tasks.filter((item) => item.status === "done").length / workspace.result.tasks.length) * 100 : 0}%`,
+                                    }}
+                                  />
+                                </div>
+                              </div>
+                              {workspace.mode === "live" && workspace.usage && (
+                                <div
+                                  className="usage-strip workspace-plan-usage"
+                                  aria-label="当前目标累计模型用量"
+                                >
+                                  <div>
+                                    <span>当前目标累计用量</span>
+                                    <strong>
+                                      {workspace.usage.totalTokens.toLocaleString("zh-CN")} tokens
+                                    </strong>
+                                  </div>
+                                  <small>
+                                    输入 {workspace.usage.inputTokens.toLocaleString("zh-CN")}
+                                    {workspace.usage.cacheMeasuredInputTokens &&
+                                    workspace.usage.cacheMeasuredInputTokens > 0
+                                      ? `（缓存命中 ${workspace.usage.cacheMeasuredHitTokens?.toLocaleString("zh-CN") ?? 0} / 已统计输入 ${workspace.usage.cacheMeasuredInputTokens.toLocaleString("zh-CN")}）`
+                                      : "（缓存命中暂无统计样本）"}
+                                    {" · 输出 "}
+                                    {workspace.usage.outputTokens.toLocaleString("zh-CN")}
+                                    {workspace.usage.reasoningMeasuredRequests
+                                      ? ` · 思考 ${(
+                                          workspace.usage.reasoningTokens ?? 0
+                                        ).toLocaleString(
+                                          "zh-CN",
+                                        )}（输出内，已报告 ${workspace.usage.reasoningMeasuredRequests}/${workspace.usage.requests} 次）`
+                                      : " · 思考 Token 暂无样本"}
+                                  </small>
+                                  {workspace.usage.cacheMeasuredInputTokens !== undefined &&
+                                  workspace.usage.cacheMeasuredInputTokens > 0 ? (
+                                    <small
+                                      title={`命中率 = 供应商报告的缓存命中输入 Token ÷ 已统计输入 Token。${workspaceCacheCoverage?.title ?? ""} 按 Token 加权，不是命中请求占比；未提供统计的请求不参与。缓存只影响输入费，不影响输出费。`}
+                                    >
+                                      输入 Token 缓存命中率{" "}
+                                      {(
+                                        ((workspace.usage.cacheMeasuredHitTokens || 0) /
+                                          workspace.usage.cacheMeasuredInputTokens) *
+                                        100
+                                      ).toFixed(1)}
+                                      % · {workspaceCacheCoverage?.label}（
+                                      {workspaceCacheCoverage?.measured.toLocaleString("zh-CN")}/
+                                      {workspaceCacheCoverage?.total.toLocaleString("zh-CN")}）
+                                    </small>
+                                  ) : (
+                                    <small
+                                      title={`供应商未提供缓存统计字段，无法计算输入缓存命中率。${workspaceCacheCoverage?.title ?? ""}`}
+                                    >
+                                      输入 Token 缓存命中率暂无样本 ·{" "}
+                                      {workspaceCacheCoverage?.label}（
+                                      {workspaceCacheCoverage?.measured.toLocaleString("zh-CN")}/
+                                      {workspaceCacheCoverage?.total.toLocaleString("zh-CN")}）
+                                    </small>
+                                  )}
+                                  {currentWorkspaceFlashCostEstimate && (
+                                    <small
+                                      className="workspace-flash-cost-estimate"
+                                      title="仅对当前目标已记录的 DeepSeek Flash 用量按当前公开美元价回算；不等于历史人民币账单，也不含未知模型或汇率。"
+                                    >
+                                      Flash 当前价费用估值：
+                                      {formatEstimatedUsd(
+                                        currentWorkspaceFlashCostEstimate.lowerUsd,
+                                      )}{" "}
+                                      –
+                                      {formatEstimatedUsd(
+                                        currentWorkspaceFlashCostEstimate.upperUsd,
+                                      )}
+                                    </small>
+                                  )}
+                                  <small>
+                                    {workspace.usage.model} · {workspace.usage.requests} 次请求 ·{" "}
+                                    {(workspace.usage.latencyMs / 1000).toFixed(1)} 秒
+                                  </small>
+                                </div>
+                              )}
+                              {workspace.result.budget && (
+                                <div
+                                  className={`budget-control budget-${workspace.result.budget.status}`}
+                                >
+                                  <div className="budget-control-head">
+                                    <span>
+                                      <Target size={16} /> 预算约束核验
+                                    </span>
+                                    <strong>
+                                      {workspace.result.budget.status === "over"
+                                        ? "超过预算上限"
+                                        : workspace.result.budget.status === "within"
+                                          ? "预算范围内"
+                                          : "尚未设置上限"}
+                                    </strong>
+                                  </div>
+                                  <div className="budget-control-values">
+                                    <div>
+                                      <small>当前方案估算</small>
+                                      <b>
+                                        ¥{workspace.result.budget.total.toLocaleString("zh-CN")}
+                                      </b>
+                                    </div>
+                                    <div>
+                                      <small>预算上限</small>
+                                      <b>
+                                        {(() => {
+                                          const limit = normalizeLegacyBudgetLimit(
+                                            workspace.result.budget.limit,
+                                            workspace.result.budget.status,
+                                          );
+                                          return typeof limit === "number"
+                                            ? `¥${limit.toLocaleString("zh-CN")}`
+                                            : "未提供";
+                                        })()}
+                                      </b>
+                                    </div>
+                                    {workspace.result.budget.remaining !== null && (
+                                      <div>
+                                        <small>
+                                          {workspace.result.budget.remaining < 0
+                                            ? "超出金额"
+                                            : "可用余额"}
+                                        </small>
+                                        <b>
+                                          {workspace.result.budget.remaining < 0 ? "−" : ""}¥
+                                          {Math.abs(
+                                            workspace.result.budget.remaining,
+                                          ).toLocaleString("zh-CN")}
+                                        </b>
+                                      </div>
+                                    )}
+                                  </div>
+                                  <p>
+                                    {workspace.result.budget.status === "over"
+                                      ? "这版费用估算高于你给出的上限。调整范围或补充优先级后，可以让 Agent 重新核算。"
+                                      : workspace.result.budget.status === "within"
+                                        ? "费用项目已与目标预算逐项比对；这是规划估算，实际支出仍需按现场报价确认。"
+                                        : "已汇总费用项目。补充预算上限后，Agent 可以在后续执行中检查是否超支。"}
+                                  </p>
+                                </div>
+                              )}
+                              <div className="task-list" aria-busy={savingTaskId !== null}>
+                                {workspace.result.tasks.map((task, index) => (
+                                  <motion.button
+                                    key={task.id}
+                                    className={task.status === "done" ? "done" : ""}
+                                    aria-pressed={task.status === "done"}
+                                    disabled={
+                                      activeWorkspaceAccess === "viewer" ||
+                                      busy !== null ||
+                                      savingTaskId !== null
+                                    }
+                                    onClick={() => toggleTask(task.id)}
+                                    layout
+                                    whileHover={
+                                      activeWorkspaceAccess !== "viewer" &&
+                                      busy === null &&
+                                      savingTaskId === null
+                                        ? { x: 2 }
+                                        : undefined
+                                    }
+                                    whileTap={
+                                      activeWorkspaceAccess !== "viewer" &&
+                                      busy === null &&
+                                      savingTaskId === null
+                                        ? { scale: 0.995 }
+                                        : undefined
+                                    }
+                                    transition={{ type: "spring", stiffness: 480, damping: 36 }}
+                                  >
+                                    <span className="task-check">
+                                      <AnimatePresence mode="wait" initial={false}>
+                                        {savingTaskId === task.id ? (
+                                          <motion.span
+                                            key="saving"
+                                            initial={{ opacity: 0, scale: 0.65 }}
+                                            animate={{ opacity: 1, scale: 1 }}
+                                            exit={{ opacity: 0, scale: 0.65 }}
+                                            transition={{ duration: 0.16 }}
+                                            aria-label="正在保存任务状态"
+                                          >
+                                            <LoaderCircle size={15} className="chat-spinner" />
+                                          </motion.span>
+                                        ) : task.status === "done" ? (
+                                          <motion.span
+                                            key="done"
+                                            initial={{ opacity: 0, scale: 0.65, rotate: -12 }}
+                                            animate={{ opacity: 1, scale: 1, rotate: 0 }}
+                                            exit={{ opacity: 0, scale: 0.65, rotate: 12 }}
+                                            transition={{ duration: 0.16 }}
+                                          >
+                                            <Check size={15} />
+                                          </motion.span>
+                                        ) : (
+                                          <motion.span
+                                            key="pending"
+                                            initial={{ opacity: 0, scale: 0.65 }}
+                                            animate={{ opacity: 1, scale: 1 }}
+                                            exit={{ opacity: 0, scale: 0.65 }}
+                                            transition={{ duration: 0.16 }}
+                                          >
+                                            <Circle size={17} />
+                                          </motion.span>
+                                        )}
+                                      </AnimatePresence>
+                                    </span>
+                                    <span className="task-index">
+                                      {String(index + 1).padStart(2, "0")}
+                                    </span>
+                                    <span className="task-copy">
+                                      <strong>{task.title}</strong>
+                                      <small>{task.detail}</small>
+                                    </span>
+                                    <span className="phase">{task.phase}</span>
+                                  </motion.button>
+                                ))}
+                              </div>
+                              <div className="section-title timeline-title">
+                                <span>
+                                  <Clock3 size={17} /> 推进时间线
+                                </span>
+                                {calendarScheduleInfo?.eventCount ? (
+                                  <button
+                                    className="timeline-export"
+                                    type="button"
+                                    onClick={requestCalendarExport}
+                                  >
+                                    <CalendarDays size={14} /> 导出日历
+                                  </button>
+                                ) : (
+                                  <span>Agent 整理的关键节点</span>
+                                )}
+                              </div>
+                              <div className="timeline">
+                                {sortMilestonesChronologically(workspace.result.milestones).map(
+                                  (item, index) => (
+                                    <div key={index}>
+                                      <span className="timeline-dot" />
+                                      <span className="timeline-date">{item.date}</span>
+                                      <span>
+                                        <strong>{item.label}</strong>
+                                        <small>{item.note}</small>
+                                      </span>
+                                    </div>
+                                  ),
+                                )}
+                                {workspace.result.milestones.length === 0 && (
+                                  <p>补充日期后，可重新规划时间线。</p>
+                                )}
+                              </div>
+                              {calendarExportStatus && (
+                                <p
+                                  className={`calendar-export-status ${calendarExportStatus.kind}`}
+                                  role={calendarExportStatus.kind === "error" ? "alert" : "status"}
+                                >
+                                  {calendarExportStatus.message}
+                                </p>
+                              )}
+                            </section>
+                          </div>
+                        )}
+                      </div>
+                    </aside>
+                  </div>
+                </section>
+              )}
+              {view === "knowledge" && <KnowledgeView userId={user.id} />}
+              {view === "tools" && (
+                <ToolCenter
+                  key={`${user.id}:${directToolLaunch?.id || "tool-center"}`}
+                  userId={user.id}
+                  launch={directToolLaunch}
+                  onLaunchConsumed={consumeDirectToolLaunch}
+                  onAskSupervisor={(message, attachments = []) => {
+                    setSupervisorPrompt(message);
+                    setSupervisorAttachments(attachments);
+                    setSupervisorOpen(true);
+                  }}
+                />
+              )}
+              {view === "account" && (
+                <AccountView
+                  user={user}
+                  onUserUpdated={setUser}
+                  onWorkspacesImported={async () => {
+                    await loadHistory();
+                    await queryClient.invalidateQueries({
+                      queryKey: ["knowledge", user.id],
+                      refetchType: "all",
+                    });
+                  }}
+                />
+              )}
+              {view === "history" && (
+                <section className="listing">
+                  <div className="listing-head">
+                    <p className="eyebrow">
+                      <span className="pulse" /> YOUR JOURNEYS
+                    </p>
+                    <h1>每个目标，都在向前。</h1>
+                    <p>回到任意工作空间，继续推进或调整方向。</p>
+                  </div>
+                  <div className="listing-bar">
+                    <span>{history.length} 个工作空间</span>
+                    <button className="button-outline" onClick={() => navigate("home")}>
+                      <Plus size={16} /> 新建目标
+                    </button>
+                  </div>
+                  {historyStatus === "error" && (
+                    <div className="history-load-error" role="alert">
+                      <span>列表读取失败，已有工作空间没有被删除。</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setError("");
+                          void loadHistory();
+                        }}
+                      >
+                        重试加载
+                      </button>
+                    </div>
+                  )}
+                  <div className="history-grid">
+                    {history.map((item) => {
+                      const executionForItem = executionStatusByWorkspace.get(item.id) || null;
+                      return (
+                        <article key={item.id}>
+                          <button
+                            className="history-card-open"
+                            type="button"
+                            onClick={() => openWorkspace(item)}
+                            aria-label={`打开工作区：${item.plan.title}`}
+                          >
+                            <span className="history-card-category">
+                              {item.plan.category}
+                              {workspaceAccessById[item.id] &&
+                              workspaceAccessById[item.id] !== "owner"
+                                ? ` · ${workspaceAccessById[item.id] === "editor" ? "共享编辑" : "只读共享"}`
+                                : ""}
+                            </span>
+                            <h3>{item.plan.title}</h3>
+                            <p>{item.prompt}</p>
+                            {executionForItem && (
+                              <span
+                                className={`history-card-execution ${executionForItem.state}`}
+                                role="status"
+                                aria-live="polite"
+                              >
+                                {executionForItem.state === "running" ? (
+                                  <LoaderCircle
+                                    size={14}
+                                    className="chat-spinner"
+                                    aria-hidden="true"
+                                  />
+                                ) : executionForItem.state === "completed" ? (
+                                  <Check size={14} aria-hidden="true" />
+                                ) : (
+                                  <CircleAlert size={14} aria-hidden="true" />
+                                )}
+                                <span>
+                                  <strong>
+                                    {executionForItem.state === "running"
+                                      ? "Agent 正在推进"
+                                      : executionForItem.state === "completed"
+                                        ? "本轮执行已完成"
+                                        : "本轮执行中断"}
+                                    {executionForItem.state === "running" &&
+                                      ` · 已完成 ${executionForItem.completedToolCalls ?? 0} 项操作`}
+                                  </strong>
+                                  <small>
+                                    {executionForItem.state === "failed"
+                                      ? executionForItem.message || executionForItem.activity
+                                      : executionForItem.activity}
+                                  </small>
+                                </span>
+                              </span>
+                            )}
+                            <footer>
+                              <span>
+                                <Clock3 size={14} /> {shortDate(item.createdAt)}
+                              </span>
+                            </footer>
+                          </button>
+                          {(!workspaceAccessById[item.id] ||
+                            workspaceAccessById[item.id] === "owner") && (
+                            <button
+                              className="history-card-delete"
+                              type="button"
+                              onClick={() =>
+                                setConfirmation({
+                                  title: "删除这个目标？",
+                                  description: `「${item.plan.title}」及其路线、任务和执行记录都会永久删除，无法恢复。`,
+                                  confirmLabel: "删除目标",
+                                  tone: "danger",
+                                  onConfirm: () => remove(item.id),
+                                })
+                              }
+                              aria-label={`删除目标：${item.plan.title}`}
+                              title="删除目标"
+                            >
+                              <Trash2 size={16} />
+                            </button>
+                          )}
+                        </article>
+                      );
+                    })}
+                    {history.length === 0 && historyStatus === "loading" && (
+                      <div className="history-empty" role="status" aria-live="polite">
+                        <Compass size={35} />
+                        <h3>正在读取你的目标</h3>
+                        <p>正在从工作空间加载已保存的数据…</p>
+                      </div>
+                    )}
+                    {history.length === 0 && historyStatus === "ready" && (
+                      <div className="history-empty">
+                        <Compass size={35} />
+                        <h3>还没有开始的目标</h3>
+                        <p>从一句想法开始，Agent 会建立第一个工作空间。</p>
+                        <button className="button-primary" onClick={() => navigate("home")}>
+                          提出目标 <ArrowRight size={17} />
+                        </button>
                       </div>
                     )}
                   </div>
-                </aside>
-              </div>
-            </section>
-          )}
-          {view === "knowledge" && <KnowledgeView userId={user.id} />}
-          {view === "tools" && (
-            <ToolCenter
-              key={`${user.id}:${directToolLaunch?.id || "tool-center"}`}
-              userId={user.id}
-              launch={directToolLaunch}
-              onLaunchConsumed={consumeDirectToolLaunch}
-              onAskSupervisor={(message, attachments = []) => {
-                setSupervisorPrompt(message);
-                setSupervisorAttachments(attachments);
-                setSupervisorOpen(true);
-              }}
-            />
-          )}
-          {view === "account" && (
-            <AccountView
-              user={user}
-              onUserUpdated={setUser}
-              onWorkspacesImported={async () => {
-                await loadHistory();
-                await queryClient.invalidateQueries({
-                  queryKey: ["knowledge", user.id],
-                  refetchType: "all",
-                });
-              }}
-            />
-          )}
-          {view === "history" && (
-            <section className="listing">
-              <div className="listing-head">
-                <p className="eyebrow">
-                  <span className="pulse" /> YOUR JOURNEYS
-                </p>
-                <h1>每个目标，都在向前。</h1>
-                <p>回到任意工作空间，继续推进或调整方向。</p>
-              </div>
-              <div className="listing-bar">
-                <span>{history.length} 个工作空间</span>
-                <button className="button-outline" onClick={() => navigate("home")}>
-                  <Plus size={16} /> 新建目标
-                </button>
-              </div>
-              {historyStatus === "error" && (
-                <div className="history-load-error" role="alert">
-                  <span>列表读取失败，已有工作空间没有被删除。</span>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setError("");
-                      void loadHistory();
-                    }}
-                  >
-                    重试加载
-                  </button>
-                </div>
+                </section>
               )}
-              <div className="history-grid">
-                {history.map((item) => {
-                  const executionForItem = executionStatusByWorkspace.get(item.id) || null;
-                  return (
-                    <article key={item.id}>
-                      <button
-                        className="history-card-open"
-                        type="button"
-                        onClick={() => openWorkspace(item)}
-                        aria-label={`打开工作区：${item.plan.title}`}
-                      >
-                        <span className="history-card-category">
-                          {item.plan.category}
-                          {workspaceAccessById[item.id] && workspaceAccessById[item.id] !== "owner"
-                            ? ` · ${workspaceAccessById[item.id] === "editor" ? "共享编辑" : "只读共享"}`
-                            : ""}
-                        </span>
-                        <h3>{item.plan.title}</h3>
-                        <p>{item.prompt}</p>
-                        {executionForItem && (
-                          <span
-                            className={`history-card-execution ${executionForItem.state}`}
-                            role="status"
-                            aria-live="polite"
-                          >
-                            {executionForItem.state === "running" ? (
-                              <LoaderCircle size={14} className="chat-spinner" aria-hidden="true" />
-                            ) : executionForItem.state === "completed" ? (
-                              <Check size={14} aria-hidden="true" />
-                            ) : (
-                              <CircleAlert size={14} aria-hidden="true" />
-                            )}
-                            <span>
-                              <strong>
-                                {executionForItem.state === "running"
-                                  ? "Agent 正在推进"
-                                  : executionForItem.state === "completed"
-                                    ? "本轮执行已完成"
-                                    : "本轮执行中断"}
-                                {executionForItem.state === "running" &&
-                                  ` · 已完成 ${executionForItem.completedToolCalls ?? 0} 项操作`}
-                              </strong>
-                              <small>
-                                {executionForItem.state === "failed"
-                                  ? executionForItem.message || executionForItem.activity
-                                  : executionForItem.activity}
-                              </small>
-                            </span>
-                          </span>
-                        )}
-                        <footer>
-                          <span>
-                            <Clock3 size={14} /> {shortDate(item.createdAt)}
-                          </span>
-                        </footer>
-                      </button>
-                      {(!workspaceAccessById[item.id] ||
-                        workspaceAccessById[item.id] === "owner") && (
-                        <button
-                          className="history-card-delete"
-                          type="button"
-                          onClick={() =>
-                            setConfirmation({
-                              title: "删除这个目标？",
-                              description: `「${item.plan.title}」及其路线、任务和执行记录都会永久删除，无法恢复。`,
-                              confirmLabel: "删除目标",
-                              tone: "danger",
-                              onConfirm: () => remove(item.id),
-                            })
-                          }
-                          aria-label={`删除目标：${item.plan.title}`}
-                          title="删除目标"
-                        >
-                          <Trash2 size={16} />
-                        </button>
-                      )}
-                    </article>
-                  );
-                })}
-                {history.length === 0 && historyStatus === "loading" && (
-                  <div className="history-empty" role="status" aria-live="polite">
-                    <Compass size={35} />
-                    <h3>正在读取你的目标</h3>
-                    <p>正在从工作空间加载已保存的数据…</p>
-                  </div>
-                )}
-                {history.length === 0 && historyStatus === "ready" && (
-                  <div className="history-empty">
-                    <Compass size={35} />
-                    <h3>还没有开始的目标</h3>
-                    <p>从一句想法开始，Agent 会建立第一个工作空间。</p>
-                    <button className="button-primary" onClick={() => navigate("home")}>
-                      提出目标 <ArrowRight size={17} />
-                    </button>
-                  </div>
-                )}
-              </div>
-            </section>
-          )}
-          {view === "admin" && (
-            <section className="listing admin">
-              <div className="listing-head">
-                <p className="eyebrow">
-                  <span className="pulse" /> SYSTEM OVERVIEW
-                </p>
-                <h1>管理控制台</h1>
-                <p>查看平台运行概况、用户与目标工作空间。</p>
-              </div>
-              {admin ? (
-                <>
-                  <div className="admin-stats">
-                    <div>
-                      <span>注册用户</span>
-                      <strong>{admin.userCount.toString().padStart(2, "0")}</strong>
-                      <Users size={22} />
-                    </div>
-                    <div>
-                      <span>工作空间</span>
-                      <strong>{admin.workspaceCount.toString().padStart(2, "0")}</strong>
-                      <FolderKanban size={22} />
-                    </div>
-                    <div>
-                      <span>已执行目标</span>
-                      <strong>{admin.completedCount.toString().padStart(2, "0")}</strong>
-                      <Zap size={22} />
-                    </div>
-                    <div className="admin-usage-stat">
-                      <span>累计 AI Token</span>
-                      <strong>{admin.aiUsage.totalTokens.toLocaleString("zh-CN")}</strong>
-                      <small>
-                        {admin.aiUsage.requests.toLocaleString("zh-CN")} 次请求 · 平均{" "}
-                        {admin.aiUsage.averageLatencyMs.toLocaleString("zh-CN")} ms
-                      </small>
-                      <small>
-                        输入 {admin.aiUsage.inputTokens.toLocaleString("zh-CN")} ·{" "}
-                        {admin.aiUsage.cacheMeasuredInputTokens > 0
-                          ? `供应商报告缓存命中 ${admin.aiUsage.cacheMeasuredHitTokens.toLocaleString("zh-CN")} / 已统计输入 ${admin.aiUsage.cacheMeasuredInputTokens.toLocaleString("zh-CN")}`
-                          : "缓存命中暂无统计样本"}{" "}
-                        · 输出 {admin.aiUsage.outputTokens.toLocaleString("zh-CN")}
-                        {` · 思考 Token ${admin.aiUsage.reasoningMeasuredRequests > 0 ? `${admin.aiUsage.reasoningTokens.toLocaleString("zh-CN")}（已报告 ${admin.aiUsage.reasoningMeasuredRequests}/${admin.aiUsage.requests} 次，包含在输出中）` : "暂无样本"}`}
-                      </small>
-                      <small
-                        title={`命中请求率 = 至少命中 1 个输入 Token 的请求数 ÷ 已提供缓存统计的请求数；Token 命中率 = 缓存命中输入 Token ÷ 已统计输入 Token，按 Token 加权，更接近输入费用影响。${adminCacheCoverage?.title ?? ""} 未提供统计的请求不参与。缓存只影响输入费，不影响输出费。`}
-                      >
-                        {admin.aiUsage.cacheMeasuredInputTokens > 0
-                          ? "输入 Token 缓存命中率 " +
-                            (
-                              (admin.aiUsage.cacheMeasuredHitTokens /
-                                admin.aiUsage.cacheMeasuredInputTokens) *
-                              100
-                            ).toFixed(1) +
-                            "% · 命中请求率 " +
-                            (admin.aiUsage.cacheMeasuredRequests > 0
-                              ? `${((admin.aiUsage.cacheHitRequests / admin.aiUsage.cacheMeasuredRequests) * 100).toFixed(1)}%（${admin.aiUsage.cacheHitRequests}/${admin.aiUsage.cacheMeasuredRequests}）`
-                              : "暂无样本") +
-                            " · 统计覆盖 " +
-                            (adminCacheCoverage?.percent.toFixed(1) ?? "0.0") +
-                            "%"
-                          : "输入 Token 缓存命中率暂无样本 · 命中请求率 " +
-                            (admin.aiUsage.cacheMeasuredRequests > 0
-                              ? `${((admin.aiUsage.cacheHitRequests / admin.aiUsage.cacheMeasuredRequests) * 100).toFixed(1)}%（${admin.aiUsage.cacheHitRequests}/${admin.aiUsage.cacheMeasuredRequests}）`
-                              : "暂无样本") +
-                            " · 统计覆盖 " +
-                            (adminCacheCoverage?.percent.toFixed(1) ?? "0.0") +
-                            "%"}
-                      </small>
-                      {adminAiCostEstimate && (
-                        <small
-                          className="admin-cost-estimate"
-                          title="按 2026-11-15 核对的 DeepSeek V4.1 Flash 公开美元单价回算 DeepSeek Flash 及其当前计费别名的历史 Token；低值假设未测输入命中缓存且全部为非高峰计费，高值假设未测输入未命中且全部为高峰计费。其它或未知模型、历史单价、人民币换算、赠送额度及独立搜索/抓取费用不包含在内，实际账单请以 DeepSeek 平台为准。"
-                        >
-                          当前价回算估值：
-                          {formatEstimatedUsd(adminAiCostEstimate.lowerUsd)} –
-                          {formatEstimatedUsd(adminAiCostEstimate.upperUsd)}
-                        </small>
-                      )}
-                      {adminAiCostEstimate?.measuredHitTokens ? (
-                        <small title="只按供应商明确报告的缓存命中 Token 计算相对缓存未命中的输入节省；仅限 DeepSeek Flash 及其当前计费别名，并使用 2026-11-15 核对的公开价，不推测没有缓存统计的请求。">
-                          已确认缓存命中可少付输入费约{" "}
-                          {formatEstimatedUsd(adminAiCostEstimate.confirmedCacheSavingsUsd.lower)} –
-                          {formatEstimatedUsd(adminAiCostEstimate.confirmedCacheSavingsUsd.upper)}
-                        </small>
-                      ) : null}
-                      <WandSparkles size={22} />
-                    </div>
-                  </div>
-                  <section className="usage-panel" aria-labelledby="usage-panel-title">
-                    <div className="usage-panel-head">
-                      <div>
-                        <span>LAST 7 DAYS · ASIA/SHANGHAI</span>
-                        <h2 id="usage-panel-title">AI 调用趋势</h2>
-                      </div>
-                      <div className="usage-total">
-                        <strong>
-                          {admin.dailyAiUsage
-                            .reduce((total, item) => total + item.totalTokens, 0)
-                            .toLocaleString("zh-CN")}
-                        </strong>
-                        <small>近 7 日 Token</small>
-                      </div>
-                    </div>
-                    <p className="usage-note">
-                      Token 用量用于定位消耗来源，不等同人民币账单金额；实际费用以 DeepSeek
-                      开放平台为准。
+              {view === "admin" && (
+                <section className="listing admin">
+                  <div className="listing-head">
+                    <p className="eyebrow">
+                      <span className="pulse" /> SYSTEM OVERVIEW
                     </p>
-                    {(() => {
-                      const days = admin.dailyAiUsage;
-                      const maximum = Math.max(0, ...days.map((item) => item.totalTokens));
-                      const planningRequests = days.reduce(
-                        (total, item) => total + item.planningRequests,
-                        0,
-                      );
-                      const dialogueRequests = days.reduce(
-                        (total, item) => total + item.dialogueRequests,
-                        0,
-                      );
-                      const workbenchRequests = days.reduce(
-                        (total, item) => total + item.workbenchRequests,
-                        0,
-                      );
-                      const reviewerRequests = days.reduce(
-                        (total, item) => total + item.reviewerRequests,
-                        0,
-                      );
-                      const healthcheckRequests = days.reduce(
-                        (total, item) => total + item.healthcheckRequests,
-                        0,
-                      );
-                      const legacyRequests = days.reduce(
-                        (total, item) => total + item.legacyRequests,
-                        0,
-                      );
-                      const cacheMeasuredInputTokens = days.reduce(
-                        (total, item) => total + item.cacheMeasuredInputTokens,
-                        0,
-                      );
-                      const cacheMeasuredHitTokens = days.reduce(
-                        (total, item) => total + item.cacheMeasuredHitTokens,
-                        0,
-                      );
-                      const cacheMeasuredRequests = days.reduce(
-                        (total, item) => total + item.cacheMeasuredRequests,
-                        0,
-                      );
-                      const cacheHitRequests = days.reduce(
-                        (total, item) => total + item.cacheHitRequests,
-                        0,
-                      );
-                      const totalInputTokens = days.reduce(
-                        (total, item) => total + item.inputTokens,
-                        0,
-                      );
-                      const cacheCoverage = getInputCacheCoverage(
-                        totalInputTokens,
-                        cacheMeasuredInputTokens,
-                      );
-                      const totalRequests = days.reduce((total, item) => total + item.requests, 0);
-                      const averageLatencyMs = totalRequests
-                        ? Math.round(
-                            days.reduce((total, item) => total + item.latencyMs, 0) / totalRequests,
-                          )
-                        : 0;
-                      return (
-                        <>
-                          <div
-                            className="usage-chart"
-                            role="img"
-                            aria-label={`近七日 AI 请求量：规划 ${planningRequests} 次，对话 ${dialogueRequests} 次，工作台 ${workbenchRequests} 次，代码复核 ${reviewerRequests} 次，连接诊断 ${healthcheckRequests} 次，旧记录 ${legacyRequests} 次`}
+                    <h1>管理控制台</h1>
+                    <p>查看平台运行概况、用户与目标工作空间。</p>
+                  </div>
+                  {admin ? (
+                    <>
+                      <div className="admin-stats">
+                        <div>
+                          <span>注册用户</span>
+                          <strong>{admin.userCount.toString().padStart(2, "0")}</strong>
+                          <Users size={22} />
+                        </div>
+                        <div>
+                          <span>工作空间</span>
+                          <strong>{admin.workspaceCount.toString().padStart(2, "0")}</strong>
+                          <FolderKanban size={22} />
+                        </div>
+                        <div>
+                          <span>已执行目标</span>
+                          <strong>{admin.completedCount.toString().padStart(2, "0")}</strong>
+                          <Zap size={22} />
+                        </div>
+                        <div className="admin-usage-stat">
+                          <span>累计 AI Token</span>
+                          <strong>{admin.aiUsage.totalTokens.toLocaleString("zh-CN")}</strong>
+                          <small>
+                            {admin.aiUsage.requests.toLocaleString("zh-CN")} 次请求 · 平均{" "}
+                            {admin.aiUsage.averageLatencyMs.toLocaleString("zh-CN")} ms
+                          </small>
+                          <small>
+                            输入 {admin.aiUsage.inputTokens.toLocaleString("zh-CN")} ·{" "}
+                            {admin.aiUsage.cacheMeasuredInputTokens > 0
+                              ? `供应商报告缓存命中 ${admin.aiUsage.cacheMeasuredHitTokens.toLocaleString("zh-CN")} / 已统计输入 ${admin.aiUsage.cacheMeasuredInputTokens.toLocaleString("zh-CN")}`
+                              : "缓存命中暂无统计样本"}{" "}
+                            · 输出 {admin.aiUsage.outputTokens.toLocaleString("zh-CN")}
+                            {` · 思考 Token ${admin.aiUsage.reasoningMeasuredRequests > 0 ? `${admin.aiUsage.reasoningTokens.toLocaleString("zh-CN")}（已报告 ${admin.aiUsage.reasoningMeasuredRequests}/${admin.aiUsage.requests} 次，包含在输出中）` : "暂无样本"}`}
+                          </small>
+                          <small
+                            title={`命中请求率 = 至少命中 1 个输入 Token 的请求数 ÷ 已提供缓存统计的请求数；Token 命中率 = 缓存命中输入 Token ÷ 已统计输入 Token，按 Token 加权，更接近输入费用影响。${adminCacheCoverage?.title ?? ""} 未提供统计的请求不参与。缓存只影响输入费，不影响输出费。`}
                           >
-                            {days.map((item) => {
-                              const height = maximum
-                                ? Math.max(5, (item.totalTokens / maximum) * 100)
-                                : 3;
-                              const value =
-                                item.totalTokens >= 1000
-                                  ? `${(item.totalTokens / 1000).toFixed(1)}k`
-                                  : item.totalTokens.toString();
-                              return (
-                                <div
-                                  className="usage-day"
-                                  key={item.date}
-                                  title={`${item.date} · ${item.totalTokens.toLocaleString("zh-CN")} Token · ${item.requests} 次请求`}
+                            {admin.aiUsage.cacheMeasuredInputTokens > 0
+                              ? "输入 Token 缓存命中率 " +
+                                (
+                                  (admin.aiUsage.cacheMeasuredHitTokens /
+                                    admin.aiUsage.cacheMeasuredInputTokens) *
+                                  100
+                                ).toFixed(1) +
+                                "% · 命中请求率 " +
+                                (admin.aiUsage.cacheMeasuredRequests > 0
+                                  ? `${((admin.aiUsage.cacheHitRequests / admin.aiUsage.cacheMeasuredRequests) * 100).toFixed(1)}%（${admin.aiUsage.cacheHitRequests}/${admin.aiUsage.cacheMeasuredRequests}）`
+                                  : "暂无样本") +
+                                " · 统计覆盖 " +
+                                (adminCacheCoverage?.percent.toFixed(1) ?? "0.0") +
+                                "%"
+                              : "输入 Token 缓存命中率暂无样本 · 命中请求率 " +
+                                (admin.aiUsage.cacheMeasuredRequests > 0
+                                  ? `${((admin.aiUsage.cacheHitRequests / admin.aiUsage.cacheMeasuredRequests) * 100).toFixed(1)}%（${admin.aiUsage.cacheHitRequests}/${admin.aiUsage.cacheMeasuredRequests}）`
+                                  : "暂无样本") +
+                                " · 统计覆盖 " +
+                                (adminCacheCoverage?.percent.toFixed(1) ?? "0.0") +
+                                "%"}
+                          </small>
+                          {adminAiCostEstimate && (
+                            <small
+                              className="admin-cost-estimate"
+                              title="按 2026-11-15 核对的 DeepSeek V4.1 Flash 公开美元单价回算 DeepSeek Flash 及其当前计费别名的历史 Token；低值假设未测输入命中缓存且全部为非高峰计费，高值假设未测输入未命中且全部为高峰计费。其它或未知模型、历史单价、人民币换算、赠送额度及独立搜索/抓取费用不包含在内，实际账单请以 DeepSeek 平台为准。"
+                            >
+                              当前价回算估值：
+                              {formatEstimatedUsd(adminAiCostEstimate.lowerUsd)} –
+                              {formatEstimatedUsd(adminAiCostEstimate.upperUsd)}
+                            </small>
+                          )}
+                          {adminAiCostEstimate?.measuredHitTokens ? (
+                            <small title="只按供应商明确报告的缓存命中 Token 计算相对缓存未命中的输入节省；仅限 DeepSeek Flash 及其当前计费别名，并使用 2026-11-15 核对的公开价，不推测没有缓存统计的请求。">
+                              已确认缓存命中可少付输入费约{" "}
+                              {formatEstimatedUsd(
+                                adminAiCostEstimate.confirmedCacheSavingsUsd.lower,
+                              )}{" "}
+                              –
+                              {formatEstimatedUsd(
+                                adminAiCostEstimate.confirmedCacheSavingsUsd.upper,
+                              )}
+                            </small>
+                          ) : null}
+                          <WandSparkles size={22} />
+                        </div>
+                      </div>
+                      <section className="usage-panel" aria-labelledby="usage-panel-title">
+                        <div className="usage-panel-head">
+                          <div>
+                            <span>LAST 7 DAYS · ASIA/SHANGHAI</span>
+                            <h2 id="usage-panel-title">AI 调用趋势</h2>
+                          </div>
+                          <div className="usage-total">
+                            <strong>
+                              {admin.dailyAiUsage
+                                .reduce((total, item) => total + item.totalTokens, 0)
+                                .toLocaleString("zh-CN")}
+                            </strong>
+                            <small>近 7 日 Token</small>
+                          </div>
+                        </div>
+                        <p className="usage-note">
+                          Token 用量用于定位消耗来源，不等同人民币账单金额；实际费用以 DeepSeek
+                          开放平台为准。
+                        </p>
+                        {(() => {
+                          const days = admin.dailyAiUsage;
+                          const maximum = Math.max(0, ...days.map((item) => item.totalTokens));
+                          const planningRequests = days.reduce(
+                            (total, item) => total + item.planningRequests,
+                            0,
+                          );
+                          const dialogueRequests = days.reduce(
+                            (total, item) => total + item.dialogueRequests,
+                            0,
+                          );
+                          const workbenchRequests = days.reduce(
+                            (total, item) => total + item.workbenchRequests,
+                            0,
+                          );
+                          const reviewerRequests = days.reduce(
+                            (total, item) => total + item.reviewerRequests,
+                            0,
+                          );
+                          const healthcheckRequests = days.reduce(
+                            (total, item) => total + item.healthcheckRequests,
+                            0,
+                          );
+                          const legacyRequests = days.reduce(
+                            (total, item) => total + item.legacyRequests,
+                            0,
+                          );
+                          const cacheMeasuredInputTokens = days.reduce(
+                            (total, item) => total + item.cacheMeasuredInputTokens,
+                            0,
+                          );
+                          const cacheMeasuredHitTokens = days.reduce(
+                            (total, item) => total + item.cacheMeasuredHitTokens,
+                            0,
+                          );
+                          const cacheMeasuredRequests = days.reduce(
+                            (total, item) => total + item.cacheMeasuredRequests,
+                            0,
+                          );
+                          const cacheHitRequests = days.reduce(
+                            (total, item) => total + item.cacheHitRequests,
+                            0,
+                          );
+                          const totalInputTokens = days.reduce(
+                            (total, item) => total + item.inputTokens,
+                            0,
+                          );
+                          const cacheCoverage = getInputCacheCoverage(
+                            totalInputTokens,
+                            cacheMeasuredInputTokens,
+                          );
+                          const totalRequests = days.reduce(
+                            (total, item) => total + item.requests,
+                            0,
+                          );
+                          const averageLatencyMs = totalRequests
+                            ? Math.round(
+                                days.reduce((total, item) => total + item.latencyMs, 0) /
+                                  totalRequests,
+                              )
+                            : 0;
+                          return (
+                            <>
+                              <div
+                                className="usage-chart"
+                                role="img"
+                                aria-label={`近七日 AI 请求量：规划 ${planningRequests} 次，对话 ${dialogueRequests} 次，工作台 ${workbenchRequests} 次，代码复核 ${reviewerRequests} 次，连接诊断 ${healthcheckRequests} 次，旧记录 ${legacyRequests} 次`}
+                              >
+                                {days.map((item) => {
+                                  const height = maximum
+                                    ? Math.max(5, (item.totalTokens / maximum) * 100)
+                                    : 3;
+                                  const value =
+                                    item.totalTokens >= 1000
+                                      ? `${(item.totalTokens / 1000).toFixed(1)}k`
+                                      : item.totalTokens.toString();
+                                  return (
+                                    <div
+                                      className="usage-day"
+                                      key={item.date}
+                                      title={`${item.date} · ${item.totalTokens.toLocaleString("zh-CN")} Token · ${item.requests} 次请求`}
+                                    >
+                                      <span>{value}</span>
+                                      <div className="usage-bar-track">
+                                        <i style={{ height: `${height}%` }} />
+                                      </div>
+                                      <small>{item.label}</small>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                              <p className="usage-breakdown">
+                                <span>{planningRequests.toLocaleString("zh-CN")} 次规划</span>
+                                <span>{dialogueRequests.toLocaleString("zh-CN")} 次对话</span>
+                                <span>
+                                  {workbenchRequests.toLocaleString("zh-CN")} 次工作台执行
+                                </span>
+                                <span>{reviewerRequests.toLocaleString("zh-CN")} 次代码复核</span>
+                                <span>
+                                  {healthcheckRequests.toLocaleString("zh-CN")} 次连接诊断
+                                </span>
+                                {legacyRequests > 0 && (
+                                  <span title="这些历史记录未保存来源分类。">
+                                    {legacyRequests.toLocaleString("zh-CN")} 次旧记录
+                                  </span>
+                                )}
+                                <span>
+                                  {cacheMeasuredInputTokens > 0
+                                    ? `供应商报告缓存命中 ${cacheMeasuredHitTokens.toLocaleString("zh-CN")} tokens / 已统计输入 ${cacheMeasuredInputTokens.toLocaleString("zh-CN")}`
+                                    : "缓存命中暂无统计样本"}
+                                </span>
+                                <span
+                                  title={`命中请求率 = 至少命中 1 个输入 Token 的请求数 ÷ 已提供缓存统计的请求数；Token 命中率 = 缓存命中输入 Token ÷ 已统计输入 Token，按 Token 加权，更接近输入费用影响。${cacheCoverage.title} 未提供统计的请求不参与。缓存只影响输入费，不影响输出费。`}
                                 >
-                                  <span>{value}</span>
-                                  <div className="usage-bar-track">
-                                    <i style={{ height: `${height}%` }} />
-                                  </div>
-                                  <small>{item.label}</small>
+                                  {cacheMeasuredInputTokens > 0
+                                    ? "输入 Token 缓存命中率 " +
+                                      (
+                                        (cacheMeasuredHitTokens / cacheMeasuredInputTokens) *
+                                        100
+                                      ).toFixed(1) +
+                                      "% · 命中请求率 " +
+                                      (cacheMeasuredRequests > 0
+                                        ? `${((cacheHitRequests / cacheMeasuredRequests) * 100).toFixed(1)}%（${cacheHitRequests}/${cacheMeasuredRequests}）`
+                                        : "暂无样本") +
+                                      " · 覆盖 " +
+                                      cacheCoverage.percent.toFixed(1) +
+                                      "%"
+                                    : "暂无缓存统计样本 · 命中请求率 " +
+                                      (cacheMeasuredRequests > 0
+                                        ? `${((cacheHitRequests / cacheMeasuredRequests) * 100).toFixed(1)}%（${cacheHitRequests}/${cacheMeasuredRequests}）`
+                                        : "暂无样本") +
+                                      " · 覆盖 " +
+                                      cacheCoverage.percent.toFixed(1) +
+                                      "%"}
+                                </span>
+                                <span>平均响应 {averageLatencyMs.toLocaleString("zh-CN")} ms</span>
+                              </p>
+                            </>
+                          );
+                        })()}
+                      </section>
+                      <details className="usage-source-breakdown">
+                        <summary>
+                          <span>按 Agent 来源查看用量与缓存</span>
+                          <small>全部历史记录 · {admin.usageBySource.length} 个来源</small>
+                        </summary>
+                        <div className="usage-source-scroll">
+                          <div
+                            className="usage-source-table"
+                            role="table"
+                            aria-label="按 Agent 来源查看 Token 用量、Flash 费用估值和缓存命中率"
+                          >
+                            <div className="usage-source-row usage-source-head" role="row">
+                              <span role="columnheader">来源</span>
+                              <span role="columnheader">请求数</span>
+                              <span role="columnheader">输入 / 输出 Token</span>
+                              <span role="columnheader">Flash 当前价估值</span>
+                              <span role="columnheader">命中请求</span>
+                              <span role="columnheader">请求命中率</span>
+                              <span role="columnheader">Token 命中率</span>
+                              <span role="columnheader">统计覆盖</span>
+                            </div>
+                            {admin.usageBySource.map((item) => {
+                              const requestRate =
+                                item.cacheMeasuredRequests > 0
+                                  ? `${((item.cacheHitRequests / item.cacheMeasuredRequests) * 100).toFixed(1)}%`
+                                  : "暂无样本";
+                              const tokenRate =
+                                item.cacheMeasuredInputTokens > 0
+                                  ? `${((item.cacheMeasuredHitTokens / item.cacheMeasuredInputTokens) * 100).toFixed(1)}%`
+                                  : "暂无样本";
+                              const coverage =
+                                item.inputTokens > 0
+                                  ? `${((item.cacheMeasuredInputTokens / item.inputTokens) * 100).toFixed(1)}%`
+                                  : "暂无样本";
+                              const flashEstimate =
+                                item.flashRequests > 0
+                                  ? estimateDeepSeekFlashCost({
+                                      inputTokens: item.flashInputTokens,
+                                      outputTokens: item.flashOutputTokens,
+                                      cacheMeasuredInputTokens: item.flashCacheMeasuredInputTokens,
+                                      cacheMeasuredHitTokens: item.flashCacheMeasuredHitTokens,
+                                    })
+                                  : null;
+                              return (
+                                <div className="usage-source-row" role="row" key={item.source}>
+                                  <strong role="rowheader">
+                                    {adminUsageSourceLabel(item.source)}
+                                  </strong>
+                                  <span role="cell" data-label="请求数">
+                                    {item.requests.toLocaleString("zh-CN")}
+                                  </span>
+                                  <span role="cell" data-label="输入 / 输出 Token">
+                                    {item.inputTokens.toLocaleString("zh-CN")} /{" "}
+                                    {item.outputTokens.toLocaleString("zh-CN")}
+                                    <small className="usage-source-reasoning">
+                                      {item.reasoningMeasuredRequests > 0
+                                        ? `思考 ${item.reasoningTokens.toLocaleString("zh-CN")}（输出内；${item.reasoningMeasuredRequests}/${item.requests} 次有统计）`
+                                        : "思考 Token 暂无样本"}
+                                    </small>
+                                  </span>
+                                  <span
+                                    role="cell"
+                                    data-label="Flash 费用估值"
+                                    title={
+                                      flashEstimate
+                                        ? `${item.flashRequests.toLocaleString("zh-CN")} 次 Flash 请求 · 输入 ${item.flashInputTokens.toLocaleString("zh-CN")} · 输出 ${item.flashOutputTokens.toLocaleString("zh-CN")} · 按当前公开价估算`
+                                        : "此来源没有可估价的 DeepSeek Flash 用量"
+                                    }
+                                  >
+                                    {flashEstimate
+                                      ? `${formatEstimatedUsd(flashEstimate.lowerUsd)} – ${formatEstimatedUsd(flashEstimate.upperUsd)}`
+                                      : "无 Flash 用量"}
+                                  </span>
+                                  <span role="cell" data-label="缓存命中请求">
+                                    {item.cacheHitRequests.toLocaleString("zh-CN")} /{" "}
+                                    {item.cacheMeasuredRequests.toLocaleString("zh-CN")}
+                                  </span>
+                                  <span role="cell" data-label="请求命中率">
+                                    {requestRate}
+                                  </span>
+                                  <span role="cell" data-label="Token 命中率">
+                                    {item.cacheMeasuredHitTokens.toLocaleString("zh-CN")} /{" "}
+                                    {item.cacheMeasuredInputTokens.toLocaleString("zh-CN")} ·{" "}
+                                    {tokenRate}
+                                  </span>
+                                  <span role="cell" data-label="统计覆盖">
+                                    {item.cacheMeasuredInputTokens.toLocaleString("zh-CN")} /{" "}
+                                    {item.inputTokens.toLocaleString("zh-CN")} · {coverage}
+                                  </span>
                                 </div>
                               );
                             })}
                           </div>
-                          <p className="usage-breakdown">
-                            <span>{planningRequests.toLocaleString("zh-CN")} 次规划</span>
-                            <span>{dialogueRequests.toLocaleString("zh-CN")} 次对话</span>
-                            <span>{workbenchRequests.toLocaleString("zh-CN")} 次工作台执行</span>
-                            <span>{reviewerRequests.toLocaleString("zh-CN")} 次代码复核</span>
-                            <span>{healthcheckRequests.toLocaleString("zh-CN")} 次连接诊断</span>
-                            {legacyRequests > 0 && (
-                              <span title="这些历史记录未保存来源分类。">
-                                {legacyRequests.toLocaleString("zh-CN")} 次旧记录
-                              </span>
-                            )}
-                            <span>
-                              {cacheMeasuredInputTokens > 0
-                                ? `供应商报告缓存命中 ${cacheMeasuredHitTokens.toLocaleString("zh-CN")} tokens / 已统计输入 ${cacheMeasuredInputTokens.toLocaleString("zh-CN")}`
-                                : "缓存命中暂无统计样本"}
-                            </span>
-                            <span
-                              title={`命中请求率 = 至少命中 1 个输入 Token 的请求数 ÷ 已提供缓存统计的请求数；Token 命中率 = 缓存命中输入 Token ÷ 已统计输入 Token，按 Token 加权，更接近输入费用影响。${cacheCoverage.title} 未提供统计的请求不参与。缓存只影响输入费，不影响输出费。`}
+                        </div>
+                        <p>
+                          请求数与输入 / 输出 Token 汇总该来源的全部模型；费用区间只估算 DeepSeek
+                          Flash 及其计费别名，使用当前公开价，不代表历史账单，也不含搜索或抓取费用。{" "}
+                          请求命中率看“命中过的请求占比”；Token 命中率按输入 Token
+                          加权，更接近缓存对输入费用的影响。
+                          未提供缓存统计的请求不计入两个命中率分母；其输入 Token 仍计入覆盖率分母。
+                          例如，请求命中率 50% 但 Token 命中率
+                          0.5%，表示命中的请求只复用了很少输入；因此不能单靠请求命中率估算省了多少钱。
+                        </p>
+                      </details>
+                      <details className="usage-recent-breakdown">
+                        <summary>
+                          <span>最近 100 次 AI 调用</span>
+                          <small>{admin.recentUsage.length} 条 · 查看单次 Token 与缓存明细</small>
+                        </summary>
+                        <p>
+                          仅统计通过 VHFXNEX 服务端记录的调用，不包含同一 DeepSeek Key
+                          在其他应用中的请求。
+                          此处不保存提示词、文件内容或原始账户标识；费用是按当前公开价估算，不是账单金额。
+                        </p>
+                        <div className="usage-export-toolbar">
+                          <span>
+                            CSV 仅含当前列表中的用量指标，不含提示词、文件内容或账户标识。
+                          </span>
+                          <button
+                            className="usage-export-button"
+                            type="button"
+                            onClick={() => downloadAdminUsageCsv(admin.recentUsage)}
+                            disabled={admin.recentUsage.length === 0}
+                          >
+                            <Download size={14} aria-hidden="true" />
+                            导出最近调用 CSV
+                          </button>
+                        </div>
+                        {admin.recentUsage.length > 0 ? (
+                          <div className="usage-recent-scroll">
+                            <div
+                              className="usage-recent-table"
+                              role="table"
+                              aria-label="最近 100 次 AI 调用的 Token、缓存与费用估值"
                             >
-                              {cacheMeasuredInputTokens > 0
-                                ? "输入 Token 缓存命中率 " +
-                                  (
-                                    (cacheMeasuredHitTokens / cacheMeasuredInputTokens) *
-                                    100
-                                  ).toFixed(1) +
-                                  "% · 命中请求率 " +
-                                  (cacheMeasuredRequests > 0
-                                    ? `${((cacheHitRequests / cacheMeasuredRequests) * 100).toFixed(1)}%（${cacheHitRequests}/${cacheMeasuredRequests}）`
-                                    : "暂无样本") +
-                                  " · 覆盖 " +
-                                  cacheCoverage.percent.toFixed(1) +
-                                  "%"
-                                : "暂无缓存统计样本 · 命中请求率 " +
-                                  (cacheMeasuredRequests > 0
-                                    ? `${((cacheHitRequests / cacheMeasuredRequests) * 100).toFixed(1)}%（${cacheHitRequests}/${cacheMeasuredRequests}）`
-                                    : "暂无样本") +
-                                  " · 覆盖 " +
-                                  cacheCoverage.percent.toFixed(1) +
-                                  "%"}
-                            </span>
-                            <span>平均响应 {averageLatencyMs.toLocaleString("zh-CN")} ms</span>
-                          </p>
-                        </>
-                      );
-                    })()}
-                  </section>
-                  <details className="usage-source-breakdown">
-                    <summary>
-                      <span>按 Agent 来源查看用量与缓存</span>
-                      <small>全部历史记录 · {admin.usageBySource.length} 个来源</small>
-                    </summary>
-                    <div className="usage-source-scroll">
-                      <div
-                        className="usage-source-table"
-                        role="table"
-                        aria-label="按 Agent 来源查看 Token 用量、Flash 费用估值和缓存命中率"
-                      >
-                        <div className="usage-source-row usage-source-head" role="row">
-                          <span role="columnheader">来源</span>
-                          <span role="columnheader">请求数</span>
-                          <span role="columnheader">输入 / 输出 Token</span>
-                          <span role="columnheader">Flash 当前价估值</span>
-                          <span role="columnheader">命中请求</span>
-                          <span role="columnheader">请求命中率</span>
-                          <span role="columnheader">Token 命中率</span>
-                          <span role="columnheader">统计覆盖</span>
-                        </div>
-                        {admin.usageBySource.map((item) => {
-                          const requestRate =
-                            item.cacheMeasuredRequests > 0
-                              ? `${((item.cacheHitRequests / item.cacheMeasuredRequests) * 100).toFixed(1)}%`
-                              : "暂无样本";
-                          const tokenRate =
-                            item.cacheMeasuredInputTokens > 0
-                              ? `${((item.cacheMeasuredHitTokens / item.cacheMeasuredInputTokens) * 100).toFixed(1)}%`
-                              : "暂无样本";
-                          const coverage =
-                            item.inputTokens > 0
-                              ? `${((item.cacheMeasuredInputTokens / item.inputTokens) * 100).toFixed(1)}%`
-                              : "暂无样本";
-                          const flashEstimate =
-                            item.flashRequests > 0
-                              ? estimateDeepSeekFlashCost({
-                                  inputTokens: item.flashInputTokens,
-                                  outputTokens: item.flashOutputTokens,
-                                  cacheMeasuredInputTokens: item.flashCacheMeasuredInputTokens,
-                                  cacheMeasuredHitTokens: item.flashCacheMeasuredHitTokens,
-                                })
-                              : null;
-                          return (
-                            <div className="usage-source-row" role="row" key={item.source}>
-                              <strong role="rowheader">{adminUsageSourceLabel(item.source)}</strong>
-                              <span role="cell" data-label="请求数">
-                                {item.requests.toLocaleString("zh-CN")}
-                              </span>
-                              <span role="cell" data-label="输入 / 输出 Token">
-                                {item.inputTokens.toLocaleString("zh-CN")} /{" "}
-                                {item.outputTokens.toLocaleString("zh-CN")}
-                                <small className="usage-source-reasoning">
-                                  {item.reasoningMeasuredRequests > 0
-                                    ? `思考 ${item.reasoningTokens.toLocaleString("zh-CN")}（输出内；${item.reasoningMeasuredRequests}/${item.requests} 次有统计）`
-                                    : "思考 Token 暂无样本"}
-                                </small>
-                              </span>
-                              <span
-                                role="cell"
-                                data-label="Flash 费用估值"
-                                title={
-                                  flashEstimate
-                                    ? `${item.flashRequests.toLocaleString("zh-CN")} 次 Flash 请求 · 输入 ${item.flashInputTokens.toLocaleString("zh-CN")} · 输出 ${item.flashOutputTokens.toLocaleString("zh-CN")} · 按当前公开价估算`
-                                    : "此来源没有可估价的 DeepSeek Flash 用量"
-                                }
-                              >
-                                {flashEstimate
-                                  ? `${formatEstimatedUsd(flashEstimate.lowerUsd)} – ${formatEstimatedUsd(flashEstimate.upperUsd)}`
-                                  : "无 Flash 用量"}
-                              </span>
-                              <span role="cell" data-label="缓存命中请求">
-                                {item.cacheHitRequests.toLocaleString("zh-CN")} /{" "}
-                                {item.cacheMeasuredRequests.toLocaleString("zh-CN")}
-                              </span>
-                              <span role="cell" data-label="请求命中率">
-                                {requestRate}
-                              </span>
-                              <span role="cell" data-label="Token 命中率">
-                                {item.cacheMeasuredHitTokens.toLocaleString("zh-CN")} /{" "}
-                                {item.cacheMeasuredInputTokens.toLocaleString("zh-CN")} ·{" "}
-                                {tokenRate}
-                              </span>
-                              <span role="cell" data-label="统计覆盖">
-                                {item.cacheMeasuredInputTokens.toLocaleString("zh-CN")} /{" "}
-                                {item.inputTokens.toLocaleString("zh-CN")} · {coverage}
-                              </span>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-                    <p>
-                      请求数与输入 / 输出 Token 汇总该来源的全部模型；费用区间只估算 DeepSeek Flash
-                      及其计费别名，使用当前公开价，不代表历史账单，也不含搜索或抓取费用。{" "}
-                      请求命中率看“命中过的请求占比”；Token 命中率按输入 Token
-                      加权，更接近缓存对输入费用的影响。
-                      未提供缓存统计的请求不计入两个命中率分母；其输入 Token 仍计入覆盖率分母。
-                      例如，请求命中率 50% 但 Token 命中率
-                      0.5%，表示命中的请求只复用了很少输入；因此不能单靠请求命中率估算省了多少钱。
-                    </p>
-                  </details>
-                  <details className="usage-recent-breakdown">
-                    <summary>
-                      <span>最近 100 次 AI 调用</span>
-                      <small>{admin.recentUsage.length} 条 · 查看单次 Token 与缓存明细</small>
-                    </summary>
-                    <p>
-                      仅统计通过 VHFXNEX 服务端记录的调用，不包含同一 DeepSeek Key
-                      在其他应用中的请求。
-                      此处不保存提示词、文件内容或原始账户标识；费用是按当前公开价估算，不是账单金额。
-                    </p>
-                    <div className="usage-export-toolbar">
-                      <span>CSV 仅含当前列表中的用量指标，不含提示词、文件内容或账户标识。</span>
-                      <button
-                        className="usage-export-button"
-                        type="button"
-                        onClick={() => downloadAdminUsageCsv(admin.recentUsage)}
-                        disabled={admin.recentUsage.length === 0}
-                      >
-                        <Download size={14} aria-hidden="true" />
-                        导出最近调用 CSV
-                      </button>
-                    </div>
-                    {admin.recentUsage.length > 0 ? (
-                      <div className="usage-recent-scroll">
-                        <div
-                          className="usage-recent-table"
-                          role="table"
-                          aria-label="最近 100 次 AI 调用的 Token、缓存与费用估值"
-                        >
-                          <div className="usage-recent-row usage-recent-head" role="row">
-                            <span role="columnheader">时间（北京时间）</span>
-                            <span role="columnheader">工作区 / Agent</span>
-                            <span role="columnheader">输入 / 输出 Token</span>
-                            <span role="columnheader">缓存命中 / 已统计</span>
-                            <span role="columnheader">请求命中</span>
-                            <span role="columnheader">耗时</span>
-                            <span role="columnheader">Flash 费用估值</span>
-                          </div>
-                          {admin.recentUsage.map((item) => {
-                            const measuredInputTokens = Math.min(
-                              item.inputTokens,
-                              Math.max(0, item.cacheMeasuredInputTokens),
-                            );
-                            const hitTokens = Math.min(
-                              measuredInputTokens,
-                              Math.max(0, item.cacheMeasuredHitTokens),
-                            );
-                            const missTokens = measuredInputTokens - hitTokens;
-                            const cacheCoverage =
-                              item.inputTokens > 0
-                                ? (measuredInputTokens / item.inputTokens) * 100
-                                : 0;
-                            const flashEstimate = isDeepSeekFlashModel(item.model)
-                              ? estimateDeepSeekFlashCost({
-                                  inputTokens: item.inputTokens,
-                                  outputTokens: item.outputTokens,
-                                  cacheMeasuredInputTokens: measuredInputTokens,
-                                  cacheMeasuredHitTokens: hitTokens,
-                                })
-                              : null;
-                            return (
-                              <div className="usage-recent-row" role="row" key={item.id}>
-                                <span role="cell" data-label="时间（北京时间）">
-                                  {formatAdminUsageTimestamp(item.createdAt)}
-                                </span>
-                                <span role="cell" data-label="工作区 / Agent">
-                                  <strong>{adminUsageSourceLabel(item.source)}</strong>
-                                  <small title={item.workspaceTitle}>{item.workspaceTitle}</small>
-                                  <small>{item.model}</small>
-                                </span>
-                                <span role="cell" data-label="输入 / 输出 Token">
-                                  {item.inputTokens.toLocaleString("zh-CN")} /{" "}
-                                  {item.outputTokens.toLocaleString("zh-CN")}
-                                  {item.reasoningMeasuredRequests > 0 && (
-                                    <small>
-                                      思考 {item.reasoningTokens.toLocaleString("zh-CN")}
-                                      （包含在输出中）
-                                    </small>
-                                  )}
-                                </span>
-                                <span role="cell" data-label="缓存命中 / 已统计">
-                                  {measuredInputTokens > 0 ? (
-                                    <>
-                                      {hitTokens.toLocaleString("zh-CN")} /{" "}
-                                      {measuredInputTokens.toLocaleString("zh-CN")}
-                                      <small>
-                                        未命中 {missTokens.toLocaleString("zh-CN")} · 覆盖{" "}
-                                        {cacheCoverage.toFixed(1)}%
-                                      </small>
-                                    </>
-                                  ) : (
-                                    "暂无缓存遥测"
-                                  )}
-                                </span>
-                                <span
-                                  className={
-                                    measuredInputTokens > 0
-                                      ? hitTokens > 0
-                                        ? "usage-request-hit"
-                                        : "usage-request-miss"
-                                      : "usage-request-unknown"
-                                  }
-                                  role="cell"
-                                  data-label="请求命中"
-                                >
-                                  {measuredInputTokens > 0
-                                    ? hitTokens > 0
-                                      ? "已命中"
-                                      : "无命中"
-                                    : "暂无样本"}
-                                </span>
-                                <span role="cell" data-label="耗时">
-                                  {item.latencyMs.toLocaleString("zh-CN")} ms
-                                </span>
-                                <span role="cell" data-label="Flash 费用估值">
-                                  {flashEstimate
-                                    ? `${formatEstimatedUsd(flashEstimate.lowerUsd)} – ${formatEstimatedUsd(flashEstimate.upperUsd)}`
-                                    : "非 Flash 模型"}
-                                </span>
+                              <div className="usage-recent-row usage-recent-head" role="row">
+                                <span role="columnheader">时间（北京时间）</span>
+                                <span role="columnheader">工作区 / Agent</span>
+                                <span role="columnheader">输入 / 输出 Token</span>
+                                <span role="columnheader">缓存命中 / 已统计</span>
+                                <span role="columnheader">请求命中</span>
+                                <span role="columnheader">耗时</span>
+                                <span role="columnheader">Flash 费用估值</span>
                               </div>
-                            );
-                          })}
+                              {admin.recentUsage.map((item) => {
+                                const measuredInputTokens = Math.min(
+                                  item.inputTokens,
+                                  Math.max(0, item.cacheMeasuredInputTokens),
+                                );
+                                const hitTokens = Math.min(
+                                  measuredInputTokens,
+                                  Math.max(0, item.cacheMeasuredHitTokens),
+                                );
+                                const missTokens = measuredInputTokens - hitTokens;
+                                const cacheCoverage =
+                                  item.inputTokens > 0
+                                    ? (measuredInputTokens / item.inputTokens) * 100
+                                    : 0;
+                                const flashEstimate = isDeepSeekFlashModel(item.model)
+                                  ? estimateDeepSeekFlashCost({
+                                      inputTokens: item.inputTokens,
+                                      outputTokens: item.outputTokens,
+                                      cacheMeasuredInputTokens: measuredInputTokens,
+                                      cacheMeasuredHitTokens: hitTokens,
+                                    })
+                                  : null;
+                                return (
+                                  <div className="usage-recent-row" role="row" key={item.id}>
+                                    <span role="cell" data-label="时间（北京时间）">
+                                      {formatAdminUsageTimestamp(item.createdAt)}
+                                    </span>
+                                    <span role="cell" data-label="工作区 / Agent">
+                                      <strong>{adminUsageSourceLabel(item.source)}</strong>
+                                      <small title={item.workspaceTitle}>
+                                        {item.workspaceTitle}
+                                      </small>
+                                      <small>{item.model}</small>
+                                    </span>
+                                    <span role="cell" data-label="输入 / 输出 Token">
+                                      {item.inputTokens.toLocaleString("zh-CN")} /{" "}
+                                      {item.outputTokens.toLocaleString("zh-CN")}
+                                      {item.reasoningMeasuredRequests > 0 && (
+                                        <small>
+                                          思考 {item.reasoningTokens.toLocaleString("zh-CN")}
+                                          （包含在输出中）
+                                        </small>
+                                      )}
+                                    </span>
+                                    <span role="cell" data-label="缓存命中 / 已统计">
+                                      {measuredInputTokens > 0 ? (
+                                        <>
+                                          {hitTokens.toLocaleString("zh-CN")} /{" "}
+                                          {measuredInputTokens.toLocaleString("zh-CN")}
+                                          <small>
+                                            未命中 {missTokens.toLocaleString("zh-CN")} · 覆盖{" "}
+                                            {cacheCoverage.toFixed(1)}%
+                                          </small>
+                                        </>
+                                      ) : (
+                                        "暂无缓存遥测"
+                                      )}
+                                    </span>
+                                    <span
+                                      className={
+                                        measuredInputTokens > 0
+                                          ? hitTokens > 0
+                                            ? "usage-request-hit"
+                                            : "usage-request-miss"
+                                          : "usage-request-unknown"
+                                      }
+                                      role="cell"
+                                      data-label="请求命中"
+                                    >
+                                      {measuredInputTokens > 0
+                                        ? hitTokens > 0
+                                          ? "已命中"
+                                          : "无命中"
+                                        : "暂无样本"}
+                                    </span>
+                                    <span role="cell" data-label="耗时">
+                                      {item.latencyMs.toLocaleString("zh-CN")} ms
+                                    </span>
+                                    <span role="cell" data-label="Flash 费用估值">
+                                      {flashEstimate
+                                        ? `${formatEstimatedUsd(flashEstimate.lowerUsd)} – ${formatEstimatedUsd(flashEstimate.upperUsd)}`
+                                        : "非 Flash 模型"}
+                                    </span>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="usage-recent-empty">还没有记录到模型调用。</div>
+                        )}
+                      </details>
+                      <section className={`ai-health ai-health-${aiHealth.state}`}>
+                        <div className="ai-health-mark">
+                          <Sparkles size={19} />
+                        </div>
+                        <div className="ai-health-copy">
+                          <span>AI SERVICE · DEEPSEEK V4.1 FLASH</span>
+                          <strong>
+                            {aiHealth.state === "connected"
+                              ? `${aiHealth.message} · ${aiHealth.latencyMs} ms`
+                              : aiHealth.state === "checking"
+                                ? aiHealth.message
+                                : aiHealth.state === "error"
+                                  ? aiHealth.message
+                                  : aiConfigured
+                                    ? "Key 已配置，尚未进行连接检查"
+                                    : "尚未配置 Key · 可继续使用演示模式"}
+                          </strong>
+                          {aiHealth.state === "connected" && (
+                            <small>{aiHealth.model} · 仅发送最小连接探测，不提交用户资料</small>
+                          )}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={checkAiConnection}
+                          disabled={!aiConfigured || aiHealth.state === "checking"}
+                        >
+                          {aiHealth.state === "checking"
+                            ? "正在检查…"
+                            : aiHealth.state === "connected" || aiHealth.state === "error"
+                              ? "重新检查"
+                              : "测试连接"}
+                          <ArrowRight size={15} />
+                        </button>
+                        <span className="sr-only" role="status" aria-live="polite">
+                          {aiHealth.message}
+                        </span>
+                      </section>
+                      <div className="admin-table">
+                        <h2>
+                          用户 <small>平台账户概览</small>
+                        </h2>
+                        <div className="table-scroll">
+                          <table aria-label="平台用户">
+                            <thead>
+                              <tr>
+                                <th scope="col">用户</th>
+                                <th scope="col">邮箱</th>
+                                <th scope="col">权限</th>
+                                <th scope="col">加入时间</th>
+                                <th scope="col">操作</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {admin.users.map((item) => (
+                                <tr key={item.id}>
+                                  <td data-label="用户">
+                                    <span className="admin-user-cell">
+                                      <i>{item.name.slice(0, 1)}</i>
+                                      <span>{item.name}</span>
+                                    </span>
+                                  </td>
+                                  <td data-label="邮箱">
+                                    <span>{item.email}</span>
+                                  </td>
+                                  <td data-label="权限">
+                                    <span className="role">
+                                      {item.role === "admin" ? "管理员" : "成员"}
+                                    </span>
+                                  </td>
+                                  <td data-label="加入时间">
+                                    <span>{shortDate(item.created_at)}</span>
+                                  </td>
+                                  <td data-label="操作">
+                                    {item.id !== user.id && (
+                                      <div className="admin-actions">
+                                        <button
+                                          className="table-action"
+                                          onClick={() => {
+                                            const role = item.role === "admin" ? "member" : "admin";
+                                            setConfirmation({
+                                              title: "调整账户权限？",
+                                              description:
+                                                role === "admin"
+                                                  ? `将「${item.name}」设为管理员后，对方可以查看所有用户与工作空间，并管理账户权限。`
+                                                  : `将「${item.name}」设为成员后，对方将失去管理后台权限。`,
+                                              confirmLabel:
+                                                role === "admin" ? "设为管理员" : "设为成员",
+                                              tone: "access",
+                                              onConfirm: () => changeRole(item.id, role),
+                                            });
+                                          }}
+                                        >
+                                          {item.role === "admin" ? "设为成员" : "设为管理员"}
+                                        </button>
+                                        <button
+                                          className="table-action danger"
+                                          onClick={() =>
+                                            setConfirmation({
+                                              title: "删除这个账户？",
+                                              description: `「${item.name}」的账户、工作空间和知识资料都会永久删除，无法恢复。`,
+                                              confirmLabel: "删除账户和资料",
+                                              tone: "danger",
+                                              onConfirm: () => adminRemoveUser(item),
+                                            })
+                                          }
+                                          aria-label={`删除账户：${item.name}`}
+                                        >
+                                          删除账户
+                                        </button>
+                                      </div>
+                                    )}
+                                    {item.id === user.id && (
+                                      <span className="admin-current-user">当前账户</span>
+                                    )}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
                         </div>
                       </div>
-                    ) : (
-                      <div className="usage-recent-empty">还没有记录到模型调用。</div>
-                    )}
-                  </details>
-                  <section className={`ai-health ai-health-${aiHealth.state}`}>
-                    <div className="ai-health-mark">
-                      <Sparkles size={19} />
-                    </div>
-                    <div className="ai-health-copy">
-                      <span>AI SERVICE · DEEPSEEK V4.1 FLASH</span>
-                      <strong>
-                        {aiHealth.state === "connected"
-                          ? `${aiHealth.message} · ${aiHealth.latencyMs} ms`
-                          : aiHealth.state === "checking"
-                            ? aiHealth.message
-                            : aiHealth.state === "error"
-                              ? aiHealth.message
-                              : aiConfigured
-                                ? "Key 已配置，尚未进行连接检查"
-                                : "尚未配置 Key · 可继续使用演示模式"}
-                      </strong>
-                      {aiHealth.state === "connected" && (
-                        <small>{aiHealth.model} · 仅发送最小连接探测，不提交用户资料</small>
-                      )}
-                    </div>
-                    <button
-                      type="button"
-                      onClick={checkAiConnection}
-                      disabled={!aiConfigured || aiHealth.state === "checking"}
-                    >
-                      {aiHealth.state === "checking"
-                        ? "正在检查…"
-                        : aiHealth.state === "connected" || aiHealth.state === "error"
-                          ? "重新检查"
-                          : "测试连接"}
-                      <ArrowRight size={15} />
-                    </button>
-                    <span className="sr-only" role="status" aria-live="polite">
-                      {aiHealth.message}
-                    </span>
-                  </section>
-                  <div className="admin-table">
-                    <h2>
-                      用户 <small>平台账户概览</small>
-                    </h2>
-                    <div className="table-scroll">
-                      <table aria-label="平台用户">
-                        <thead>
-                          <tr>
-                            <th scope="col">用户</th>
-                            <th scope="col">邮箱</th>
-                            <th scope="col">权限</th>
-                            <th scope="col">加入时间</th>
-                            <th scope="col">操作</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {admin.users.map((item) => (
-                            <tr key={item.id}>
-                              <td data-label="用户">
-                                <span className="admin-user-cell">
-                                  <i>{item.name.slice(0, 1)}</i>
-                                  <span>{item.name}</span>
-                                </span>
-                              </td>
-                              <td data-label="邮箱">
-                                <span>{item.email}</span>
-                              </td>
-                              <td data-label="权限">
-                                <span className="role">
-                                  {item.role === "admin" ? "管理员" : "成员"}
-                                </span>
-                              </td>
-                              <td data-label="加入时间">
-                                <span>{shortDate(item.created_at)}</span>
-                              </td>
-                              <td data-label="操作">
-                                {item.id !== user.id && (
-                                  <div className="admin-actions">
-                                    <button
-                                      className="table-action"
-                                      onClick={() => {
-                                        const role = item.role === "admin" ? "member" : "admin";
-                                        setConfirmation({
-                                          title: "调整账户权限？",
-                                          description:
-                                            role === "admin"
-                                              ? `将「${item.name}」设为管理员后，对方可以查看所有用户与工作空间，并管理账户权限。`
-                                              : `将「${item.name}」设为成员后，对方将失去管理后台权限。`,
-                                          confirmLabel:
-                                            role === "admin" ? "设为管理员" : "设为成员",
-                                          tone: "access",
-                                          onConfirm: () => changeRole(item.id, role),
-                                        });
-                                      }}
-                                    >
-                                      {item.role === "admin" ? "设为成员" : "设为管理员"}
-                                    </button>
+                      <div className="admin-table">
+                        <h2>
+                          最近的目标{" "}
+                          <small>
+                            按最后更新时间排序 · Token 按规划、对话、工作台和代码复核拆分
+                          </small>
+                        </h2>
+                        <div className="table-scroll">
+                          <table aria-label="最近的目标工作空间">
+                            <thead>
+                              <tr>
+                                <th scope="col">目标</th>
+                                <th scope="col">类型</th>
+                                <th scope="col">创建者</th>
+                                <th scope="col">AI 用量</th>
+                                <th scope="col">更新时间</th>
+                                <th scope="col">操作</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {admin.workspaces.map((item) => (
+                                <tr key={item.id}>
+                                  <td data-label="目标">
+                                    <span>{item.title}</span>
+                                  </td>
+                                  <td data-label="类型">
+                                    <span>{item.category}</span>
+                                  </td>
+                                  <td data-label="创建者">
+                                    <span>{item.owner}</span>
+                                  </td>
+                                  <td data-label="AI 用量">
+                                    <div className="admin-workspace-usage">
+                                      <span>
+                                        {item.aiTokens.toLocaleString("zh-CN")} tokens ·{" "}
+                                        {item.aiRequests} 次模型请求
+                                      </span>
+                                      <small className="admin-workspace-usage-detail">
+                                        规划 {item.plannerTokens.toLocaleString("zh-CN")} · 对话{" "}
+                                        {item.dialogueTokens.toLocaleString("zh-CN")} · 工作台{" "}
+                                        {item.workbenchTokens.toLocaleString("zh-CN")}
+                                        {` · 代码复核 ${item.reviewerTokens.toLocaleString("zh-CN")}`}
+                                        {item.legacyTokens > 0 &&
+                                          ` · 旧记录 ${item.legacyTokens.toLocaleString("zh-CN")}`}
+                                      </small>
+                                      <small className="admin-workspace-usage-detail">
+                                        {item.reasoningMeasuredRequests > 0
+                                          ? `思考 Token ${item.reasoningTokens.toLocaleString("zh-CN")}（已报告 ${item.reasoningMeasuredRequests}/${item.aiRequests} 次，包含在输出中）`
+                                          : "思考 Token 暂无样本"}
+                                      </small>
+                                      {(() => {
+                                        const estimate = adminWorkspaceCostEstimates.get(item.id);
+                                        if (
+                                          !estimate ||
+                                          item.flashInputTokens + item.flashOutputTokens === 0
+                                        )
+                                          return null;
+                                        const cacheCoverage = getInputCacheCoverage(
+                                          item.flashInputTokens,
+                                          item.flashCacheMeasuredInputTokens,
+                                        );
+                                        const cacheHitRate =
+                                          estimate.measuredInputTokens > 0
+                                            ? (estimate.measuredHitTokens /
+                                                estimate.measuredInputTokens) *
+                                              100
+                                            : null;
+                                        const requestHitRate =
+                                          item.flashCacheMeasuredRequests > 0
+                                            ? (item.flashCacheHitRequests /
+                                                item.flashCacheMeasuredRequests) *
+                                              100
+                                            : null;
+                                        return (
+                                          <>
+                                            <small className="admin-workspace-cost">
+                                              Flash 当前价估值：
+                                              {formatEstimatedUsd(estimate.lowerUsd)} –{" "}
+                                              {formatEstimatedUsd(estimate.upperUsd)}
+                                            </small>
+                                            <small
+                                              className="admin-workspace-cache"
+                                              title={`${cacheCoverage.title} 命中率按供应商已统计输入 Token 加权计算，不是命中请求占比。`}
+                                            >
+                                              输入 Token 缓存命中率：
+                                              {cacheHitRate === null
+                                                ? "暂无样本"
+                                                : `${cacheHitRate.toFixed(1)}%`}
+                                              {` · 命中请求率 ${requestHitRate === null ? "暂无样本" : `${requestHitRate.toFixed(1)}%（${item.flashCacheHitRequests}/${item.flashCacheMeasuredRequests}）`}`}
+                                              {` · ${cacheCoverage.label}（${cacheCoverage.measured.toLocaleString("zh-CN")}/${cacheCoverage.total.toLocaleString("zh-CN")}）`}
+                                            </small>
+                                            {estimate.measuredHitTokens > 0 && (
+                                              <small className="admin-workspace-savings">
+                                                已确认缓存节省：
+                                                {formatEstimatedUsd(
+                                                  estimate.confirmedCacheSavingsUsd.lower,
+                                                )}{" "}
+                                                –{" "}
+                                                {formatEstimatedUsd(
+                                                  estimate.confirmedCacheSavingsUsd.upper,
+                                                )}
+                                              </small>
+                                            )}
+                                          </>
+                                        );
+                                      })()}
+                                    </div>
+                                  </td>
+                                  <td data-label="更新时间">
+                                    <span>{shortDate(item.updated_at)}</span>
+                                  </td>
+                                  <td data-label="操作">
                                     <button
                                       className="table-action danger"
+                                      aria-label={`删除工作空间：${item.title}`}
                                       onClick={() =>
                                         setConfirmation({
-                                          title: "删除这个账户？",
-                                          description: `「${item.name}」的账户、工作空间和知识资料都会永久删除，无法恢复。`,
-                                          confirmLabel: "删除账户和资料",
+                                          title: "删除这个工作空间？",
+                                          description: `「${item.title}」及其执行记录将永久删除，无法恢复。`,
+                                          confirmLabel: "删除工作空间",
                                           tone: "danger",
-                                          onConfirm: () => adminRemoveUser(item),
+                                          onConfirm: () => adminRemove(item.id),
                                         })
                                       }
-                                      aria-label={`删除账户：${item.name}`}
                                     >
-                                      删除账户
+                                      删除
                                     </button>
-                                  </div>
-                                )}
-                                {item.id === user.id && (
-                                  <span className="admin-current-user">当前账户</span>
-                                )}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                  <div className="admin-table">
-                    <h2>
-                      最近的目标{" "}
-                      <small>按最后更新时间排序 · Token 按规划、对话、工作台和代码复核拆分</small>
-                    </h2>
-                    <div className="table-scroll">
-                      <table aria-label="最近的目标工作空间">
-                        <thead>
-                          <tr>
-                            <th scope="col">目标</th>
-                            <th scope="col">类型</th>
-                            <th scope="col">创建者</th>
-                            <th scope="col">AI 用量</th>
-                            <th scope="col">更新时间</th>
-                            <th scope="col">操作</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {admin.workspaces.map((item) => (
-                            <tr key={item.id}>
-                              <td data-label="目标">
-                                <span>{item.title}</span>
-                              </td>
-                              <td data-label="类型">
-                                <span>{item.category}</span>
-                              </td>
-                              <td data-label="创建者">
-                                <span>{item.owner}</span>
-                              </td>
-                              <td data-label="AI 用量">
-                                <div className="admin-workspace-usage">
-                                  <span>
-                                    {item.aiTokens.toLocaleString("zh-CN")} tokens ·{" "}
-                                    {item.aiRequests} 次模型请求
-                                  </span>
-                                  <small className="admin-workspace-usage-detail">
-                                    规划 {item.plannerTokens.toLocaleString("zh-CN")} · 对话{" "}
-                                    {item.dialogueTokens.toLocaleString("zh-CN")} · 工作台{" "}
-                                    {item.workbenchTokens.toLocaleString("zh-CN")}
-                                    {` · 代码复核 ${item.reviewerTokens.toLocaleString("zh-CN")}`}
-                                    {item.legacyTokens > 0 &&
-                                      ` · 旧记录 ${item.legacyTokens.toLocaleString("zh-CN")}`}
-                                  </small>
-                                  <small className="admin-workspace-usage-detail">
-                                    {item.reasoningMeasuredRequests > 0
-                                      ? `思考 Token ${item.reasoningTokens.toLocaleString("zh-CN")}（已报告 ${item.reasoningMeasuredRequests}/${item.aiRequests} 次，包含在输出中）`
-                                      : "思考 Token 暂无样本"}
-                                  </small>
-                                  {(() => {
-                                    const estimate = adminWorkspaceCostEstimates.get(item.id);
-                                    if (
-                                      !estimate ||
-                                      item.flashInputTokens + item.flashOutputTokens === 0
-                                    )
-                                      return null;
-                                    const cacheCoverage = getInputCacheCoverage(
-                                      item.flashInputTokens,
-                                      item.flashCacheMeasuredInputTokens,
-                                    );
-                                    const cacheHitRate =
-                                      estimate.measuredInputTokens > 0
-                                        ? (estimate.measuredHitTokens /
-                                            estimate.measuredInputTokens) *
-                                          100
-                                        : null;
-                                    const requestHitRate =
-                                      item.flashCacheMeasuredRequests > 0
-                                        ? (item.flashCacheHitRequests /
-                                            item.flashCacheMeasuredRequests) *
-                                          100
-                                        : null;
-                                    return (
-                                      <>
-                                        <small className="admin-workspace-cost">
-                                          Flash 当前价估值：{formatEstimatedUsd(estimate.lowerUsd)}{" "}
-                                          – {formatEstimatedUsd(estimate.upperUsd)}
-                                        </small>
-                                        <small
-                                          className="admin-workspace-cache"
-                                          title={`${cacheCoverage.title} 命中率按供应商已统计输入 Token 加权计算，不是命中请求占比。`}
-                                        >
-                                          输入 Token 缓存命中率：
-                                          {cacheHitRate === null
-                                            ? "暂无样本"
-                                            : `${cacheHitRate.toFixed(1)}%`}
-                                          {` · 命中请求率 ${requestHitRate === null ? "暂无样本" : `${requestHitRate.toFixed(1)}%（${item.flashCacheHitRequests}/${item.flashCacheMeasuredRequests}）`}`}
-                                          {` · ${cacheCoverage.label}（${cacheCoverage.measured.toLocaleString("zh-CN")}/${cacheCoverage.total.toLocaleString("zh-CN")}）`}
-                                        </small>
-                                        {estimate.measuredHitTokens > 0 && (
-                                          <small className="admin-workspace-savings">
-                                            已确认缓存节省：
-                                            {formatEstimatedUsd(
-                                              estimate.confirmedCacheSavingsUsd.lower,
-                                            )}{" "}
-                                            –{" "}
-                                            {formatEstimatedUsd(
-                                              estimate.confirmedCacheSavingsUsd.upper,
-                                            )}
-                                          </small>
-                                        )}
-                                      </>
-                                    );
-                                  })()}
-                                </div>
-                              </td>
-                              <td data-label="更新时间">
-                                <span>{shortDate(item.updated_at)}</span>
-                              </td>
-                              <td data-label="操作">
-                                <button
-                                  className="table-action danger"
-                                  aria-label={`删除工作空间：${item.title}`}
-                                  onClick={() =>
-                                    setConfirmation({
-                                      title: "删除这个工作空间？",
-                                      description: `「${item.title}」及其执行记录将永久删除，无法恢复。`,
-                                      confirmLabel: "删除工作空间",
-                                      tone: "danger",
-                                      onConfirm: () => adminRemove(item.id),
-                                    })
-                                  }
-                                >
-                                  删除
-                                </button>
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                </>
-              ) : (
-                <p className="admin-loading">正在载入控制台…</p>
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    </>
+                  ) : (
+                    <p className="admin-loading">正在载入控制台…</p>
+                  )}
+                </section>
               )}
-            </section>
-          )}
             </motion.div>
           </AnimatePresence>
         </main>

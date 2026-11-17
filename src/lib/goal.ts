@@ -1,3 +1,6 @@
+import { extractBudgetLimit } from "./budget-limit.mjs";
+export { extractBudgetLimit } from "./budget-limit.mjs";
+
 export type RouteOption = {
   id: string;
   title: string;
@@ -189,20 +192,6 @@ export type ExecutionResult = {
     status: "within" | "over" | "unknown";
   };
 };
-
-export function extractBudgetLimit(prompt: string): number | null {
-  const match =
-    prompt.match(/(?:预算|经费|成本)[^，,。；;]{0,24}?[￥¥]?\s*(\d+(?:\.\d+)?)\s*(万|千)?\s*元/) ||
-    prompt.match(
-      /(?:预算|经费|成本)(?:上限|控制在|不超过|为|约|是)?\s*[：:]?\s*[￥¥]?\s*(\d+(?:\.\d+)?)\s*(万|千)?\s*元?/,
-    );
-  if (!match) return null;
-  const value = Number(match[1]);
-  if (!Number.isFinite(value)) return null;
-  return (
-    Math.round(value * (match[2] === "万" ? 10_000 : match[2] === "千" ? 1_000 : 1) * 100) / 100
-  );
-}
 
 export type Workspace = {
   id: string;

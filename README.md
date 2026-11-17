@@ -157,3 +157,13 @@ SQLite 运维命令：`npm run db:backup` 创建经完整性校验的快照，`n
 当前使用本地 SQLite，适合本地开发和单机部署。部署到无持久磁盘的环境前，需要把数据层迁移到持久数据库。必须配置 `SESSION_SECRET`、`ADMIN_EMAIL`，并在项目根目录 `.env.local` 中提供 `DEEPSEEK_API_KEY`。生产环境默认忽略客户端传入的转发 IP；如果位于可信反向代理之后，可设置 `NEXORA_TRUSTED_PROXY_HOPS` 为实际代理跳数，前提是每一跳正确写入 `X-Forwarded-For`。公开仓库只保留 `.env.example`。项目没有邮件服务；账户恢复通过注册时展示的一次性恢复码完成，恢复后会签发新码。共享工作区支持异步多人访问，但没有实时在线状态或同屏编辑；Google Calendar、GitHub 等第三方直连尚未接入，日历目前可导出 `.ics`，代码项目可下载 ZIP。
 
 生产本地验收可运行 `npm run build`、`npm run check:client-secrets`，再运行 `npm start`；密钥扫描只报告是否发现泄漏，不会输出 Key。DeepSeek 服务请求始终直接读取项目根目录 `.env.local`，不会回退到进程继承的 Key。
+
+## 参赛提交资料
+
+本项目对应 2026 第九届传智杯全国大学生数智创新与 AI 应用大赛 AI WEB 网页开发挑战赛。官方赛项提交要求核对表与当前缺项见 [`docs/COMPETITION_SUBMISSION_CHECKLIST.md`](docs/COMPETITION_SUBMISSION_CHECKLIST.md)；技术说明书源稿为 [`deliverables/VHFXNEX-technical-report-draft.md`](deliverables/VHFXNEX-technical-report-draft.md)，PDF 提交候选版为 [`deliverables/VHFXNEX-technical-report-candidate.pdf`](deliverables/VHFXNEX-technical-report-candidate.pdf)。演示脚本见 [`docs/DEMO_VIDEO_OUTLINE.md`](docs/DEMO_VIDEO_OUTLINE.md)。内部四项 Agent 场景是产品验收用例，不是赛事要求的提交材料。
+
+如需重建技术说明书 PDF，在仓库根目录执行 `python -m pip install -r requirements-docs.txt` 和 `python scripts/build-technical-report.py`。团队资料补齐、内容冻结后再替换提交候选版，并重新检查页数和页面渲染。
+
+**参赛团队信息（需按报名系统真实信息补齐后再提交）：**学校：待填写；团队名称：待填写；成员及学号/分工：待填写；指导教师：按赛项字段核实。不要从 Git 提交记录推断成员身份或贡献。
+
+代码托管地址：<https://github.com/VHFXxingyun/vhfxnex-agent-workbench>。赛事要求在 GitHub/Gitee 公开仓库或向评审开放访问；请在个人中心确认评审权限。当前没有公网在线演示地址，线上演示按赛事详情属于可选加分项；演示视频尚未录制，只有镜头脚本，不能当作已完成材料。

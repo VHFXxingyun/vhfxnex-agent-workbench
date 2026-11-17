@@ -1210,6 +1210,9 @@ textarea:focus-visible {
   align-items: center;
   gap: 9px;
 }
+.workspace-head-action-compact {
+  display: none;
+}
 .workspace-head .eyebrow .pulse {
   margin-right: 7px;
 }
@@ -6045,7 +6048,10 @@ textarea:focus-visible {
   }
   .workspace-head-actions > button {
     flex: 1;
-    padding-inline: 12px;
+    min-width: 0;
+    justify-content: center;
+    padding-inline: 8px;
+    white-space: nowrap;
   }
   .workspace .workspace-head h1,
   .listing .listing-head h1 {
@@ -6133,6 +6139,26 @@ textarea:focus-visible {
   }
   .calendar-export-form footer button {
     width: 100%;
+  }
+}
+
+@media (max-width: 440px) {
+  .workspace-head-actions {
+    gap: 6px;
+  }
+
+  .workspace-head-actions > button {
+    min-height: 40px;
+    padding-inline: 7px;
+    font-size: 10px;
+  }
+
+  .workspace-head-action-full {
+    display: none;
+  }
+
+  .workspace-head-action-compact {
+    display: inline;
   }
 }
 .brand-name > span {
@@ -10664,6 +10690,10 @@ body,
   .brand-mark {
     opacity: 1;
     transform: none;
+  }
+
+  .hero h1 .home-title-line {
+    opacity: 1;
   }
 
   .brand-mark::after {

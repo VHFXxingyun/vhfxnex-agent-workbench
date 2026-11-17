@@ -1,5 +1,7 @@
 export const BUDGET_AMOUNT_LIMIT = 1_000_000_000_000;
-const BUDGET_ITEM_LIMIT = 15;
+// Keep aligned with the calculate_budget tool schema so valid detailed
+// budgets are not rejected after the model has already generated them.
+const BUDGET_ITEM_LIMIT = 100;
 
 export function normalizeBudgetItems(value) {
   if (!Array.isArray(value) || value.length === 0) {

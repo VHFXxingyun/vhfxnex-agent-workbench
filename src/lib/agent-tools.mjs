@@ -94,12 +94,21 @@ export const toolSchemas = Object.freeze({
                   .boolean()
                   .optional()
                   .describe("是否为可重复使用的器材；未提供时按消耗品累计当天总需求"),
+                fallback: z
+                  .string()
+                  .trim()
+                  .min(1)
+                  .max(160)
+                  .optional()
+                  .describe(
+                    "库存不足时可直接执行的明确替代方案；使用后仍需在核验覆盖中标记现场确认",
+                  ),
               }),
             )
             .max(30)
             .optional()
             .describe(
-              "该时段要核对的物资及库存；消耗品按当天总需求核算，可重复使用的器材标 reusable=true 并按并发占用峰值核算；若无物资需要核对，请明确提供空数组",
+              "该时段要核对的物资及库存；消耗品按当天总需求核算，可重复使用的器材标 reusable=true 并按并发占用峰值核算。库存不足时若有可直接执行的替代方案，请填写 fallback；该替代方案不会作为硬冲突阻止交付，但会列为现场待确认。若无物资需要核对，请明确提供空数组",
             ),
         }),
       )
